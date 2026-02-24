@@ -1,5 +1,6 @@
 import sys
 from antlr4 import InputStream, CommonTokenStream
+from antlr4.error.ErrorListener import ErrorListener
 
 # antlr4 -Dlanguage=Python3 -visitor Lockstep.g4
 from LockstepLexer import LockstepLexer
@@ -62,13 +63,45 @@ class LockstepDebugVisitor(LockstepVisitor):
         return self.visitChildren(ctx)
 
 
+class ParseErrorCollector(ErrorListener):
+    """Collects syntax errors emitted by ANTLR during lex/parse."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
+        self.errors.append((line, column, msg))
+
+
+class LockstepCompileError(Exception):
+    """Raised when the Lockstep source contains parse errors."""
+
+    def __init__(self, errors):
+        self.errors = errors
+        super().__init__(self._format_message())
+
+    def _format_message(self):
+        count = len(self.errors)
+        suffix = "" if count == 1 else "s"
+        return f"Compilation failed with {count} parse error{suffix}."
+
+
 def compile_lockstep(source_code: str):
     input_stream = InputStream(source_code)
     lexer = LockstepLexer(input_stream)
+    error_listener = ParseErrorCollector()
+    lexer.removeErrorListeners()
+    lexer.addErrorListener(error_listener)
     stream = CommonTokenStream(lexer)
 
     parser = LockstepParser(stream)
+    parser.removeErrorListeners()
+    parser.addErrorListener(error_listener)
     tree = parser.program()
+
+    if error_listener.errors:
+        raise LockstepCompileError(error_listener.errors)
 
     visitor = LockstepDebugVisitor()
     visitor.visit(tree)
@@ -103,4 +136,10 @@ pipeline Physics {
 """
 
 if __name__ == "__main__":
-    compile_lockstep(TEST_SOURCE)
+    try:
+        compile_lockstep(TEST_SOURCE)
+    except LockstepCompileError as err:
+        print(str(err), file=sys.stderr)
+        for line, column, message in err.errors:
+            print(f"  line {line}:{column} {message}", file=sys.stderr)
+        sys.exit(1)
