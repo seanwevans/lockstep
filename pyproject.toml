@@ -18,7 +18,13 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["."]
-omit = ["tests/*"]
+omit = [
+    "tests/*",
+    "LockstepLexer.py",
+    "LockstepListener.py",
+    "LockstepParser.py",
+    "LockstepVisitor.py",
+]
 
 [tool.coverage.report]
 show_missing = true
