@@ -11,16 +11,16 @@ declaration
     ;
 
 structDecl: 'struct' ID '{' structMember* '}' ';';
-structMember: type ID ';';
+structMember: typeName ID ';';
 
-pureDecl: 'pure' type ID '(' pureParamList? ')' '{' statement* '}';
-pureParamList: type ID (',' type ID)*;
+pureDecl: 'pure' typeName ID '(' pureParamList? ')' '{' statement* '}';
+pureParamList: typeName ID (',' typeName ID)*;
 
 shaderDecl: 'shader' ID '(' paramList? ')' '{' statement* '}';
 filterDecl: 'filter' ID '(' paramList? ')' '{' statement* '}';
 
 paramList: param (',' param)*;
-param: ('in' | 'out' | 'uniform' | 'accum') type ID;
+param: ('in' | 'out' | 'uniform' | 'accum') typeName ID;
 
 pipelineDecl: 'pipeline' ID '{' pipelineMember* bindBlock '}';
 
@@ -30,15 +30,15 @@ pipelineMember
     | uniformDecl
     ;
 
-streamDecl: 'stream' '<' type ',' INT '>' ID ';';
-accumDecl: 'accumulator' '<' type '>' ID ';';
-uniformDecl: 'uniform' type ID ('=' expr)? ';';
+streamDecl: 'stream' '<' typeName ',' INT '>' ID ';';
+accumDecl: 'accumulator' '<' typeName '>' ID ';';
+uniformDecl: 'uniform' typeName ID ('=' expr)? ';';
 
 bindBlock: 'bind' '{' bindStmt* '}';
 
 bindStmt
     : ID '=' ID '(' argList ')' ';'
-    | 'uniform' type ID '=' 'fold_' ID '(' ID ')' ';'
+    | 'uniform' typeName ID '=' 'fold_' ID '(' ID ')' ';'
     ;
 
 argList: ID (',' ID)*;
@@ -49,7 +49,7 @@ statement
     | returnStmt
     ;
 
-varDecl: type ID '=' expr ';';
+varDecl: typeName ID '=' expr ';';
 assignStmt: lvalue '=' expr ';';
 returnStmt: 'return' expr ';';
 
@@ -71,7 +71,7 @@ expr
 
 exprList: expr (',' expr)*;
 lvalue: ID ('.' ID)*;
-type: ID;
+typeName: ID;
 
 ID: [a-zA-Z_][a-zA-Z0-9_]*;
 INT: [0-9]+;
