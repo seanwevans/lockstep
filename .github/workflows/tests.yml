@@ -43,7 +43,8 @@ jobs:
               pip install ".[test]"
 
           - name: Run unit tests with coverage
-            run: pytest
+            run: |
+              python3 -m pytest
 
           - name: Upload coverage artifacts
             if: always()
