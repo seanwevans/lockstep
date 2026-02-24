@@ -6,3 +6,4 @@ LockstepLexer.tokens
 LockstepListener.py
 LockstepParser.py
 LockstepVisitor.py
+__pycache__/*
