@@ -38,7 +38,7 @@ bindBlock: 'bind' '{' bindStmt* '}';
 
 bindStmt
     : ID '=' ID '(' argList ')' ';'
-    | 'uniform' typeName ID '=' 'fold_' ID '(' ID ')' ';'
+    | 'uniform' typeName ID '=' 'fold' ID '(' ID ')' ';'
     ;
 
 argList: ID (',' ID)*;
@@ -49,11 +49,10 @@ statement
     | returnStmt
     ;
 
-varDecl: typeName ID '=' expr ';';
+varDecl: typeName ID ('=' expr)? ';';
 assignStmt: lvalue '=' expr ';';
 returnStmt: 'return' expr ';';
 
-// --- Expressions ---
 expr
     : '(' expr ')'
     | ID '(' exprList? ')'
