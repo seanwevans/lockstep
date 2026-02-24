@@ -4,6 +4,37 @@
 
 By enforcing a strict **Straight-Line SIMD** execution model and **Static Memory Topology**, Lockstep allows the compiler to generate machine code that is mathematically guaranteed to saturate CPU vector units without the overhead of branch misprediction or cache contention.
 
+## Quickstart
+
+### Required tools
+
+* Java runtime (for the ANTLR tool)
+* ANTLR4 CLI/tooling available as `antlr4`
+* Python 3 with the ANTLR runtime package (`antlr4-python3-runtime`)
+
+### Regenerate parser artifacts
+
+```bash
+./make.sh generate
+```
+
+### Run the debug compiler sample
+
+```bash
+./make.sh run-sample
+```
+
+### Expected high-level output
+
+The sample run prints a frontend trace that shows discovered language elements in order, including:
+
+* compiler frontend header (`=== LOCKSTEP COMPILER FRONTEND ===`)
+* struct and pure function discovery
+* shader kernel name + parameters
+* pipeline topology, streams/accumulators, and bind routing
+
+---
+
 ## 1. Core Philosophy
 
 * **Data-Oriented by Design:** Logic is secondary to data flow. Programs are modeled as physical circuits (pipelines) rather than sequences of instructions.
