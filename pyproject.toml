@@ -1,5 +1,5 @@
 [project]
-name = "your-project-name"
+name = "Lockstep"
 version = "0.1.0"
 dependencies = [
     "antlr4-python3-runtime",
