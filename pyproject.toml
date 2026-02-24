@@ -1,0 +1,24 @@
+[project]
+name = "your-project-name"
+version = "0.1.0"
+dependencies = [
+    "antlr4-python3-runtime",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q -ra --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
