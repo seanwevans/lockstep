@@ -1,8 +1,5 @@
 grammar Lockstep;
 
-// -----------------------------------------------------------------
-// PARSER RULES
-// -----------------------------------------------------------------
 program: declaration* EOF;
 
 declaration
@@ -13,21 +10,18 @@ declaration
     | pipelineDecl
     ;
 
-// --- Data Structures & Pure Math ---
 structDecl: 'struct' ID '{' structMember* '}' ';';
 structMember: type ID ';';
 
 pureDecl: 'pure' type ID '(' pureParamList? ')' '{' statement* '}';
 pureParamList: type ID (',' type ID)*;
 
-// --- Compute Nodes ---
 shaderDecl: 'shader' ID '(' paramList? ')' '{' statement* '}';
 filterDecl: 'filter' ID '(' paramList? ')' '{' statement* '}';
 
 paramList: param (',' param)*;
 param: ('in' | 'out' | 'uniform' | 'accum') type ID;
 
-// --- Pipeline Topology ---
 pipelineDecl: 'pipeline' ID '{' pipelineMember* bindBlock '}';
 
 pipelineMember
@@ -43,13 +37,12 @@ uniformDecl: 'uniform' type ID ('=' expr)? ';';
 bindBlock: 'bind' '{' bindStmt* '}';
 
 bindStmt
-    : ID '=' ID '(' argList ')' ';'                           // Standard compute dispatch
-    | 'uniform' type ID '=' 'fold_' ID '(' ID ')' ';'         // The linear reduction tree (e.g., fold_sum)
+    : ID '=' ID '(' argList ')' ';'
+    | 'uniform' type ID '=' 'fold_' ID '(' ID ')' ';'
     ;
 
 argList: ID (',' ID)*;
 
-// --- Statements (Strictly Straight-Line) ---
 statement
     : varDecl
     | assignStmt
@@ -63,7 +56,7 @@ returnStmt: 'return' expr ';';
 // --- Expressions ---
 expr
     : '(' expr ')'
-    | ID '(' exprList? ')'                   // Intrinsics (step, mix, max) and pure functions
+    | ID '(' exprList? ')'
     | expr ('*' | '/' | '%') expr
     | expr ('+' | '-') expr
     | expr ('<' | '<=' | '>' | '>=') expr
@@ -80,9 +73,6 @@ exprList: expr (',' expr)*;
 lvalue: ID ('.' ID)*;
 type: ID;
 
-// -----------------------------------------------------------------
-// LEXER RULES
-// -----------------------------------------------------------------
 ID: [a-zA-Z_][a-zA-Z0-9_]*;
 INT: [0-9]+;
 FLOAT: [0-9]+ '.' [0-9]+;
