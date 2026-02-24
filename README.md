@@ -93,7 +93,3 @@ The compiler generates a C-compatible header for the Host application (C/C++, Ru
 2. **Bind:** Host calls `Lockstep_BindMemory(ptr)`.
 3. **Prime:** Host writes initial data into the SoA offsets provided by the header.
 4. **Tick:** Host calls `Lockstep_Tick()` to execute the pipeline.
-
----
-
-This README defines the "Contract of the Metal" for Lockstep. Would you like me to add a section on **Debugging and Telemetry**, or perhaps a **Standard Library** reference for the branchless intrinsics?
