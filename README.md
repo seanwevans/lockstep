@@ -24,7 +24,7 @@ A Lockstep program is a Directed Acyclic Graph (DAG) of compute nodes.
 * **`pure`**: A side-effect-free mathematical transform. Strictly inlined.
 * **`pipeline`**: The "circuit board" that binds streams and uniforms to kernels.
 
-### The Memory Model (Option C)
+### The Memory Model
 
 Lockstep uses a **Host-Owned Static Arena**. The compiler calculates the exact byte-offset for every Struct-of-Arrays (SoA) member at compile-time.
 
