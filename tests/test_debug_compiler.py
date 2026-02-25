@@ -1,10 +1,16 @@
 import importlib
 import io
+import pathlib
 import runpy
 import sys
 import types
 
 import pytest
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def _install_fake_generated_modules(monkeypatch):
@@ -95,9 +101,27 @@ def debug_compiler_module(monkeypatch):
     return importlib.import_module("debug_compiler")
 
 
+def _diagnostic(module, line, column, message, *, severity="error", code="LCK001"):
+    return module.LockstepDiagnostic(
+        severity=severity,
+        code=code,
+        message=message,
+        line=line,
+        column=column,
+        hint="Fix syntax errors before semantic analysis can continue.",
+    )
+
+
 def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_module):
-    one = debug_compiler_module.LockstepCompileError([(1, 1, "oops")])
-    many = debug_compiler_module.LockstepCompileError([(1, 1, "oops"), (2, 4, "bad")])
+    one = debug_compiler_module.LockstepCompileError(
+        [_diagnostic(debug_compiler_module, 1, 1, "oops")]
+    )
+    many = debug_compiler_module.LockstepCompileError(
+        [
+            _diagnostic(debug_compiler_module, 1, 1, "oops"),
+            _diagnostic(debug_compiler_module, 2, 4, "bad"),
+        ]
+    )
 
     assert str(one) == "Compilation failed with 1 parse error.\nline 1:1 oops"
     assert (
@@ -106,11 +130,20 @@ def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_modul
     )
 
 
-def test_parse_error_collector_captures_location_and_message(debug_compiler_module):
+def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
     collector = debug_compiler_module.ParseErrorCollector()
     collector.syntaxError(None, None, 12, 7, "unexpected token", None)
 
-    assert collector.errors == [(12, 7, "unexpected token")]
+    assert collector.errors == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK001",
+            message="unexpected token",
+            line=12,
+            column=7,
+            hint="Fix syntax errors before semantic analysis can continue.",
+        )
+    ]
 
 
 def test_compile_lockstep_raises_when_parser_reports_errors(
@@ -139,7 +172,17 @@ def test_compile_lockstep_raises_when_parser_reports_errors(
     with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
         debug_compiler_module.compile_lockstep("pipeline P { }")
 
-    assert exc_info.value.errors == [(3, 5, "mismatched input")]
+    assert exc_info.value.errors == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK001",
+            message="mismatched input",
+            line=3,
+            column=5,
+            hint="Fix syntax errors before semantic analysis can continue.",
+        )
+    ]
+    assert exc_info.value.diagnostics == exc_info.value.errors
 
 
 def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypatch):
@@ -165,6 +208,16 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
             self.shaders = [{"name": "ApplyGravity", "params": []}]
             self.streams = [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
             self.accumulators = [{"name": "energy", "type": "float"}]
+            self.diagnostics = [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK203",
+                    message="Stream 'raw' is redeclared.",
+                    line=8,
+                    column=4,
+                    hint="Each stream in a pipeline should have a unique name.",
+                )
+            ]
 
         def visit(self, tree):
             visited["tree"] = tree
@@ -185,11 +238,24 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
         "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
         "accumulators": [{"name": "energy", "type": "float"}],
     }
-    assert result.diagnostics == []
+    assert result.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK203",
+            message="Stream 'raw' is redeclared.",
+            line=8,
+            column=4,
+            hint="Each stream in a pipeline should have a unique name.",
+        )
+    ]
 
 
 def _token(text):
     return types.SimpleNamespace(getText=lambda: text)
+
+
+def _ctx(start_line=0, start_col=0, **kwargs):
+    return types.SimpleNamespace(start=types.SimpleNamespace(line=start_line, column=start_col), **kwargs)
 
 
 def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
@@ -223,31 +289,19 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
             return self._text
 
     visitor.visitProgram(object())
-    visitor.visitStructDecl(types.SimpleNamespace(ID=lambda: _token("Vec3")))
-    visitor.visitPureDecl(
-        types.SimpleNamespace(ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
-    )
-    visitor.visitShaderDecl(
-        types.SimpleNamespace(
-            ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()
-        )
-    )
-    visitor.visitPipelineDecl(types.SimpleNamespace(ID=lambda: _token("Physics")))
+    visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
+    visitor.visitPureDecl(_ctx(ID=lambda: _token("add"), typeName=lambda: _token("Vec3")))
+    visitor.visitShaderDecl(_ctx(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()))
+    visitor.visitPipelineDecl(_ctx(ID=lambda: _token("Physics")))
     visitor.visitStreamDecl(
-        types.SimpleNamespace(
+        _ctx(
             typeName=lambda: _token("Vec3"),
             INT=lambda: _token("1000"),
             ID=lambda: _token("raw"),
         )
     )
-    visitor.visitAccumDecl(
-        types.SimpleNamespace(
-            typeName=lambda: _token("float"), ID=lambda: _token("energy")
-        )
-    )
-    visitor.visitBindBlock(
-        types.SimpleNamespace(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")])
-    )
+    visitor.visitAccumDecl(_ctx(typeName=lambda: _token("float"), ID=lambda: _token("energy")))
+    visitor.visitBindBlock(_ctx(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")]))
 
     stdout = capsys.readouterr().out
     assert "=== LOCKSTEP COMPILER FRONTEND ===" in stdout
@@ -270,20 +324,46 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     ]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
+    assert visitor.diagnostics == []
+
+
+def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_module):
+    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+
+    visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
+    visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
+    visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
+
+    assert visitor.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK201",
+            message="Struct 'Vec3' is redeclared.",
+            line=3,
+            column=1,
+            hint="Rename or remove duplicate struct declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="info",
+            code="LCK101",
+            message="Bind block is empty; pipeline has no executable routes.",
+            line=10,
+            column=4,
+            hint="Add at least one binding statement in the bind block.",
+        ),
+    ]
 
 
 def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
-    visitor.visitShaderDecl(
-        types.SimpleNamespace(ID=lambda: _token("Kernel"), paramList=lambda: None)
-    )
+    visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": []}]
 
 
 def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
-    visitor.visitStructDecl(types.SimpleNamespace(ID=lambda: _token("Vec3")))
+    visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
 
     assert capsys.readouterr().out == ""
     assert visitor.structs == ["Vec3"]
@@ -352,7 +432,18 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
 
 def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     def failing_compiler(_source):
-        raise debug_compiler_module.LockstepCompileError([(4, 2, "unexpected")])
+        raise debug_compiler_module.LockstepCompileError(
+            [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="error",
+                    code="LCK001",
+                    message="unexpected",
+                    line=4,
+                    column=2,
+                    hint="Fix syntax errors before semantic analysis can continue.",
+                )
+            ]
+        )
 
     stderr = io.StringIO()
     exit_code = debug_compiler_module.run_cli(
