@@ -180,7 +180,9 @@ pipeline Physics {
 
 
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Debug parser for Lockstep source files.")
+    parser = argparse.ArgumentParser(
+        description="Debug parser for Lockstep source files."
+    )
     parser.add_argument(
         "path",
         nargs="?",
@@ -210,6 +212,7 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
         return 1
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(run_cli())

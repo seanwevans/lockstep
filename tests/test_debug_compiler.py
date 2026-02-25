@@ -113,7 +113,9 @@ def test_parse_error_collector_captures_location_and_message(debug_compiler_modu
     assert collector.errors == [(12, 7, "unexpected token")]
 
 
-def test_compile_lockstep_raises_when_parser_reports_errors(debug_compiler_module, monkeypatch):
+def test_compile_lockstep_raises_when_parser_reports_errors(
+    debug_compiler_module, monkeypatch
+):
     class FailingParser:
         def __init__(self, stream):
             self._listeners = []
@@ -129,7 +131,9 @@ def test_compile_lockstep_raises_when_parser_reports_errors(debug_compiler_modul
                 listener.syntaxError(None, None, 3, 5, "mismatched input", None)
             return object()
 
-    monkeypatch.setattr(debug_compiler_module, "CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
     monkeypatch.setattr(debug_compiler_module, "LockstepParser", FailingParser)
 
     with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
@@ -165,7 +169,9 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
         def visit(self, tree):
             visited["tree"] = tree
 
-    monkeypatch.setattr(debug_compiler_module, "CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
     monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
     monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
 
@@ -222,18 +228,26 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
         types.SimpleNamespace(ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
     )
     visitor.visitShaderDecl(
-        types.SimpleNamespace(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList())
+        types.SimpleNamespace(
+            ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()
+        )
     )
     visitor.visitPipelineDecl(types.SimpleNamespace(ID=lambda: _token("Physics")))
     visitor.visitStreamDecl(
         types.SimpleNamespace(
-            typeName=lambda: _token("Vec3"), INT=lambda: _token("1000"), ID=lambda: _token("raw")
+            typeName=lambda: _token("Vec3"),
+            INT=lambda: _token("1000"),
+            ID=lambda: _token("raw"),
         )
     )
     visitor.visitAccumDecl(
-        types.SimpleNamespace(typeName=lambda: _token("float"), ID=lambda: _token("energy"))
+        types.SimpleNamespace(
+            typeName=lambda: _token("float"), ID=lambda: _token("energy")
+        )
     )
-    visitor.visitBindBlock(types.SimpleNamespace(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")]))
+    visitor.visitBindBlock(
+        types.SimpleNamespace(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")])
+    )
 
     stdout = capsys.readouterr().out
     assert "=== LOCKSTEP COMPILER FRONTEND ===" in stdout
@@ -248,14 +262,21 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert "a=b" in stdout
     assert "c=d" in stdout
     assert visitor.structs == ["Vec3"]
-    assert visitor.shaders == [{"name": "ApplyGravity", "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}]}]
+    assert visitor.shaders == [
+        {
+            "name": "ApplyGravity",
+            "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
+        }
+    ]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
 
 
 def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
-    visitor.visitShaderDecl(types.SimpleNamespace(ID=lambda: _token("Kernel"), paramList=lambda: None))
+    visitor.visitShaderDecl(
+        types.SimpleNamespace(ID=lambda: _token("Kernel"), paramList=lambda: None)
+    )
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": []}]
 
@@ -321,7 +342,9 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli([str(source_file)], compiler=fake_compiler)
+    exit_code = debug_compiler_module.run_cli(
+        [str(source_file)], compiler=fake_compiler
+    )
 
     assert exit_code == 0
     assert captured["source"] == "pipeline FromFile { }"
