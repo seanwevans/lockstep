@@ -11,18 +11,17 @@ from antlr4 import CommonTokenStream, InputStream
 def generated_parser(tmp_path_factory):
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     tmp_dir = tmp_path_factory.mktemp("antlr_generated")
-    antlr_jar = tmp_dir / "antlr.jar"
 
     try:
         subprocess.run(
-            ["curl", "-fsSL", "https://www.antlr.org/download/antlr-4.13.2-complete.jar", "-o", str(antlr_jar)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        subprocess.run(
-            ["java", "-jar", str(antlr_jar), "-Dlanguage=Python3", "-visitor", "-o", str(tmp_dir), "Lockstep.g4"],
+            [
+                "antlr4",
+                "-Dlanguage=Python3",
+                "-visitor",
+                "-o",
+                str(tmp_dir),
+                "Lockstep.g4",
+            ],
             cwd=repo_root,
             check=True,
             stdout=subprocess.PIPE,
@@ -39,7 +38,12 @@ def generated_parser(tmp_path_factory):
         yield lexer_module.LockstepLexer, parser_module.LockstepParser
     finally:
         sys.path.remove(str(tmp_dir))
-        for module_name in ["LockstepLexer", "LockstepParser", "LockstepVisitor", "LockstepListener"]:
+        for module_name in [
+            "LockstepLexer",
+            "LockstepParser",
+            "LockstepVisitor",
+            "LockstepListener",
+        ]:
             sys.modules.pop(module_name, None)
 
 
@@ -73,7 +77,10 @@ def test_multiplication_binds_tighter_than_addition(generated_parser):
     parsed = _parse_expr("a+b*c", lexer_cls, parser_cls)
 
     assert "(addExpr (mulExpr (unaryExpr (primaryExpr (lvalue a)))) +" in parsed
-    assert "(mulExpr (unaryExpr (primaryExpr (lvalue b))) * (unaryExpr (primaryExpr (lvalue c))))" in parsed
+    assert (
+        "(mulExpr (unaryExpr (primaryExpr (lvalue b))) * (unaryExpr (primaryExpr (lvalue c))))"
+        in parsed
+    )
 
 
 def test_logical_and_binds_tighter_than_or(generated_parser):
