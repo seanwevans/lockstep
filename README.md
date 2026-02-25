@@ -93,3 +93,31 @@ The compiler generates a C-compatible header for the Host application (C/C++, Ru
 2. **Bind:** Host calls `Lockstep_BindMemory(ptr)`.
 3. **Prime:** Host writes initial data into the SoA offsets provided by the header.
 4. **Tick:** Host calls `Lockstep_Tick()` to execute the pipeline.
+
+---
+
+## 6. Compiler Frontend Usage
+
+`debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
+
+* `parse_tree`: ANTLR parse tree for the source.
+* `entities`: extracted frontend entities (`structs`, `shaders`, `streams`, `accumulators`).
+* `diagnostics`: first-class compiler diagnostics (`LockstepDiagnostic`) for non-fatal observations.
+
+### Diagnostic Shape
+
+Each diagnostic includes:
+
+* `severity` (`"info"`, `"warning"`, or `"error"`)
+* `code` (stable diagnostic identifier such as `LCK101`, `LCK201`)
+* `message`
+* `line`
+* `column`
+* optional `hint`
+
+### Behavior
+
+* **Non-fatal observations** (for example empty `bind` blocks or duplicate declarations) are returned in `LockstepCompileResult.diagnostics` and compilation still succeeds.
+* **Fatal parse errors** still raise `LockstepCompileError`.
+  * `LockstepCompileError.errors` contains parse diagnostics.
+  * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.

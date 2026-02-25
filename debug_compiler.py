@@ -13,6 +13,16 @@ from LockstepParser import LockstepParser
 from LockstepVisitor import LockstepVisitor
 
 
+@dataclass
+class LockstepDiagnostic:
+    severity: str
+    code: str
+    message: str
+    line: int
+    column: int
+    hint: str | None = None
+
+
 class LockstepDebugVisitor(LockstepVisitor):
     """Walks the Parse Tree and extracts the pipeline architecture."""
 
@@ -22,10 +32,22 @@ class LockstepDebugVisitor(LockstepVisitor):
         self.shaders = []
         self.streams = []
         self.accumulators = []
+        self.diagnostics: list[LockstepDiagnostic] = []
+        self._seen_structs = set()
+        self._seen_shaders = set()
+        self._seen_streams = set()
+        self._seen_accumulators = set()
 
     def _print(self, message: str):
         if self.verbose:
             print(message)
+
+    def _line_col(self, ctx) -> tuple[int, int]:
+        token = getattr(ctx, "start", None)
+        return (
+            getattr(token, "line", 0),
+            getattr(token, "column", 0),
+        )
 
     def visitProgram(self, ctx: LockstepParser.ProgramContext):
         self._print("=== LOCKSTEP COMPILER FRONTEND ===")
@@ -34,6 +56,19 @@ class LockstepDebugVisitor(LockstepVisitor):
 
     def visitStructDecl(self, ctx: LockstepParser.StructDeclContext):
         name = ctx.ID().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_structs:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK201",
+                    message=f"Struct '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Rename or remove duplicate struct declarations.",
+                )
+            )
+        self._seen_structs.add(name)
         self.structs.append(name)
         self._print(f"[Struct] Discovered: {name}")
         return self.visitChildren(ctx)
@@ -47,6 +82,19 @@ class LockstepDebugVisitor(LockstepVisitor):
     def visitShaderDecl(self, ctx: LockstepParser.ShaderDeclContext):
         name = ctx.ID().getText()
         params = []
+        line, column = self._line_col(ctx)
+        if name in self._seen_shaders:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK202",
+                    message=f"Shader '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Rename or remove duplicate shader declarations.",
+                )
+            )
+        self._seen_shaders.add(name)
         self._print(f"\n[Shader Kernel] {name}")
         if ctx.paramList():
             for param in ctx.paramList().param():
@@ -67,6 +115,19 @@ class LockstepDebugVisitor(LockstepVisitor):
         s_type = ctx.typeName().getText()
         capacity = ctx.INT().getText()
         name = ctx.ID().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_streams:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK203",
+                    message=f"Stream '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Each stream in a pipeline should have a unique name.",
+                )
+            )
+        self._seen_streams.add(name)
         self.streams.append({"name": name, "type": s_type, "capacity": capacity})
         self._print(f"  └─ Stream: {name} <{s_type}, {capacity}>")
         return self.visitChildren(ctx)
@@ -74,13 +135,39 @@ class LockstepDebugVisitor(LockstepVisitor):
     def visitAccumDecl(self, ctx: LockstepParser.AccumDeclContext):
         a_type = ctx.typeName().getText()
         name = ctx.ID().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_accumulators:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK204",
+                    message=f"Accumulator '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Each accumulator in a pipeline should have a unique name.",
+                )
+            )
+        self._seen_accumulators.add(name)
         self.accumulators.append({"name": name, "type": a_type})
         self._print(f"  └─ Accumulator: {name} <{a_type}>")
         return self.visitChildren(ctx)
 
     def visitBindBlock(self, ctx: LockstepParser.BindBlockContext):
         self._print("  └─ Routing:")
-        for stmt in ctx.bindStmt():
+        bind_statements = ctx.bindStmt()
+        line, column = self._line_col(ctx)
+        if not bind_statements:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="info",
+                    code="LCK101",
+                    message="Bind block is empty; pipeline has no executable routes.",
+                    line=line,
+                    column=column,
+                    hint="Add at least one binding statement in the bind block.",
+                )
+            )
+        for stmt in bind_statements:
             self._print(f"       {stmt.getText()}")
         return self.visitChildren(ctx)
 
@@ -330,17 +417,27 @@ class ParseErrorCollector(ErrorListener):
 
     def __init__(self):
         super().__init__()
-        self.errors = []
+        self.errors: list[LockstepDiagnostic] = []
 
     def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
-        self.errors.append((line, column, msg))
+        self.errors.append(
+            LockstepDiagnostic(
+                severity="error",
+                code="LCK001",
+                message=msg,
+                line=line,
+                column=column,
+                hint="Fix syntax errors before semantic analysis can continue.",
+            )
+        )
 
 
 class LockstepCompileError(Exception):
     """Raised when the Lockstep source contains parse errors."""
 
-    def __init__(self, errors):
+    def __init__(self, errors, diagnostics=None):
         self.errors = errors
+        self.diagnostics = diagnostics or []
         super().__init__(self._format_message())
 
     def _format_message(self):
@@ -348,7 +445,7 @@ class LockstepCompileError(Exception):
         suffix = "" if count == 1 else "s"
         summary = f"Compilation failed with {count} parse error{suffix}."
         details = "\n".join(
-            f"line {line}:{column} {message}" for line, column, message in self.errors
+            f"line {error.line}:{error.column} {error.message}" for error in self.errors
         )
         return summary if not details else f"{summary}\n{details}"
 
@@ -367,7 +464,7 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
     tree = parser.program()
 
     if error_listener.errors:
-        raise LockstepCompileError(error_listener.errors)
+        raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
 
     visitor = LockstepDebugVisitor(verbose=verbose)
     visitor.visit(tree)
@@ -447,7 +544,22 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
     stderr = sys.stderr if stderr is None else stderr
 
     if args.path:
-        source = Path(args.path).read_text(encoding="utf-8")
+        source_path = Path(args.path)
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(f"Unable to read '{source_path}': file not found.", file=stderr)
+            return 1
+        except PermissionError as err:
+            reason = err.strerror or "permission denied"
+            print(f"Unable to read '{source_path}': {reason}.", file=stderr)
+            return 1
+        except UnicodeDecodeError as err:
+            print(
+                f"Unable to read '{source_path}': invalid UTF-8 ({err.reason}).",
+                file=stderr,
+            )
+            return 1
     else:
         source = stdin.read()
 
@@ -455,8 +567,8 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
         compiler(source)
     except LockstepCompileError as err:
         print(str(err), file=stderr)
-        for line, column, message in err.errors:
-            print(f"  line {line}:{column} {message}", file=stderr)
+        for error in err.errors:
+            print(f"  line {error.line}:{error.column} {error.message}", file=stderr)
         return 1
 
     return 0
