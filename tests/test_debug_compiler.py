@@ -184,8 +184,82 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
         "shaders": [{"name": "ApplyGravity", "params": []}],
         "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
         "accumulators": [{"name": "energy", "type": "float"}],
+        "symbol_table": {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "pipelines": {},
+        },
     }
     assert result.diagnostics == []
+
+
+def test_semantic_bind_stmt_validation_reports_errors(debug_compiler_module):
+    analyzer = debug_compiler_module.LockstepSemanticAnalyzer()
+    analyzer.symbols.shaders["ApplyGravity"] = debug_compiler_module.CallableSymbol(
+        kind="shader",
+        name="ApplyGravity",
+        params=[
+            debug_compiler_module.CallableParam("in", "Vec3", "pos"),
+            debug_compiler_module.CallableParam("out", "Vec3", "new_pos"),
+            debug_compiler_module.CallableParam("accum", "float", "energy"),
+            debug_compiler_module.CallableParam("uniform", "float", "dt"),
+        ],
+    )
+    scope = debug_compiler_module.PipelineScope(
+        name="Physics",
+        streams={"raw_positions": "Vec3", "final_positions": "Vec3"},
+        accumulators={"total_energy": "float"},
+        uniforms={"dt": "float"},
+    )
+
+    def _id_token(text, line=1, column=0):
+        return types.SimpleNamespace(getText=lambda: text, line=line, column=column)
+
+    bad_call = types.SimpleNamespace(
+        ID=lambda: [_id_token("missing_stream"), _id_token("MissingKernel")],
+        argList=lambda: types.SimpleNamespace(ID=lambda: [_id_token("raw_positions")]),
+        start=types.SimpleNamespace(line=4, column=2),
+    )
+    analyzer._validate_bind_call(bad_call, scope)
+
+    arity_call = types.SimpleNamespace(
+        ID=lambda: [_id_token("final_positions"), _id_token("ApplyGravity")],
+        argList=lambda: types.SimpleNamespace(ID=lambda: [_id_token("raw_positions")]),
+        start=types.SimpleNamespace(line=5, column=2),
+    )
+    analyzer._validate_bind_call(arity_call, scope)
+
+    type_call = types.SimpleNamespace(
+        ID=lambda: [_id_token("final_positions"), _id_token("ApplyGravity")],
+        argList=lambda: types.SimpleNamespace(
+            ID=lambda: [
+                _id_token("raw_positions", 6, 10),
+                _id_token("final_positions", 6, 20),
+                _id_token("raw_positions", 6, 30),
+                _id_token("total_energy", 6, 40),
+            ]
+        ),
+        start=types.SimpleNamespace(line=6, column=2),
+    )
+    analyzer._validate_bind_call(type_call, scope)
+
+    fold_stmt = types.SimpleNamespace(
+        ID=lambda: [_id_token("sys_energy"), _id_token("sum"), _id_token("final_positions", 7, 12)],
+        start=types.SimpleNamespace(line=7, column=2),
+    )
+    analyzer._validate_fold(fold_stmt, scope)
+
+    diagnostics = analyzer.diagnostics
+    assert any("must be a declared stream" in d.message for d in diagnostics)
+    assert any("is not declared" in d.message for d in diagnostics)
+    assert any("expects 4 args, got 1" in d.message for d in diagnostics)
+    assert any("invalid for 'accum'" in d.message for d in diagnostics)
+    assert any("raw_positions' type 'Vec3' does not match expected 'float'" in d.message for d in diagnostics)
+    assert any("must be an accumulator" in d.message for d in diagnostics)
+    assert diagnostics[0].line == 4
+    assert diagnostics[0].column == 2
 
 
 def _token(text):
