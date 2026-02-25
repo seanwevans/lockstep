@@ -199,7 +199,22 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
     stderr = sys.stderr if stderr is None else stderr
 
     if args.path:
-        source = Path(args.path).read_text(encoding="utf-8")
+        source_path = Path(args.path)
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(f"Unable to read '{source_path}': file not found.", file=stderr)
+            return 1
+        except PermissionError as err:
+            reason = err.strerror or "permission denied"
+            print(f"Unable to read '{source_path}': {reason}.", file=stderr)
+            return 1
+        except UnicodeDecodeError as err:
+            print(
+                f"Unable to read '{source_path}': invalid UTF-8 ({err.reason}).",
+                file=stderr,
+            )
+            return 1
     else:
         source = stdin.read()
 
