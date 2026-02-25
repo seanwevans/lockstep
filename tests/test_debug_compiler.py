@@ -365,3 +365,65 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     assert exit_code == 1
     assert "Compilation failed with 1 parse error." in stderr.getvalue()
     assert "line 4:2 unexpected" in stderr.getvalue()
+
+
+def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
+    missing = tmp_path / "missing.lock"
+    stderr = io.StringIO()
+    called = {"compiler": False}
+
+    def fake_compiler(_source):
+        called["compiler"] = True
+
+    exit_code = debug_compiler_module.run_cli(
+        [str(missing)],
+        stderr=stderr,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 1
+    assert called["compiler"] is False
+    assert f"Unable to read '{missing}': file not found." in stderr.getvalue()
+
+
+def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, monkeypatch):
+    stderr = io.StringIO()
+    called = {"compiler": False}
+
+    def fake_compiler(_source):
+        called["compiler"] = True
+
+    def raise_permission_error(_self, encoding):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(debug_compiler_module.Path, "read_text", raise_permission_error)
+
+    exit_code = debug_compiler_module.run_cli(
+        ["locked.lock"],
+        stderr=stderr,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 1
+    assert called["compiler"] is False
+    assert "Unable to read 'locked.lock': permission denied." in stderr.getvalue()
+
+
+def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_path):
+    bad_source = tmp_path / "invalid.lock"
+    bad_source.write_bytes(b"\xff\xfe\xfa")
+    stderr = io.StringIO()
+    called = {"compiler": False}
+
+    def fake_compiler(_source):
+        called["compiler"] = True
+
+    exit_code = debug_compiler_module.run_cli(
+        [str(bad_source)],
+        stderr=stderr,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 1
+    assert called["compiler"] is False
+    assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
