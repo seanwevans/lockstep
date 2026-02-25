@@ -84,7 +84,11 @@ class LockstepCompileError(Exception):
     def _format_message(self):
         count = len(self.errors)
         suffix = "" if count == 1 else "s"
-        return f"Compilation failed with {count} parse error{suffix}."
+        summary = f"Compilation failed with {count} parse error{suffix}."
+        details = "\n".join(
+            f"line {line}:{column} {message}" for line, column, message in self.errors
+        )
+        return summary if not details else f"{summary}\n{details}"
 
 
 def compile_lockstep(source_code: str):

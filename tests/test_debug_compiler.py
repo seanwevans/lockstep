@@ -98,8 +98,11 @@ def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_modul
     one = debug_compiler_module.LockstepCompileError([(1, 1, "oops")])
     many = debug_compiler_module.LockstepCompileError([(1, 1, "oops"), (2, 4, "bad")])
 
-    assert str(one) == "Compilation failed with 1 parse error."
-    assert str(many) == "Compilation failed with 2 parse errors."
+    assert str(one) == "Compilation failed with 1 parse error.\nline 1:1 oops"
+    assert (
+        str(many)
+        == "Compilation failed with 2 parse errors.\nline 1:1 oops\nline 2:4 bad"
+    )
 
 
 def test_parse_error_collector_captures_location_and_message(debug_compiler_module):
