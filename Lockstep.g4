@@ -53,19 +53,22 @@ varDecl: typeName ID ('=' expr)? ';';
 assignStmt: lvalue '=' expr ';';
 returnStmt: 'return' expr ';';
 
-expr
+expr: logicalExpr;
+
+logicalExpr: logicalOrExpr;
+logicalOrExpr: logicalAndExpr ('||' logicalAndExpr)*;
+logicalAndExpr: equalityExpr ('&&' equalityExpr)*;
+equalityExpr: relExpr (('==' | '!=') relExpr)*;
+relExpr: addExpr (('<' | '<=' | '>' | '>=') addExpr)*;
+addExpr: mulExpr (('+' | '-') mulExpr)*;
+mulExpr: unaryExpr (('*' | '/' | '%') unaryExpr)*;
+unaryExpr: ('-' | '!') unaryExpr | primaryExpr;
+primaryExpr
     : '(' expr ')'
     | ID '(' exprList? ')'
-    | expr ('*' | '/' | '%') expr
-    | expr ('+' | '-') expr
-    | expr ('<' | '<=' | '>' | '>=') expr
-    | expr ('==' | '!=') expr
-    | expr ('&&' | '||') expr
     | lvalue
     | INT
     | FLOAT
-    | '-' expr
-    | '!' expr
     ;
 
 exprList: expr (',' expr)*;
