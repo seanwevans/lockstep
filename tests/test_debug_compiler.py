@@ -1,4 +1,5 @@
 import importlib
+import io
 import runpy
 import sys
 import types
@@ -270,7 +271,13 @@ def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
 def test_module_main_success_path(monkeypatch, capsys):
     _install_fake_generated_modules(monkeypatch)
     sys.modules.pop("debug_compiler", None)
-    runpy.run_module("debug_compiler", run_name="__main__")
+    monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("debug_compiler", run_name="__main__")
+
+    assert exc_info.value.code == 0
     assert capsys.readouterr().err == ""
 
 
@@ -278,6 +285,8 @@ def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
     _install_fake_generated_modules(monkeypatch)
     sys.modules["LockstepParser"].LockstepParser.error_to_emit = (7, 9, "bad syntax")
     sys.modules.pop("debug_compiler", None)
+    monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
     with pytest.raises(SystemExit) as exc_info:
         runpy.run_module("debug_compiler", run_name="__main__")
@@ -286,3 +295,50 @@ def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
     stderr = capsys.readouterr().err
     assert "Compilation failed with 1 parse error." in stderr
     assert "line 7:9 bad syntax" in stderr
+
+
+def test_run_cli_reads_source_from_stdin_when_path_omitted(debug_compiler_module):
+    captured = {}
+
+    def fake_compiler(source):
+        captured["source"] = source
+
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline FromStdin { }"),
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    assert captured["source"] == "pipeline FromStdin { }"
+
+
+def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
+    source_file = tmp_path / "sample.lock"
+    source_file.write_text("pipeline FromFile { }", encoding="utf-8")
+    captured = {}
+
+    def fake_compiler(source):
+        captured["source"] = source
+
+    exit_code = debug_compiler_module.run_cli([str(source_file)], compiler=fake_compiler)
+
+    assert exit_code == 0
+    assert captured["source"] == "pipeline FromFile { }"
+
+
+def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
+    def failing_compiler(_source):
+        raise debug_compiler_module.LockstepCompileError([(4, 2, "unexpected")])
+
+    stderr = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline Broken {"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    assert exit_code == 1
+    assert "Compilation failed with 1 parse error." in stderr.getvalue()
+    assert "line 4:2 unexpected" in stderr.getvalue()
