@@ -1,4 +1,6 @@
+import argparse
 import sys
+from pathlib import Path
 from antlr4 import InputStream, CommonTokenStream
 from antlr4.error.ErrorListener import ErrorListener
 
@@ -135,11 +137,38 @@ pipeline Physics {
 }
 """
 
-if __name__ == "__main__":
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(description="Debug parser for Lockstep source files.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="Optional path to a Lockstep source file. Reads from stdin when omitted.",
+    )
+    return parser
+
+
+def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    stdin = sys.stdin if stdin is None else stdin
+    stderr = sys.stderr if stderr is None else stderr
+
+    if args.path:
+        source = Path(args.path).read_text(encoding="utf-8")
+    else:
+        source = stdin.read()
+
     try:
-        compile_lockstep(TEST_SOURCE)
+        compiler(source)
     except LockstepCompileError as err:
-        print(str(err), file=sys.stderr)
+        print(str(err), file=stderr)
         for line, column, message in err.errors:
-            print(f"  line {line}:{column} {message}", file=sys.stderr)
-        sys.exit(1)
+            print(f"  line {line}:{column} {message}", file=stderr)
+        return 1
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(run_cli())
