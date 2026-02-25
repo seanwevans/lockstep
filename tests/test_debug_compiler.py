@@ -99,8 +99,11 @@ def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_modul
     one = debug_compiler_module.LockstepCompileError([(1, 1, "oops")])
     many = debug_compiler_module.LockstepCompileError([(1, 1, "oops"), (2, 4, "bad")])
 
-    assert str(one) == "Compilation failed with 1 parse error."
-    assert str(many) == "Compilation failed with 2 parse errors."
+    assert str(one) == "Compilation failed with 1 parse error.\nline 1:1 oops"
+    assert (
+        str(many)
+        == "Compilation failed with 2 parse errors.\nline 1:1 oops\nline 2:4 bad"
+    )
 
 
 def test_parse_error_collector_captures_location_and_message(debug_compiler_module):
@@ -152,6 +155,13 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     visited = {"tree": None}
 
     class SpyVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = ["Vec3"]
+            self.shaders = [{"name": "ApplyGravity", "params": []}]
+            self.streams = [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
+            self.accumulators = [{"name": "energy", "type": "float"}]
+
         def visit(self, tree):
             visited["tree"] = tree
 
@@ -159,9 +169,17 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
     monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
 
-    debug_compiler_module.compile_lockstep("pipeline P { }")
+    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
 
     assert visited["tree"] == "TREE"
+    assert result.parse_tree == "TREE"
+    assert result.entities == {
+        "structs": ["Vec3"],
+        "shaders": [{"name": "ApplyGravity", "params": []}],
+        "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
+        "accumulators": [{"name": "energy", "type": "float"}],
+    }
+    assert result.diagnostics == []
 
 
 def _token(text):
@@ -229,12 +247,25 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert "Routing:" in stdout
     assert "a=b" in stdout
     assert "c=d" in stdout
+    assert visitor.structs == ["Vec3"]
+    assert visitor.shaders == [{"name": "ApplyGravity", "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}]}]
+    assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
+    assert visitor.accumulators == [{"name": "energy", "type": "float"}]
 
 
 def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
     visitor.visitShaderDecl(types.SimpleNamespace(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
+    assert visitor.shaders == [{"name": "Kernel", "params": []}]
+
+
+def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
+    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+    visitor.visitStructDecl(types.SimpleNamespace(ID=lambda: _token("Vec3")))
+
+    assert capsys.readouterr().out == ""
+    assert visitor.structs == ["Vec3"]
 
 
 def test_module_main_success_path(monkeypatch, capsys):
