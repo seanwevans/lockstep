@@ -1,4 +1,7 @@
 import sys
+from dataclasses import dataclass, field
+from typing import Any
+
 from antlr4 import InputStream, CommonTokenStream
 from antlr4.error.ErrorListener import ErrorListener
 
@@ -11,56 +14,80 @@ from LockstepVisitor import LockstepVisitor
 class LockstepDebugVisitor(LockstepVisitor):
     """Walks the Parse Tree and extracts the pipeline architecture."""
 
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
+        self.structs = []
+        self.shaders = []
+        self.streams = []
+        self.accumulators = []
+
+    def _print(self, message: str):
+        if self.verbose:
+            print(message)
+
     def visitProgram(self, ctx: LockstepParser.ProgramContext):
-        print("=== LOCKSTEP COMPILER FRONTEND ===")
-        print("Parsing program...\n")
+        self._print("=== LOCKSTEP COMPILER FRONTEND ===")
+        self._print("Parsing program...\n")
         return self.visitChildren(ctx)
 
     def visitStructDecl(self, ctx: LockstepParser.StructDeclContext):
         name = ctx.ID().getText()
-        print(f"[Struct] Discovered: {name}")
+        self.structs.append(name)
+        self._print(f"[Struct] Discovered: {name}")
         return self.visitChildren(ctx)
 
     def visitPureDecl(self, ctx: LockstepParser.PureDeclContext):
         name = ctx.ID().getText()
         ret_type = ctx.typeName().getText()
-        print(f"[Pure Function] {name} -> {ret_type}")
+        self._print(f"[Pure Function] {name} -> {ret_type}")
         return self.visitChildren(ctx)
 
     def visitShaderDecl(self, ctx: LockstepParser.ShaderDeclContext):
         name = ctx.ID().getText()
-        print(f"\n[Shader Kernel] {name}")
+        params = []
+        self._print(f"\n[Shader Kernel] {name}")
         if ctx.paramList():
             for param in ctx.paramList().param():
                 modifier = param.getChild(0).getText()
                 p_type = param.typeName().getText()
                 p_name = param.ID().getText()
-                print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
+                params.append({"modifier": modifier, "type": p_type, "name": p_name})
+                self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
+        self.shaders.append({"name": name, "params": params})
         return self.visitChildren(ctx)
 
     def visitPipelineDecl(self, ctx: LockstepParser.PipelineDeclContext):
         name = ctx.ID().getText()
-        print(f"\n[Pipeline Topology] {name}")
+        self._print(f"\n[Pipeline Topology] {name}")
         return self.visitChildren(ctx)
 
     def visitStreamDecl(self, ctx: LockstepParser.StreamDeclContext):
         s_type = ctx.typeName().getText()
         capacity = ctx.INT().getText()
         name = ctx.ID().getText()
-        print(f"  └─ Stream: {name} <{s_type}, {capacity}>")
+        self.streams.append({"name": name, "type": s_type, "capacity": capacity})
+        self._print(f"  └─ Stream: {name} <{s_type}, {capacity}>")
         return self.visitChildren(ctx)
 
     def visitAccumDecl(self, ctx: LockstepParser.AccumDeclContext):
         a_type = ctx.typeName().getText()
         name = ctx.ID().getText()
-        print(f"  └─ Accumulator: {name} <{a_type}>")
+        self.accumulators.append({"name": name, "type": a_type})
+        self._print(f"  └─ Accumulator: {name} <{a_type}>")
         return self.visitChildren(ctx)
 
     def visitBindBlock(self, ctx: LockstepParser.BindBlockContext):
-        print("  └─ Routing:")
+        self._print("  └─ Routing:")
         for stmt in ctx.bindStmt():
-            print(f"       {stmt.getText()}")
+            self._print(f"       {stmt.getText()}")
         return self.visitChildren(ctx)
+
+
+@dataclass
+class LockstepCompileResult:
+    parse_tree: Any
+    entities: dict[str, Any]
+    diagnostics: list[tuple[int, int, str]] = field(default_factory=list)
 
 
 class ParseErrorCollector(ErrorListener):
@@ -91,7 +118,7 @@ class LockstepCompileError(Exception):
         return summary if not details else f"{summary}\n{details}"
 
 
-def compile_lockstep(source_code: str):
+def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileResult:
     input_stream = InputStream(source_code)
     lexer = LockstepLexer(input_stream)
     error_listener = ParseErrorCollector()
@@ -107,8 +134,18 @@ def compile_lockstep(source_code: str):
     if error_listener.errors:
         raise LockstepCompileError(error_listener.errors)
 
-    visitor = LockstepDebugVisitor()
+    visitor = LockstepDebugVisitor(verbose=verbose)
     visitor.visit(tree)
+    return LockstepCompileResult(
+        parse_tree=tree,
+        entities={
+            "structs": visitor.structs,
+            "shaders": visitor.shaders,
+            "streams": visitor.streams,
+            "accumulators": visitor.accumulators,
+        },
+        diagnostics=[],
+    )
 
 
 TEST_SOURCE = """
