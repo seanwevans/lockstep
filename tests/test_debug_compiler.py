@@ -47,6 +47,9 @@ def _install_fake_generated_modules(monkeypatch):
         class ShaderDeclContext:
             pass
 
+        class FilterDeclContext:
+            pass
+
         class PipelineDeclContext:
             pass
 
@@ -54,6 +57,9 @@ def _install_fake_generated_modules(monkeypatch):
             pass
 
         class AccumDeclContext:
+            pass
+
+        class UniformDeclContext:
             pass
 
         class BindBlockContext:
@@ -206,8 +212,12 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
             self.verbose = verbose
             self.structs = ["Vec3"]
             self.shaders = [{"name": "ApplyGravity", "params": []}]
+            self.filters = [{"name": "OnlyActive", "params": []}]
+            self.pure_functions = [{"name": "add", "return_type": "Vec3"}]
             self.streams = [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
             self.accumulators = [{"name": "energy", "type": "float"}]
+            self.uniforms = [{"name": "dt", "type": "float", "initializer": "0.016"}]
+            self.bind_routes = ["final=ApplyGravity(raw,final,energy,dt);"]
             self.diagnostics = [
                 debug_compiler_module.LockstepDiagnostic(
                     severity="warning",
@@ -235,8 +245,12 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     assert result.entities == {
         "structs": ["Vec3"],
         "shaders": [{"name": "ApplyGravity", "params": []}],
+        "filters": [{"name": "OnlyActive", "params": []}],
+        "pure_functions": [{"name": "add", "return_type": "Vec3"}],
         "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
         "accumulators": [{"name": "energy", "type": "float"}],
+        "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
+        "bind_routes": ["final=ApplyGravity(raw,final,energy,dt);"],
     }
     assert result.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
@@ -384,6 +398,7 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
     visitor.visitPureDecl(_ctx(ID=lambda: _token("add"), typeName=lambda: _token("Vec3")))
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()))
+    visitor.visitFilterDecl(_ctx(ID=lambda: _token("OnlyActive"), paramList=lambda: _ParamList()))
     visitor.visitPipelineDecl(_ctx(ID=lambda: _token("Physics")))
     visitor.visitStreamDecl(
         _ctx(
@@ -393,6 +408,13 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
         )
     )
     visitor.visitAccumDecl(_ctx(typeName=lambda: _token("float"), ID=lambda: _token("energy")))
+    visitor.visitUniformDecl(
+        _ctx(
+            typeName=lambda: _token("float"),
+            ID=lambda: _token("dt"),
+            expr=lambda: _token("0.016"),
+        )
+    )
     visitor.visitBindBlock(_ctx(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")]))
 
     stdout = capsys.readouterr().out
@@ -402,8 +424,10 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert "[Shader Kernel] ApplyGravity" in stdout
     assert "Param: (in) Vec3 pos" in stdout
     assert "[Pipeline Topology] Physics" in stdout
+    assert "[Filter Kernel] OnlyActive" in stdout
     assert "Stream: raw <Vec3, 1000>" in stdout
     assert "Accumulator: energy <float>" in stdout
+    assert "Uniform: dt <float>" in stdout
     assert "Routing:" in stdout
     assert "a=b" in stdout
     assert "c=d" in stdout
@@ -414,8 +438,17 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
             "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
         }
     ]
+    assert visitor.filters == [
+        {
+            "name": "OnlyActive",
+            "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
+        }
+    ]
+    assert visitor.pure_functions == [{"name": "add", "return_type": "Vec3"}]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
+    assert visitor.uniforms == [{"name": "dt", "type": "float", "initializer": "0.016"}]
+    assert visitor.bind_routes == ["a=b", "c=d"]
     assert visitor.diagnostics == []
 
 
@@ -424,6 +457,20 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
 
     visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
+    visitor.visitPureDecl(
+        _ctx(start_line=4, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+    )
+    visitor.visitPureDecl(
+        _ctx(start_line=5, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+    )
+    visitor.visitFilterDecl(_ctx(start_line=6, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
+    visitor.visitFilterDecl(_ctx(start_line=7, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
+    visitor.visitUniformDecl(
+        _ctx(start_line=8, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+    )
+    visitor.visitUniformDecl(
+        _ctx(start_line=9, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+    )
     visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
 
     assert visitor.diagnostics == [
@@ -434,6 +481,30 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             line=3,
             column=1,
             hint="Rename or remove duplicate struct declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK205",
+            message="Pure function 'add' is redeclared.",
+            line=5,
+            column=1,
+            hint="Rename or remove duplicate pure function declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK206",
+            message="Filter 'f' is redeclared.",
+            line=7,
+            column=1,
+            hint="Rename or remove duplicate filter declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK207",
+            message="Uniform 'dt' is redeclared.",
+            line=9,
+            column=1,
+            hint="Each uniform in a pipeline should have a unique name.",
         ),
         debug_compiler_module.LockstepDiagnostic(
             severity="info",
@@ -451,6 +522,24 @@ def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": []}]
+
+
+def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
+    visitor = debug_compiler_module.LockstepDebugVisitor(
+        verbose=False,
+        normalize_bind_routes=True,
+    )
+
+    class _BindStmt:
+        def __init__(self, text):
+            self._text = text
+
+        def getText(self):
+            return self._text
+
+    visitor.visitBindBlock(_ctx(bindStmt=lambda: [_BindStmt(" a   =b(c , d ) ; ")]))
+
+    assert visitor.bind_routes == ["a =b(c , d ) ;"]
 
 
 def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
