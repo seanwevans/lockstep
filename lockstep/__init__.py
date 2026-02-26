@@ -1,20 +1,14 @@
-import sys
-
-from lockstep import (
+from .api import LockstepCompileResult, compile_lockstep
+from .cli import build_arg_parser, run_cli
+from .diagnostics import (
     LockstepCompileError,
-    LockstepCompileResult,
-    LockstepDebugVisitor,
     LockstepDiagnostic,
-    LockstepSemanticValidator,
-    ParseErrorCollector,
-    build_arg_parser,
-    compile_lockstep,
-    create_parse_tree,
     format_compile_error_message,
     format_diagnostic_location,
-    run_cli,
-    validate_semantics,
 )
+from .entities import LockstepDebugVisitor
+from .parser import ParseErrorCollector, create_parse_tree
+from .semantic import LockstepSemanticValidator, validate_semantics
 
 __all__ = [
     "LockstepCompileError",
@@ -31,7 +25,3 @@ __all__ = [
     "run_cli",
     "validate_semantics",
 ]
-
-
-if __name__ == "__main__":
-    sys.exit(run_cli())

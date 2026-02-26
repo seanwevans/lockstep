@@ -125,6 +125,41 @@ def debug_compiler_module(monkeypatch):
     return importlib.import_module("debug_compiler")
 
 
+@pytest.fixture
+def api_module(monkeypatch):
+    _install_fake_generated_modules(monkeypatch)
+    sys.modules.pop("lockstep.api", None)
+    return importlib.import_module("lockstep.api")
+
+
+@pytest.fixture
+def parser_module(monkeypatch):
+    _install_fake_generated_modules(monkeypatch)
+    sys.modules.pop("lockstep.parser", None)
+    return importlib.import_module("lockstep.parser")
+
+
+@pytest.fixture
+def entities_module(monkeypatch):
+    _install_fake_generated_modules(monkeypatch)
+    sys.modules.pop("lockstep.entities", None)
+    return importlib.import_module("lockstep.entities")
+
+
+@pytest.fixture
+def cli_module(monkeypatch):
+    _install_fake_generated_modules(monkeypatch)
+    sys.modules.pop("lockstep.cli", None)
+    return importlib.import_module("lockstep.cli")
+
+
+@pytest.fixture
+def semantic_module(monkeypatch):
+    _install_fake_generated_modules(monkeypatch)
+    sys.modules.pop("lockstep.semantic", None)
+    return importlib.import_module("lockstep.semantic")
+
+
 def _diagnostic(module, line, column, message, *, severity="error", code="LCK001"):
     return module.LockstepDiagnostic(
         severity=severity,
@@ -154,12 +189,12 @@ def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_modul
     )
 
 
-def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
-    collector = debug_compiler_module.ParseErrorCollector()
+def test_parse_error_collector_captures_diagnostic(parser_module):
+    collector = parser_module.ParseErrorCollector()
     collector.syntaxError(None, None, 12, 7, "unexpected token", None)
 
     assert collector.errors == [
-        debug_compiler_module.LockstepDiagnostic(
+        parser_module.LockstepDiagnostic(
             severity="error",
             code="LCK001",
             message="unexpected token",
@@ -170,9 +205,7 @@ def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
     ]
 
 
-def test_compile_lockstep_raises_when_parser_reports_errors(
-    debug_compiler_module, monkeypatch
-):
+def test_compile_lockstep_raises_when_parser_reports_errors(api_module, monkeypatch):
     class FailingParser:
         def __init__(self, stream):
             self._listeners = []
@@ -188,16 +221,14 @@ def test_compile_lockstep_raises_when_parser_reports_errors(
                 listener.syntaxError(None, None, 3, 5, "mismatched input", None)
             return object()
 
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", FailingParser)
+    monkeypatch.setattr("lockstep.parser.CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr("lockstep.parser.LockstepParser", FailingParser)
 
-    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
-        debug_compiler_module.compile_lockstep("pipeline P { }")
+    with pytest.raises(api_module.LockstepCompileError) as exc_info:
+        api_module.compile_lockstep("pipeline P { }")
 
     assert exc_info.value.errors == [
-        debug_compiler_module.LockstepDiagnostic(
+        api_module.LockstepDiagnostic(
             severity="error",
             code="LCK001",
             message="mismatched input",
@@ -209,7 +240,7 @@ def test_compile_lockstep_raises_when_parser_reports_errors(
     assert exc_info.value.diagnostics == exc_info.value.errors
 
 
-def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypatch):
+def test_compile_lockstep_visits_tree_on_success(api_module, monkeypatch):
     class SuccessParser:
         def __init__(self, stream):
             self._listeners = []
@@ -237,7 +268,7 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
             self.uniforms = [{"name": "dt", "type": "float", "initializer": "0.016"}]
             self.bind_routes = ["final=ApplyGravity(raw,final,energy,dt);"]
             self.diagnostics = [
-                debug_compiler_module.LockstepDiagnostic(
+                api_module.LockstepDiagnostic(
                     severity="warning",
                     code="LCK203",
                     message="Stream 'raw' is redeclared.",
@@ -250,13 +281,11 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
         def visit(self, tree):
             visited["tree"] = tree
 
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
+    monkeypatch.setattr("lockstep.parser.CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr("lockstep.parser.LockstepParser", SuccessParser)
+    monkeypatch.setattr(api_module, "LockstepDebugVisitor", SpyVisitor)
 
-    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+    result = api_module.compile_lockstep("pipeline P { }", verbose=False)
 
     assert visited["tree"] == "TREE"
     assert result.parse_tree == "TREE"
@@ -271,7 +300,7 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
         "bind_routes": ["final=ApplyGravity(raw,final,energy,dt);"],
     }
     assert result.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        api_module.LockstepDiagnostic(
             severity="warning",
             code="LCK203",
             message="Stream 'raw' is redeclared.",
@@ -282,9 +311,7 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     ]
 
 
-def test_compile_lockstep_runs_semantic_validation_phase(
-    debug_compiler_module, monkeypatch
-):
+def test_compile_lockstep_runs_semantic_validation_phase(api_module, monkeypatch):
     class SuccessParser:
         def __init__(self, stream):
             self._listeners = []
@@ -298,15 +325,13 @@ def test_compile_lockstep_runs_semantic_validation_phase(
         def program(self):
             return "TREE"
 
+    monkeypatch.setattr("lockstep.parser.CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr("lockstep.parser.LockstepParser", SuccessParser)
     monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(
-        debug_compiler_module,
+        api_module,
         "validate_semantics",
         lambda parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
+            api_module.LockstepDiagnostic(
                 severity="info",
                 code="LCK301",
                 message=f"validated {parse_tree}",
@@ -317,10 +342,10 @@ def test_compile_lockstep_runs_semantic_validation_phase(
         ],
     )
 
-    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+    result = api_module.compile_lockstep("pipeline P { }", verbose=False)
 
     assert result.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        api_module.LockstepDiagnostic(
             severity="info",
             code="LCK301",
             message="validated TREE",
@@ -331,9 +356,7 @@ def test_compile_lockstep_runs_semantic_validation_phase(
     ]
 
 
-def test_compile_lockstep_raises_for_semantic_errors(
-    debug_compiler_module, monkeypatch
-):
+def test_compile_lockstep_raises_for_semantic_errors(api_module, monkeypatch):
     class SuccessParser:
         def __init__(self, stream):
             self._listeners = []
@@ -347,15 +370,13 @@ def test_compile_lockstep_raises_for_semantic_errors(
         def program(self):
             return "TREE"
 
+    monkeypatch.setattr("lockstep.parser.CommonTokenStream", lambda lexer: object())
+    monkeypatch.setattr("lockstep.parser.LockstepParser", SuccessParser)
     monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(
-        debug_compiler_module,
+        api_module,
         "validate_semantics",
         lambda _parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
+            api_module.LockstepDiagnostic(
                 severity="error",
                 code="LCK401",
                 message="semantic problem",
@@ -366,8 +387,8 @@ def test_compile_lockstep_raises_for_semantic_errors(
         ],
     )
 
-    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
-        debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+    with pytest.raises(api_module.LockstepCompileError) as exc_info:
+        api_module.compile_lockstep("pipeline P { }", verbose=False)
 
     assert str(exc_info.value) == (
         "Compilation failed with 1 semantic error.\nline 5:2 semantic problem"
@@ -382,8 +403,8 @@ def _ctx(start_line=0, start_col=0, **kwargs):
     return types.SimpleNamespace(start=types.SimpleNamespace(line=start_line, column=start_col), **kwargs)
 
 
-def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor()
+def test_visitor_methods_print_expected_output(entities_module, capsys):
+    visitor = entities_module.LockstepDebugVisitor()
 
     class _Param:
         def __init__(self, modifier, p_type, p_name):
@@ -470,8 +491,8 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert visitor.diagnostics == []
 
 
-def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_module):
-    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+def test_visitor_emits_diagnostics_for_non_fatal_observations(entities_module):
+    visitor = entities_module.LockstepDebugVisitor(verbose=False)
 
     visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
@@ -492,7 +513,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
 
     assert visitor.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        entities_module.LockstepDiagnostic(
             severity="warning",
             code="LCK201",
             message="Struct 'Vec3' is redeclared.",
@@ -500,7 +521,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate struct declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        entities_module.LockstepDiagnostic(
             severity="warning",
             code="LCK205",
             message="Pure function 'add' is redeclared.",
@@ -508,7 +529,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate pure function declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        entities_module.LockstepDiagnostic(
             severity="warning",
             code="LCK206",
             message="Filter 'f' is redeclared.",
@@ -516,7 +537,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate filter declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        entities_module.LockstepDiagnostic(
             severity="warning",
             code="LCK207",
             message="Uniform 'dt' is redeclared.",
@@ -524,7 +545,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Each uniform in a pipeline should have a unique name.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        entities_module.LockstepDiagnostic(
             severity="info",
             code="LCK101",
             message="Bind block is empty; pipeline has no executable routes.",
@@ -535,15 +556,15 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     ]
 
 
-def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor()
+def test_visitor_shader_decl_without_param_list(entities_module, capsys):
+    visitor = entities_module.LockstepDebugVisitor()
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": []}]
 
 
-def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
-    visitor = debug_compiler_module.LockstepDebugVisitor(
+def test_visitor_bind_routes_can_be_normalized(entities_module):
+    visitor = entities_module.LockstepDebugVisitor(
         verbose=False,
         normalize_bind_routes=True,
     )
@@ -560,8 +581,8 @@ def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
     assert visitor.bind_routes == ["a =b(c , d ) ;"]
 
 
-def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+def test_visitor_can_run_without_printing(entities_module, capsys):
+    visitor = entities_module.LockstepDebugVisitor(verbose=False)
     visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
 
     assert capsys.readouterr().out == ""
@@ -581,29 +602,42 @@ def test_module_main_success_path(monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
-    _install_fake_generated_modules(monkeypatch)
-    sys.modules["LockstepParser"].LockstepParser.error_to_emit = (7, 9, "bad syntax")
-    sys.modules.pop("debug_compiler", None)
-    monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
-    monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
+def test_module_main_error_path_exits_with_stderr(debug_compiler_module):
+    stderr = io.StringIO()
 
-    with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("debug_compiler", run_name="__main__")
+    def failing_compiler(_source):
+        raise debug_compiler_module.LockstepCompileError(
+            [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="error",
+                    code="LCK001",
+                    message="bad syntax",
+                    line=7,
+                    column=9,
+                    hint="Fix syntax errors before semantic analysis can continue.",
+                )
+            ]
+        )
 
-    assert exc_info.value.code == 1
-    stderr = capsys.readouterr().err
-    assert "Compilation failed with 1 parse error." in stderr
-    assert "line 7:9 bad syntax" in stderr
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline P { }"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    assert exit_code == 1
+    assert "Compilation failed with 1 parse error." in stderr.getvalue()
+    assert "line 7:9 bad syntax" in stderr.getvalue()
 
 
-def test_run_cli_reads_source_from_stdin_when_path_omitted(debug_compiler_module):
+def test_run_cli_reads_source_from_stdin_when_path_omitted(cli_module):
     captured = {}
 
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         [],
         stdin=io.StringIO("pipeline FromStdin { }"),
         compiler=fake_compiler,
@@ -613,7 +647,7 @@ def test_run_cli_reads_source_from_stdin_when_path_omitted(debug_compiler_module
     assert captured["source"] == "pipeline FromStdin { }"
 
 
-def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
+def test_run_cli_reads_source_from_path(cli_module, tmp_path):
     source_file = tmp_path / "sample.lock"
     source_file.write_text("pipeline FromFile { }", encoding="utf-8")
     captured = {}
@@ -621,7 +655,7 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         [str(source_file)], compiler=fake_compiler
     )
 
@@ -629,11 +663,13 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     assert captured["source"] == "pipeline FromFile { }"
 
 
-def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
+def test_run_cli_returns_non_zero_and_writes_errors(cli_module):
+    from lockstep.diagnostics import LockstepDiagnostic
+
     def failing_compiler(_source):
-        raise debug_compiler_module.LockstepCompileError(
+        raise cli_module.LockstepCompileError(
             [
-                debug_compiler_module.LockstepDiagnostic(
+                LockstepDiagnostic(
                     severity="error",
                     code="LCK001",
                     message="unexpected",
@@ -645,7 +681,7 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
         )
 
     stderr = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         [],
         stdin=io.StringIO("pipeline Broken {"),
         stderr=stderr,
@@ -659,7 +695,7 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     ]
 
 
-def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
+def test_run_cli_returns_non_zero_for_missing_path(cli_module, tmp_path):
     missing = tmp_path / "missing.lock"
     stderr = io.StringIO()
     called = {"compiler": False}
@@ -667,7 +703,7 @@ def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_pa
     def fake_compiler(_source):
         called["compiler"] = True
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         [str(missing)],
         stderr=stderr,
         compiler=fake_compiler,
@@ -678,7 +714,7 @@ def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_pa
     assert f"Unable to read '{missing}': file not found." in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, monkeypatch):
+def test_run_cli_returns_non_zero_for_unreadable_path(cli_module, monkeypatch):
     stderr = io.StringIO()
     called = {"compiler": False}
 
@@ -688,9 +724,9 @@ def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, mon
     def raise_permission_error(_self, encoding):
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr(debug_compiler_module.Path, "read_text", raise_permission_error)
+    monkeypatch.setattr(cli_module.Path, "read_text", raise_permission_error)
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         ["locked.lock"],
         stderr=stderr,
         compiler=fake_compiler,
@@ -701,7 +737,7 @@ def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, mon
     assert "Unable to read 'locked.lock': permission denied." in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_path):
+def test_run_cli_returns_non_zero_for_invalid_utf8(cli_module, tmp_path):
     bad_source = tmp_path / "invalid.lock"
     bad_source.write_bytes(b"\xff\xfe\xfa")
     stderr = io.StringIO()
@@ -710,7 +746,7 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     def fake_compiler(_source):
         called["compiler"] = True
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = cli_module.run_cli(
         [str(bad_source)],
         stderr=stderr,
         compiler=fake_compiler,
@@ -721,8 +757,8 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
 
 
-def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_undefined_identifier_in_bind(semantic_module):
+    validator = semantic_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             {"name": "inp", "type": "Vec3", "modifier": "in"},
@@ -743,7 +779,7 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
     validator.visitBindStmt(bind_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        semantic_module.LockstepDiagnostic(
             severity="error",
             code="LCK301",
             message="Undefined identifier 'missing_stream'.",
@@ -754,8 +790,8 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
     ]
 
 
-def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_arity_and_type_errors(semantic_module):
+    validator = semantic_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             {"name": "inp", "type": "Vec3", "modifier": "in"},
@@ -790,8 +826,8 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
     assert "expected float, got int" in validator.diagnostics[1].message
 
 
-def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_duplicate_pipeline_symbols(semantic_module):
+    validator = semantic_module.LockstepSemanticValidator()
     validator._push_scope()
 
     duplicate_ctx = _ctx(start_line=7, start_col=1, ID=lambda: _token("energy"), typeName=lambda: _token("float"))
@@ -799,7 +835,7 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     validator.visitUniformDecl(duplicate_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        semantic_module.LockstepDiagnostic(
             severity="error",
             code="LCK306",
             message="Duplicate declaration for 'energy' in the same scope.",
@@ -810,8 +846,8 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     ]
 
 
-def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_fold_reference_errors(semantic_module):
+    validator = semantic_module.LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
     validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
