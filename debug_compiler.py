@@ -350,9 +350,14 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
     try:
         compiler(source)
     except LockstepCompileError as err:
-        print(str(err), file=stderr)
+        count = len(err.errors)
+        suffix = "" if count == 1 else "s"
+        print(
+            f"Compilation failed with {count} {err.phase} error{suffix}.",
+            file=stderr,
+        )
         for error in err.errors:
-            print(f"  line {error.line}:{error.column} {error.message}", file=stderr)
+            print(f"line {error.line}:{error.column} {error.message}", file=stderr)
         return 1
 
     return 0
