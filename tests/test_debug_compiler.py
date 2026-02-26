@@ -59,6 +59,24 @@ def _install_fake_generated_modules(monkeypatch):
         class BindBlockContext:
             pass
 
+        class BindStmtContext:
+            pass
+
+        class FilterDeclContext:
+            pass
+
+        class UniformDeclContext:
+            pass
+
+        class VarDeclContext:
+            pass
+
+        class PrimaryExprContext:
+            pass
+
+        class LvalueContext:
+            pass
+
         def __init__(self, stream):
             self.stream = stream
             self._listeners = []
@@ -610,3 +628,122 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert exit_code == 1
     assert called["compiler"] is False
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
+
+
+def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "outp", "type": "Vec3", "modifier": "out"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    bind_ctx = _ctx(
+        start_line=12,
+        start_col=3,
+        ID=lambda: [_token("out_stream"), _token("Apply"), _token("missing_stream"), _token("out_stream")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(bind_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK301",
+            message="Undefined identifier 'missing_stream'.",
+            line=12,
+            column=3,
+            hint="Declare pipeline symbols before passing them to bind.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "energy", "type": "float", "modifier": "accum"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("acc", "int", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    arity_ctx = _ctx(
+        start_line=20,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(arity_ctx)
+
+    type_ctx = _ctx(
+        start_line=21,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("acc")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(type_ctx)
+
+    assert validator.diagnostics[0].code == "LCK304"
+    assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
+    assert validator.diagnostics[1].code == "LCK305"
+    assert "expected float, got int" in validator.diagnostics[1].message
+
+
+def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    duplicate_ctx = _ctx(start_line=7, start_col=1, ID=lambda: _token("energy"), typeName=lambda: _token("float"))
+    validator.visitAccumDecl(duplicate_ctx)
+    validator.visitUniformDecl(duplicate_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK306",
+            message="Duplicate declaration for 'energy' in the same scope.",
+            line=7,
+            column=1,
+            hint="Rename one declaration or move it to a different scope.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    non_acc_fold_ctx = _ctx(
+        start_line=30,
+        start_col=6,
+        ID=lambda: [_token("u0"), _token("sum"), _token("not_acc")],
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(non_acc_fold_ctx)
+
+    mismatched_type_ctx = _ctx(
+        start_line=31,
+        start_col=6,
+        ID=lambda: [_token("u1"), _token("sum"), _token("acc_energy")],
+        argList=lambda: None,
+        typeName=lambda: _token("int"),
+    )
+    validator.visitBindStmt(mismatched_type_ctx)
+
+    assert validator.diagnostics[0].code == "LCK403"
+    assert "must reference an accumulator" in validator.diagnostics[0].message
+    assert validator.diagnostics[1].code == "LCK404"
+    assert "has type int" in validator.diagnostics[1].message
