@@ -202,19 +202,38 @@ class ParseErrorCollector(ErrorListener):
 class LockstepCompileError(Exception):
     """Raised when the Lockstep source contains parse errors."""
 
-    def __init__(self, errors, diagnostics=None):
+    def __init__(self, errors, diagnostics=None, *, phase: str = "parse"):
         self.errors = errors
         self.diagnostics = diagnostics or []
+        self.phase = phase
         super().__init__(self._format_message())
 
     def _format_message(self):
         count = len(self.errors)
         suffix = "" if count == 1 else "s"
-        summary = f"Compilation failed with {count} parse error{suffix}."
+        summary = f"Compilation failed with {count} {self.phase} error{suffix}."
         details = "\n".join(
             f"line {error.line}:{error.column} {error.message}" for error in self.errors
         )
         return summary if not details else f"{summary}\n{details}"
+
+
+class LockstepSemanticValidator(LockstepVisitor):
+    """Runs semantic checks on a parsed Lockstep program."""
+
+    def __init__(self):
+        self.diagnostics: list[LockstepDiagnostic] = []
+
+    def validate(self, tree):
+        self.visit(tree)
+        return self.diagnostics
+
+
+def validate_semantics(parse_tree: Any) -> list[LockstepDiagnostic]:
+    """Validate semantic constraints after syntactic parsing succeeds."""
+
+    validator = LockstepSemanticValidator()
+    return validator.validate(parse_tree)
 
 
 def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileResult:
@@ -233,6 +252,19 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
     if error_listener.errors:
         raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
 
+    semantic_diagnostics = validate_semantics(tree)
+    semantic_errors = [
+        diagnostic
+        for diagnostic in semantic_diagnostics
+        if diagnostic.severity == "error"
+    ]
+    if semantic_errors:
+        raise LockstepCompileError(
+            semantic_errors,
+            diagnostics=semantic_diagnostics,
+            phase="semantic",
+        )
+
     visitor = LockstepDebugVisitor(verbose=verbose)
     visitor.visit(tree)
     return LockstepCompileResult(
@@ -243,7 +275,7 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
             "streams": visitor.streams,
             "accumulators": visitor.accumulators,
         },
-        diagnostics=visitor.diagnostics,
+        diagnostics=[*semantic_diagnostics, *visitor.diagnostics],
     )
 
 

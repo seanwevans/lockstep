@@ -250,6 +250,98 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     ]
 
 
+def test_compile_lockstep_runs_semantic_validation_phase(
+    debug_compiler_module, monkeypatch
+):
+    class SuccessParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
+    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
+    monkeypatch.setattr(
+        debug_compiler_module,
+        "validate_semantics",
+        lambda parse_tree: [
+            debug_compiler_module.LockstepDiagnostic(
+                severity="info",
+                code="LCK301",
+                message=f"validated {parse_tree}",
+                line=1,
+                column=0,
+                hint="semantic phase ran",
+            )
+        ],
+    )
+
+    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+
+    assert result.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="info",
+            code="LCK301",
+            message="validated TREE",
+            line=1,
+            column=0,
+            hint="semantic phase ran",
+        )
+    ]
+
+
+def test_compile_lockstep_raises_for_semantic_errors(
+    debug_compiler_module, monkeypatch
+):
+    class SuccessParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
+    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
+    monkeypatch.setattr(
+        debug_compiler_module,
+        "validate_semantics",
+        lambda _parse_tree: [
+            debug_compiler_module.LockstepDiagnostic(
+                severity="error",
+                code="LCK401",
+                message="semantic problem",
+                line=5,
+                column=2,
+                hint="fix semantic issue",
+            )
+        ],
+    )
+
+    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
+        debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+
+    assert str(exc_info.value) == (
+        "Compilation failed with 1 semantic error.\nline 5:2 semantic problem"
+    )
+
+
 def _token(text):
     return types.SimpleNamespace(getText=lambda: text)
 
