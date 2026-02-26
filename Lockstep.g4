@@ -76,7 +76,13 @@ lvalue: ID ('.' ID)*;
 typeName: ID;
 
 ID: [a-zA-Z_][a-zA-Z0-9_]*;
+FLOAT
+    : [0-9]+ '.' [0-9]* EXPONENT?
+    | '.' [0-9]+ EXPONENT?
+    | [0-9]+ EXPONENT
+    ;
 INT: [0-9]+;
-FLOAT: [0-9]+ '.' [0-9]+;
+
+fragment EXPONENT: [eE] [+-]? [0-9]+;
 WS: [ \t\r\n]+ -> skip;
 COMMENT: '//' ~[\r\n]* -> skip;
