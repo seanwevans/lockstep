@@ -564,8 +564,10 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     )
 
     assert exit_code == 1
-    assert "Compilation failed with 1 parse error." in stderr.getvalue()
-    assert "line 4:2 unexpected" in stderr.getvalue()
+    assert stderr.getvalue().splitlines() == [
+        "Compilation failed with 1 parse error.",
+        "line 4:2 unexpected",
+    ]
 
 
 def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
