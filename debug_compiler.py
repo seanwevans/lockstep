@@ -26,17 +26,25 @@ class LockstepDiagnostic:
 class LockstepDebugVisitor(LockstepVisitor):
     """Walks the Parse Tree and extracts the pipeline architecture."""
 
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, *, normalize_bind_routes: bool = False):
         self.verbose = verbose
+        self.normalize_bind_routes = normalize_bind_routes
         self.structs = []
         self.shaders = []
+        self.filters = []
+        self.pure_functions = []
         self.streams = []
         self.accumulators = []
+        self.uniforms = []
+        self.bind_routes = []
         self.diagnostics: list[LockstepDiagnostic] = []
         self._seen_structs = set()
         self._seen_shaders = set()
+        self._seen_filters = set()
+        self._seen_pure_functions = set()
         self._seen_streams = set()
         self._seen_accumulators = set()
+        self._seen_uniforms = set()
 
     def _print(self, message: str):
         if self.verbose:
@@ -76,7 +84,49 @@ class LockstepDebugVisitor(LockstepVisitor):
     def visitPureDecl(self, ctx: LockstepParser.PureDeclContext):
         name = ctx.ID().getText()
         ret_type = ctx.typeName().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_pure_functions:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK205",
+                    message=f"Pure function '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Rename or remove duplicate pure function declarations.",
+                )
+            )
+        self._seen_pure_functions.add(name)
+        self.pure_functions.append({"name": name, "return_type": ret_type})
         self._print(f"[Pure Function] {name} -> {ret_type}")
+        return self.visitChildren(ctx)
+
+    def visitFilterDecl(self, ctx: LockstepParser.FilterDeclContext):
+        name = ctx.ID().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_filters:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK206",
+                    message=f"Filter '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Rename or remove duplicate filter declarations.",
+                )
+            )
+        self._seen_filters.add(name)
+
+        params = []
+        self._print(f"\n[Filter Kernel] {name}")
+        if ctx.paramList():
+            for param in ctx.paramList().param():
+                modifier = param.getChild(0).getText()
+                p_type = param.typeName().getText()
+                p_name = param.ID().getText()
+                params.append({"modifier": modifier, "type": p_type, "name": p_name})
+                self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
+        self.filters.append({"name": name, "params": params})
         return self.visitChildren(ctx)
 
     def visitShaderDecl(self, ctx: LockstepParser.ShaderDeclContext):
@@ -152,6 +202,30 @@ class LockstepDebugVisitor(LockstepVisitor):
         self._print(f"  └─ Accumulator: {name} <{a_type}>")
         return self.visitChildren(ctx)
 
+    def visitUniformDecl(self, ctx: LockstepParser.UniformDeclContext):
+        u_type = ctx.typeName().getText()
+        name = ctx.ID().getText()
+        line, column = self._line_col(ctx)
+        if name in self._seen_uniforms:
+            self.diagnostics.append(
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK207",
+                    message=f"Uniform '{name}' is redeclared.",
+                    line=line,
+                    column=column,
+                    hint="Each uniform in a pipeline should have a unique name.",
+                )
+            )
+        self._seen_uniforms.add(name)
+
+        initializer = None
+        if ctx.expr():
+            initializer = ctx.expr().getText()
+        self.uniforms.append({"name": name, "type": u_type, "initializer": initializer})
+        self._print(f"  └─ Uniform: {name} <{u_type}>")
+        return self.visitChildren(ctx)
+
     def visitBindBlock(self, ctx: LockstepParser.BindBlockContext):
         self._print("  └─ Routing:")
         bind_statements = ctx.bindStmt()
@@ -168,7 +242,11 @@ class LockstepDebugVisitor(LockstepVisitor):
                 )
             )
         for stmt in bind_statements:
-            self._print(f"       {stmt.getText()}")
+            route = stmt.getText()
+            if self.normalize_bind_routes:
+                route = " ".join(route.split())
+            self.bind_routes.append(route)
+            self._print(f"       {route}")
         return self.visitChildren(ctx)
 
 
@@ -609,8 +687,12 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
         entities={
             "structs": visitor.structs,
             "shaders": visitor.shaders,
+            "filters": visitor.filters,
+            "pure_functions": visitor.pure_functions,
             "streams": visitor.streams,
             "accumulators": visitor.accumulators,
+            "uniforms": visitor.uniforms,
+            "bind_routes": visitor.bind_routes,
         },
         diagnostics=[*semantic_diagnostics, *visitor.diagnostics],
     )
