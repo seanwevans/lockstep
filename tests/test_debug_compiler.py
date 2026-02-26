@@ -47,6 +47,9 @@ def _install_fake_generated_modules(monkeypatch):
         class ShaderDeclContext:
             pass
 
+        class FilterDeclContext:
+            pass
+
         class PipelineDeclContext:
             pass
 
@@ -56,7 +59,28 @@ def _install_fake_generated_modules(monkeypatch):
         class AccumDeclContext:
             pass
 
+        class UniformDeclContext:
+            pass
+
         class BindBlockContext:
+            pass
+
+        class BindStmtContext:
+            pass
+
+        class FilterDeclContext:
+            pass
+
+        class UniformDeclContext:
+            pass
+
+        class VarDeclContext:
+            pass
+
+        class PrimaryExprContext:
+            pass
+
+        class LvalueContext:
             pass
 
         def __init__(self, stream):
@@ -206,8 +230,12 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
             self.verbose = verbose
             self.structs = ["Vec3"]
             self.shaders = [{"name": "ApplyGravity", "params": []}]
+            self.filters = [{"name": "OnlyActive", "params": []}]
+            self.pure_functions = [{"name": "add", "return_type": "Vec3"}]
             self.streams = [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
             self.accumulators = [{"name": "energy", "type": "float"}]
+            self.uniforms = [{"name": "dt", "type": "float", "initializer": "0.016"}]
+            self.bind_routes = ["final=ApplyGravity(raw,final,energy,dt);"]
             self.diagnostics = [
                 debug_compiler_module.LockstepDiagnostic(
                     severity="warning",
@@ -235,8 +263,12 @@ def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypa
     assert result.entities == {
         "structs": ["Vec3"],
         "shaders": [{"name": "ApplyGravity", "params": []}],
+        "filters": [{"name": "OnlyActive", "params": []}],
+        "pure_functions": [{"name": "add", "return_type": "Vec3"}],
         "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
         "accumulators": [{"name": "energy", "type": "float"}],
+        "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
+        "bind_routes": ["final=ApplyGravity(raw,final,energy,dt);"],
     }
     assert result.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
@@ -384,6 +416,7 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
     visitor.visitPureDecl(_ctx(ID=lambda: _token("add"), typeName=lambda: _token("Vec3")))
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()))
+    visitor.visitFilterDecl(_ctx(ID=lambda: _token("OnlyActive"), paramList=lambda: _ParamList()))
     visitor.visitPipelineDecl(_ctx(ID=lambda: _token("Physics")))
     visitor.visitStreamDecl(
         _ctx(
@@ -393,6 +426,13 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
         )
     )
     visitor.visitAccumDecl(_ctx(typeName=lambda: _token("float"), ID=lambda: _token("energy")))
+    visitor.visitUniformDecl(
+        _ctx(
+            typeName=lambda: _token("float"),
+            ID=lambda: _token("dt"),
+            expr=lambda: _token("0.016"),
+        )
+    )
     visitor.visitBindBlock(_ctx(bindStmt=lambda: [_BindStmt("a=b"), _BindStmt("c=d")]))
 
     stdout = capsys.readouterr().out
@@ -402,8 +442,10 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert "[Shader Kernel] ApplyGravity" in stdout
     assert "Param: (in) Vec3 pos" in stdout
     assert "[Pipeline Topology] Physics" in stdout
+    assert "[Filter Kernel] OnlyActive" in stdout
     assert "Stream: raw <Vec3, 1000>" in stdout
     assert "Accumulator: energy <float>" in stdout
+    assert "Uniform: dt <float>" in stdout
     assert "Routing:" in stdout
     assert "a=b" in stdout
     assert "c=d" in stdout
@@ -414,8 +456,17 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
             "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
         }
     ]
+    assert visitor.filters == [
+        {
+            "name": "OnlyActive",
+            "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
+        }
+    ]
+    assert visitor.pure_functions == [{"name": "add", "return_type": "Vec3"}]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
+    assert visitor.uniforms == [{"name": "dt", "type": "float", "initializer": "0.016"}]
+    assert visitor.bind_routes == ["a=b", "c=d"]
     assert visitor.diagnostics == []
 
 
@@ -424,6 +475,20 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
 
     visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
+    visitor.visitPureDecl(
+        _ctx(start_line=4, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+    )
+    visitor.visitPureDecl(
+        _ctx(start_line=5, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+    )
+    visitor.visitFilterDecl(_ctx(start_line=6, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
+    visitor.visitFilterDecl(_ctx(start_line=7, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
+    visitor.visitUniformDecl(
+        _ctx(start_line=8, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+    )
+    visitor.visitUniformDecl(
+        _ctx(start_line=9, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+    )
     visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
 
     assert visitor.diagnostics == [
@@ -434,6 +499,30 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             line=3,
             column=1,
             hint="Rename or remove duplicate struct declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK205",
+            message="Pure function 'add' is redeclared.",
+            line=5,
+            column=1,
+            hint="Rename or remove duplicate pure function declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK206",
+            message="Filter 'f' is redeclared.",
+            line=7,
+            column=1,
+            hint="Rename or remove duplicate filter declarations.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK207",
+            message="Uniform 'dt' is redeclared.",
+            line=9,
+            column=1,
+            hint="Each uniform in a pipeline should have a unique name.",
         ),
         debug_compiler_module.LockstepDiagnostic(
             severity="info",
@@ -451,6 +540,24 @@ def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": []}]
+
+
+def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
+    visitor = debug_compiler_module.LockstepDebugVisitor(
+        verbose=False,
+        normalize_bind_routes=True,
+    )
+
+    class _BindStmt:
+        def __init__(self, text):
+            self._text = text
+
+        def getText(self):
+            return self._text
+
+    visitor.visitBindBlock(_ctx(bindStmt=lambda: [_BindStmt(" a   =b(c , d ) ; ")]))
+
+    assert visitor.bind_routes == ["a =b(c , d ) ;"]
 
 
 def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
@@ -546,8 +653,10 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     )
 
     assert exit_code == 1
-    assert "Compilation failed with 1 parse error." in stderr.getvalue()
-    assert "line 4:2 unexpected" in stderr.getvalue()
+    assert stderr.getvalue().splitlines() == [
+        "Compilation failed with 1 parse error.",
+        "line 4:2 unexpected",
+    ]
 
 
 def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
@@ -610,3 +719,122 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert exit_code == 1
     assert called["compiler"] is False
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
+
+
+def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "outp", "type": "Vec3", "modifier": "out"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    bind_ctx = _ctx(
+        start_line=12,
+        start_col=3,
+        ID=lambda: [_token("out_stream"), _token("Apply"), _token("missing_stream"), _token("out_stream")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(bind_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK301",
+            message="Undefined identifier 'missing_stream'.",
+            line=12,
+            column=3,
+            hint="Declare pipeline symbols before passing them to bind.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "energy", "type": "float", "modifier": "accum"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("acc", "int", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    arity_ctx = _ctx(
+        start_line=20,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(arity_ctx)
+
+    type_ctx = _ctx(
+        start_line=21,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("acc")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(type_ctx)
+
+    assert validator.diagnostics[0].code == "LCK304"
+    assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
+    assert validator.diagnostics[1].code == "LCK305"
+    assert "expected float, got int" in validator.diagnostics[1].message
+
+
+def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    duplicate_ctx = _ctx(start_line=7, start_col=1, ID=lambda: _token("energy"), typeName=lambda: _token("float"))
+    validator.visitAccumDecl(duplicate_ctx)
+    validator.visitUniformDecl(duplicate_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK306",
+            message="Duplicate declaration for 'energy' in the same scope.",
+            line=7,
+            column=1,
+            hint="Rename one declaration or move it to a different scope.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    non_acc_fold_ctx = _ctx(
+        start_line=30,
+        start_col=6,
+        ID=lambda: [_token("u0"), _token("sum"), _token("not_acc")],
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(non_acc_fold_ctx)
+
+    mismatched_type_ctx = _ctx(
+        start_line=31,
+        start_col=6,
+        ID=lambda: [_token("u1"), _token("sum"), _token("acc_energy")],
+        argList=lambda: None,
+        typeName=lambda: _token("int"),
+    )
+    validator.visitBindStmt(mismatched_type_ctx)
+
+    assert validator.diagnostics[0].code == "LCK403"
+    assert "must reference an accumulator" in validator.diagnostics[0].message
+    assert validator.diagnostics[1].code == "LCK404"
+    assert "has type int" in validator.diagnostics[1].message
