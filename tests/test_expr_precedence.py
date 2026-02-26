@@ -91,3 +91,19 @@ def test_logical_and_binds_tighter_than_or(generated_parser):
     assert "|| (logicalAndExpr" in parsed
     assert "(logicalAndExpr (equalityExpr" in parsed
     assert "&& (equalityExpr" in parsed
+
+
+@pytest.mark.parametrize("literal", ["1.0", "1.", ".5", "1e3", "1.2e-3"])
+def test_numeric_literal_variants_parse(generated_parser, literal):
+    lexer_cls, parser_cls = generated_parser
+    parsed = _parse_expr(literal, lexer_cls, parser_cls)
+
+    assert "(primaryExpr" in parsed
+
+
+def test_numeric_literals_keep_member_access_precedence(generated_parser):
+    lexer_cls, parser_cls = generated_parser
+    parsed = _parse_expr("obj.x + .5", lexer_cls, parser_cls)
+
+    assert "(lvalue obj . x)" in parsed
+    assert "(primaryExpr .5)" in parsed
