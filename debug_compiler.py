@@ -257,6 +257,36 @@ class LockstepCompileResult:
     diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
 
 
+_SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
+
+
+def normalize_diagnostics(
+    diagnostics: list[LockstepDiagnostic],
+) -> list[LockstepDiagnostic]:
+    """Deduplicate and deterministically sort diagnostics."""
+
+    deduped: dict[tuple[str, str, int, int], LockstepDiagnostic] = {}
+    for diagnostic in diagnostics:
+        key = (
+            diagnostic.code,
+            diagnostic.message,
+            diagnostic.line,
+            diagnostic.column,
+        )
+        if key not in deduped:
+            deduped[key] = diagnostic
+
+    return sorted(
+        deduped.values(),
+        key=lambda diagnostic: (
+            diagnostic.line,
+            diagnostic.column,
+            _SEVERITY_PRIORITY.get(diagnostic.severity, 99),
+            diagnostic.code,
+        ),
+    )
+
+
 class ParseErrorCollector(ErrorListener):
     """Collects syntax errors emitted by ANTLR during lex/parse."""
 
@@ -628,10 +658,6 @@ class LockstepSemanticValidator(LockstepVisitor):
                 self._check_expression_identifier(ctx.ID().getText(), ctx)
             return self.visitChildren(ctx)
 
-        if ctx.lvalue():
-            root_identifier = ctx.lvalue().ID(0).getText()
-            self._check_expression_identifier(root_identifier, ctx)
-
         return self.visitChildren(ctx)
 
     def visitLvalue(self, ctx: LockstepParser.LvalueContext):
@@ -667,7 +693,7 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
     if error_listener.errors:
         raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
 
-    semantic_diagnostics = validate_semantics(tree)
+    semantic_diagnostics = normalize_diagnostics(validate_semantics(tree))
     semantic_errors = [
         diagnostic
         for diagnostic in semantic_diagnostics
@@ -682,6 +708,8 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
 
     visitor = LockstepDebugVisitor(verbose=verbose)
     visitor.visit(tree)
+    all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *visitor.diagnostics])
+
     return LockstepCompileResult(
         parse_tree=tree,
         entities={
@@ -694,7 +722,7 @@ def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileR
             "uniforms": visitor.uniforms,
             "bind_routes": visitor.bind_routes,
         },
-        diagnostics=[*semantic_diagnostics, *visitor.diagnostics],
+        diagnostics=all_diagnostics,
     )
 
 
