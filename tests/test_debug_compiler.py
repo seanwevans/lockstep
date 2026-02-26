@@ -77,6 +77,9 @@ def _install_fake_generated_modules(monkeypatch):
         class VarDeclContext:
             pass
 
+        class ParamContext:
+            pass
+
         class PrimaryExprContext:
             pass
 
@@ -838,3 +841,130 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     assert "must reference an accumulator" in validator.diagnostics[0].message
     assert validator.diagnostics[1].code == "LCK404"
     assert "has type int" in validator.diagnostics[1].message
+
+
+@pytest.mark.parametrize(
+    ("visit_method", "ctx_factory", "expected_message", "line", "column"),
+    [
+        (
+            "visitVarDecl",
+            lambda: _ctx(
+                start_line=1,
+                start_col=2,
+                typeName=lambda: _ctx(start_line=1, start_col=2, getText=lambda: "MissingType"),
+                ID=lambda: _token("local_value"),
+            ),
+            "Unknown type 'MissingType' for local variable 'local_value'.",
+            1,
+            2,
+        ),
+        (
+            "visitParam",
+            lambda: _ctx(
+                start_line=2,
+                start_col=4,
+                typeName=lambda: _ctx(start_line=2, start_col=4, getText=lambda: "MissingType"),
+                ID=lambda: _token("input_value"),
+            ),
+            "Unknown type 'MissingType' for parameter 'input_value'.",
+            2,
+            4,
+        ),
+        (
+            "visitStreamDecl",
+            lambda: _ctx(
+                start_line=3,
+                start_col=6,
+                typeName=lambda: _ctx(start_line=3, start_col=6, getText=lambda: "MissingType"),
+                ID=lambda: _token("s0"),
+            ),
+            "Unknown type 'MissingType' for stream 's0'.",
+            3,
+            6,
+        ),
+        (
+            "visitAccumDecl",
+            lambda: _ctx(
+                start_line=4,
+                start_col=8,
+                typeName=lambda: _ctx(start_line=4, start_col=8, getText=lambda: "MissingType"),
+                ID=lambda: _token("acc0"),
+            ),
+            "Unknown type 'MissingType' for accumulator 'acc0'.",
+            4,
+            8,
+        ),
+        (
+            "visitUniformDecl",
+            lambda: _ctx(
+                start_line=5,
+                start_col=10,
+                typeName=lambda: _ctx(start_line=5, start_col=10, getText=lambda: "MissingType"),
+                ID=lambda: _token("u0"),
+            ),
+            "Unknown type 'MissingType' for uniform 'u0'.",
+            5,
+            10,
+        ),
+        (
+            "visitPureDecl",
+            lambda: _ctx(
+                start_line=6,
+                start_col=12,
+                typeName=lambda: _ctx(start_line=6, start_col=12, getText=lambda: "MissingType"),
+                ID=lambda: _token("make_value"),
+            ),
+            "Unknown type 'MissingType' for return type of pure function 'make_value'.",
+            6,
+            12,
+        ),
+    ],
+)
+def test_semantic_validator_reports_unknown_type_across_declarations(
+    debug_compiler_module,
+    visit_method,
+    ctx_factory,
+    expected_message,
+    line,
+    column,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    getattr(validator, visit_method)(ctx_factory())
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK308",
+            message=expected_message,
+            line=line,
+            column=column,
+            hint="Declare the struct type before use or use a built-in scalar type.",
+        )
+    ]
+
+
+def test_semantic_validator_accepts_user_defined_struct_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_decl = _ctx(ID=lambda: _token("Vec3"))
+    non_struct_decl = _ctx(structDecl=lambda: None)
+    program_ctx = _ctx(
+        declaration=lambda: [
+            _ctx(structDecl=lambda: struct_decl),
+            non_struct_decl,
+        ]
+    )
+    validator.visitProgram(program_ctx)
+
+    validator._push_scope()
+    validator.visitStreamDecl(
+        _ctx(
+            typeName=lambda: _ctx(start_line=7, start_col=2, getText=lambda: "Vec3"),
+            ID=lambda: _token("positions"),
+        )
+    )
+
+    assert "Vec3" in validator.type_environment
+    assert all(diag.code != "LCK308" for diag in validator.diagnostics)

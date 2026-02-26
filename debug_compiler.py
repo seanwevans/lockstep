@@ -305,6 +305,7 @@ class LockstepSemanticValidator(LockstepVisitor):
         self.shaders: dict[str, list[dict[str, str]]] = {}
         self.filters: dict[str, list[dict[str, str]]] = {}
         self.current_shader_name: str | None = None
+        self.type_environment: set[str] = {"int", "float"}
 
     def _line_col(self, ctx) -> tuple[int, int]:
         token = getattr(ctx, "start", None)
@@ -397,6 +398,18 @@ class LockstepSemanticValidator(LockstepVisitor):
         target[name] = params
         return name, params
 
+    def _ensure_known_type(self, declared_type: str, ctx, *, usage: str) -> bool:
+        if declared_type in self.type_environment:
+            return True
+        self._add_diagnostic(
+            severity="error",
+            code="LCK308",
+            message=f"Unknown type '{declared_type}' for {usage}.",
+            ctx=ctx,
+            hint="Declare the struct type before use or use a built-in scalar type.",
+        )
+        return False
+
     def _check_expression_identifier(self, name: str, ctx):
         if self._lookup(name) is None:
             self._add_diagnostic(
@@ -473,6 +486,10 @@ class LockstepSemanticValidator(LockstepVisitor):
 
     def visitProgram(self, ctx: LockstepParser.ProgramContext):
         self._push_scope()
+        for declaration in ctx.declaration():
+            struct_decl = declaration.structDecl()
+            if struct_decl is not None:
+                self.type_environment.add(struct_decl.ID().getText())
         result = self.visitChildren(ctx)
         self._pop_scope()
         return result
@@ -510,12 +527,25 @@ class LockstepSemanticValidator(LockstepVisitor):
         return result
 
     def visitVarDecl(self, ctx: LockstepParser.VarDeclContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"local variable '{ctx.ID().getText()}'",
+        )
         self._declare(
             ctx.ID().getText(),
             ctx.typeName().getText(),
             ctx,
             duplicate_code="LCK306",
             kind="local",
+        )
+        return self.visitChildren(ctx)
+
+    def visitParam(self, ctx: LockstepParser.ParamContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"parameter '{ctx.ID().getText()}'",
         )
         return self.visitChildren(ctx)
 
@@ -526,6 +556,11 @@ class LockstepSemanticValidator(LockstepVisitor):
         return result
 
     def visitStreamDecl(self, ctx: LockstepParser.StreamDeclContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"stream '{ctx.ID().getText()}'",
+        )
         self._declare(
             ctx.ID().getText(),
             ctx.typeName().getText(),
@@ -536,6 +571,11 @@ class LockstepSemanticValidator(LockstepVisitor):
         return self.visitChildren(ctx)
 
     def visitAccumDecl(self, ctx: LockstepParser.AccumDeclContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"accumulator '{ctx.ID().getText()}'",
+        )
         self._declare(
             ctx.ID().getText(),
             ctx.typeName().getText(),
@@ -546,6 +586,11 @@ class LockstepSemanticValidator(LockstepVisitor):
         return self.visitChildren(ctx)
 
     def visitUniformDecl(self, ctx: LockstepParser.UniformDeclContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"uniform '{ctx.ID().getText()}'",
+        )
         self._declare(
             ctx.ID().getText(),
             ctx.typeName().getText(),
@@ -581,6 +626,11 @@ class LockstepSemanticValidator(LockstepVisitor):
 
         fold_source_symbol = self._lookup(fold_source)
         declared_type = ctx.typeName().getText()
+        self._ensure_known_type(
+            declared_type,
+            ctx.typeName(),
+            usage=f"fold uniform '{fold_target}'",
+        )
         if fold_source_symbol is None:
             self._add_diagnostic(
                 severity="error",
@@ -642,6 +692,14 @@ class LockstepSemanticValidator(LockstepVisitor):
     def validate(self, tree):
         self.visit(tree)
         return self.diagnostics
+
+    def visitPureDecl(self, ctx: LockstepParser.PureDeclContext):
+        self._ensure_known_type(
+            ctx.typeName().getText(),
+            ctx.typeName(),
+            usage=f"return type of pure function '{ctx.ID().getText()}'",
+        )
+        return self.visitChildren(ctx)
 
 
 def validate_semantics(parse_tree: Any) -> list[LockstepDiagnostic]:
