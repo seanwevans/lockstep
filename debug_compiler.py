@@ -7,7 +7,10 @@ from typing import Any
 from antlr4 import InputStream, CommonTokenStream
 from antlr4.error.ErrorListener import ErrorListener
 
-# antlr4 -Dlanguage=Python3 -visitor Lockstep.g4
+PARSER_DIR = Path(__file__).parent / "generated" / "parser"
+if str(PARSER_DIR) not in sys.path:
+    sys.path.insert(0, str(PARSER_DIR))
+
 from LockstepLexer import LockstepLexer
 from LockstepParser import LockstepParser
 from LockstepVisitor import LockstepVisitor

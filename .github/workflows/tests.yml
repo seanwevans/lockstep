@@ -17,6 +17,23 @@ permissions:
     contents: read
     
 jobs:
+    parser-generation:
+        name: Parser generation is up to date
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v4
+
+          - name: Setup Python
+            uses: actions/setup-python@v5
+            with:
+              python-version: "3.12"
+
+          - name: Check generated parser files
+            run: |
+              make check-generated-parser
+
     test:
         name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
         runs-on: ${{ matrix.os }}
