@@ -1,1 +1,5 @@
-antlr4 -Dlanguage=Python3 -visitor Lockstep.g4
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "make.sh is a thin wrapper. Prefer: make generate-parser"
+make generate-parser
