@@ -1,12 +1,9 @@
-Lockstep.interp
-Lockstep.tokens
-LockstepLexer.interp
-LockstepLexer.py
-LockstepLexer.tokens
-LockstepListener.py
-LockstepParser.py
-LockstepVisitor.py
+generated/parser/*.interp
+generated/parser/*.tokens
 __pycache__/*
 .coverage
 coverage.xml
 tests/__pycache__/*
+tools/*.jar
+build/
+*.egg-info/

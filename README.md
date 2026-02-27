@@ -121,3 +121,15 @@ Each diagnostic includes:
 * **Fatal parse errors** still raise `LockstepCompileError`.
   * `LockstepCompileError.errors` contains parse diagnostics.
   * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.
+
+---
+
+## 7. Regenerating parser
+
+Run the project-native generator target:
+
+```bash
+make generate-parser
+```
+
+Generated Python parser files are emitted to `generated/parser/` and committed to source control. CI enforces freshness via `make check-generated-parser`, which regenerates and fails when tracked generated files are stale.

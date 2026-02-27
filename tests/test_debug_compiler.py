@@ -395,6 +395,98 @@ def test_compile_lockstep_raises_for_semantic_errors(api_module, monkeypatch):
     )
 
 
+def test_compile_lockstep_normalizes_diagnostics_order_and_duplicates(
+    debug_compiler_module, monkeypatch
+):
+    class SuccessParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class SpyVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = []
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.diagnostics = [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK099",
+                    message="same issue",
+                    line=3,
+                    column=1,
+                ),
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="error",
+                    code="LCK200",
+                    message="later diagnostic",
+                    line=10,
+                    column=4,
+                ),
+            ]
+
+        def visit(self, tree):
+            return tree
+
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
+    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
+    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
+    monkeypatch.setattr(
+        debug_compiler_module,
+        "validate_semantics",
+        lambda _parse_tree: [
+            debug_compiler_module.LockstepDiagnostic(
+                severity="warning",
+                code="LCK099",
+                message="same issue",
+                line=3,
+                column=1,
+            ),
+            debug_compiler_module.LockstepDiagnostic(
+                severity="info",
+                code="LCK050",
+                message="same location info",
+                line=3,
+                column=1,
+            ),
+            debug_compiler_module.LockstepDiagnostic(
+                severity="info",
+                code="LCK010",
+                message="same location info from semantics",
+                line=3,
+                column=1,
+            ),
+        ],
+    )
+
+    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+
+    assert [
+        (d.line, d.column, d.severity, d.code, d.message) for d in result.diagnostics
+    ] == [
+        (3, 1, "warning", "LCK099", "same issue"),
+        (3, 1, "info", "LCK010", "same location info from semantics"),
+        (3, 1, "info", "LCK050", "same location info"),
+        (10, 4, "error", "LCK200", "later diagnostic"),
+    ]
+
+
 def _token(text):
     return types.SimpleNamespace(getText=lambda: text)
 
@@ -874,3 +966,44 @@ def test_semantic_validator_reports_fold_reference_errors(semantic_module):
     assert "must reference an accumulator" in validator.diagnostics[0].message
     assert validator.diagnostics[1].code == "LCK404"
     assert "has type int" in validator.diagnostics[1].message
+
+
+def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
+    debug_compiler_module,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    lvalue_ctx = _ctx(
+        start_line=40,
+        start_col=8,
+        ID=lambda index=0: [_token("missing")][index],
+    )
+
+    primary_ctx = _ctx(
+        start_line=40,
+        start_col=8,
+        ID=lambda: None,
+        lvalue=lambda: lvalue_ctx,
+    )
+
+    original_visit_children = validator.visitChildren
+
+    def _visit_children(ctx):
+        if hasattr(ctx, "lvalue") and callable(ctx.lvalue) and ctx.lvalue() is not None:
+            validator.visitLvalue(ctx.lvalue())
+        return original_visit_children(ctx)
+
+    validator.visitChildren = _visit_children
+    validator.visitPrimaryExpr(primary_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK301",
+            message="Undefined identifier 'missing'.",
+            line=40,
+            column=8,
+            hint="Declare the identifier in scope before using it.",
+        )
+    ]
