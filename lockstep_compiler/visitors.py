@@ -1,29 +1,9 @@
-import argparse
-import sys
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Any
+from antlr4 import ParserRuleContext
 
-from antlr4 import InputStream, CommonTokenStream
-from antlr4.error.ErrorListener import ErrorListener
-
-PARSER_DIR = Path(__file__).parent / "generated" / "parser"
-if str(PARSER_DIR) not in sys.path:
-    sys.path.insert(0, str(PARSER_DIR))
-
-from LockstepLexer import LockstepLexer
 from LockstepParser import LockstepParser
 from LockstepVisitor import LockstepVisitor
 
-
-@dataclass
-class LockstepDiagnostic:
-    severity: str
-    code: str
-    message: str
-    line: int
-    column: int
-    hint: str | None = None
+from lockstep_compiler.diagnostics import LockstepDiagnostic
 
 
 class LockstepDebugVisitor(LockstepVisitor):
@@ -53,7 +33,7 @@ class LockstepDebugVisitor(LockstepVisitor):
         if self.verbose:
             print(message)
 
-    def _line_col(self, ctx) -> tuple[int, int]:
+    def _line_col(self, ctx: ParserRuleContext) -> tuple[int, int]:
         token = getattr(ctx, "start", None)
         return (
             getattr(token, "line", 0),
@@ -253,82 +233,6 @@ class LockstepDebugVisitor(LockstepVisitor):
         return self.visitChildren(ctx)
 
 
-@dataclass
-class LockstepCompileResult:
-    parse_tree: Any
-    entities: dict[str, Any]
-    diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
-
-
-_SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
-
-
-def normalize_diagnostics(
-    diagnostics: list[LockstepDiagnostic],
-) -> list[LockstepDiagnostic]:
-    """Deduplicate and deterministically sort diagnostics."""
-
-    deduped: dict[tuple[str, str, int, int], LockstepDiagnostic] = {}
-    for diagnostic in diagnostics:
-        key = (
-            diagnostic.code,
-            diagnostic.message,
-            diagnostic.line,
-            diagnostic.column,
-        )
-        if key not in deduped:
-            deduped[key] = diagnostic
-
-    return sorted(
-        deduped.values(),
-        key=lambda diagnostic: (
-            diagnostic.line,
-            diagnostic.column,
-            _SEVERITY_PRIORITY.get(diagnostic.severity, 99),
-            diagnostic.code,
-        ),
-    )
-
-
-class ParseErrorCollector(ErrorListener):
-    """Collects syntax errors emitted by ANTLR during lex/parse."""
-
-    def __init__(self):
-        super().__init__()
-        self.errors: list[LockstepDiagnostic] = []
-
-    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
-        self.errors.append(
-            LockstepDiagnostic(
-                severity="error",
-                code="LCK001",
-                message=msg,
-                line=line,
-                column=column,
-                hint="Fix syntax errors before semantic analysis can continue.",
-            )
-        )
-
-
-class LockstepCompileError(Exception):
-    """Raised when the Lockstep source contains parse errors."""
-
-    def __init__(self, errors, diagnostics=None, *, phase: str = "parse"):
-        self.errors = errors
-        self.diagnostics = diagnostics or []
-        self.phase = phase
-        super().__init__(self._format_message())
-
-    def _format_message(self):
-        count = len(self.errors)
-        suffix = "" if count == 1 else "s"
-        summary = f"Compilation failed with {count} {self.phase} error{suffix}."
-        details = "\n".join(
-            f"line {error.line}:{error.column} {error.message}" for error in self.errors
-        )
-        return summary if not details else f"{summary}\n{details}"
-
-
 class LockstepSemanticValidator(LockstepVisitor):
     """Runs semantic checks on a parsed Lockstep program."""
 
@@ -339,7 +243,7 @@ class LockstepSemanticValidator(LockstepVisitor):
         self.filters: dict[str, list[dict[str, str]]] = {}
         self.current_shader_name: str | None = None
 
-    def _line_col(self, ctx) -> tuple[int, int]:
+    def _line_col(self, ctx: ParserRuleContext) -> tuple[int, int]:
         token = getattr(ctx, "start", None)
         return (
             getattr(token, "line", 0),
@@ -671,147 +575,3 @@ class LockstepSemanticValidator(LockstepVisitor):
     def validate(self, tree):
         self.visit(tree)
         return self.diagnostics
-
-
-def validate_semantics(parse_tree: Any) -> list[LockstepDiagnostic]:
-    """Validate semantic constraints after syntactic parsing succeeds."""
-
-    validator = LockstepSemanticValidator()
-    return validator.validate(parse_tree)
-
-
-def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileResult:
-    input_stream = InputStream(source_code)
-    lexer = LockstepLexer(input_stream)
-    error_listener = ParseErrorCollector()
-    lexer.removeErrorListeners()
-    lexer.addErrorListener(error_listener)
-    stream = CommonTokenStream(lexer)
-
-    parser = LockstepParser(stream)
-    parser.removeErrorListeners()
-    parser.addErrorListener(error_listener)
-    tree = parser.program()
-
-    if error_listener.errors:
-        raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
-
-    semantic_diagnostics = normalize_diagnostics(validate_semantics(tree))
-    semantic_errors = [
-        diagnostic
-        for diagnostic in semantic_diagnostics
-        if diagnostic.severity == "error"
-    ]
-    if semantic_errors:
-        raise LockstepCompileError(
-            semantic_errors,
-            diagnostics=semantic_diagnostics,
-            phase="semantic",
-        )
-
-    visitor = LockstepDebugVisitor(verbose=verbose)
-    visitor.visit(tree)
-    all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *visitor.diagnostics])
-
-    return LockstepCompileResult(
-        parse_tree=tree,
-        entities={
-            "structs": visitor.structs,
-            "shaders": visitor.shaders,
-            "filters": visitor.filters,
-            "pure_functions": visitor.pure_functions,
-            "streams": visitor.streams,
-            "accumulators": visitor.accumulators,
-            "uniforms": visitor.uniforms,
-            "bind_routes": visitor.bind_routes,
-        },
-        diagnostics=all_diagnostics,
-    )
-
-
-TEST_SOURCE = """
-struct Vec3 { float x; float y; float z; };
-
-pure Vec3 add(Vec3 a, Vec3 b) {
-    Vec3 r; 
-    r.x = a.x + b.x; 
-    return r;
-}
-
-shader ApplyGravity(in Vec3 pos, out Vec3 new_pos, accum float energy, uniform float dt) {
-    new_pos.x = pos.x;
-    new_pos.y = pos.y - (9.8 * dt);
-    energy = new_pos.y; 
-}
-
-pipeline Physics {
-    stream<Vec3, 1000> raw_positions;
-    stream<Vec3, 1000> final_positions;
-    accumulator<float> total_energy;
-    uniform float dt = 0.016;
-
-    bind {
-        final_positions = ApplyGravity(raw_positions, final_positions, total_energy, dt);
-        uniform float sys_energy = fold sum(total_energy);
-    }
-}
-"""
-
-
-def build_arg_parser():
-    parser = argparse.ArgumentParser(
-        description="Debug parser for Lockstep source files."
-    )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        help="Optional path to a Lockstep source file. Reads from stdin when omitted.",
-    )
-    return parser
-
-
-def run_cli(argv=None, *, stdin=None, stderr=None, compiler=compile_lockstep):
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-
-    stdin = sys.stdin if stdin is None else stdin
-    stderr = sys.stderr if stderr is None else stderr
-
-    if args.path:
-        source_path = Path(args.path)
-        try:
-            source = source_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            print(f"Unable to read '{source_path}': file not found.", file=stderr)
-            return 1
-        except PermissionError as err:
-            reason = err.strerror or "permission denied"
-            print(f"Unable to read '{source_path}': {reason}.", file=stderr)
-            return 1
-        except UnicodeDecodeError as err:
-            print(
-                f"Unable to read '{source_path}': invalid UTF-8 ({err.reason}).",
-                file=stderr,
-            )
-            return 1
-    else:
-        source = stdin.read()
-
-    try:
-        compiler(source)
-    except LockstepCompileError as err:
-        count = len(err.errors)
-        suffix = "" if count == 1 else "s"
-        print(
-            f"Compilation failed with {count} {err.phase} error{suffix}.",
-            file=stderr,
-        )
-        for error in err.errors:
-            print(f"line {error.line}:{error.column} {error.message}", file=stderr)
-        return 1
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(run_cli())

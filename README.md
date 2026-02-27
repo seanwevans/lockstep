@@ -98,7 +98,7 @@ The compiler generates a C-compatible header for the Host application (C/C++, Ru
 
 ## 6. Compiler Frontend Usage
 
-`debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
+`lockstep_frontend.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
 
 * `parse_tree`: ANTLR parse tree for the source.
 * `entities`: extracted frontend entities (`structs`, `shaders`, `streams`, `accumulators`).
