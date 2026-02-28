@@ -28,9 +28,9 @@ def build_debug_visitor(base_visitor_cls):
             self._seen_shaders = set()
             self._seen_filters = set()
             self._seen_pure_functions = set()
-            self._seen_streams = set()
-            self._seen_accumulators = set()
-            self._seen_uniforms = set()
+            self._seen_streams: set[str] = set()
+            self._seen_accumulators: set[str] = set()
+            self._seen_uniforms: set[str] = set()
 
         def _print(self, message: str):
             if self.verbose:
@@ -144,6 +144,9 @@ def build_debug_visitor(base_visitor_cls):
 
         def visitPipelineDecl(self, ctx):
             name = ctx.ID().getText()
+            self._seen_streams = set()
+            self._seen_accumulators = set()
+            self._seen_uniforms = set()
             self._print(f"\n[Pipeline Topology] {name}")
             return self.visitChildren(ctx)
 
