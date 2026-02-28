@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-from lockstep_compiler.models import SemanticKernelParam, SemanticSymbol
+from lockstep_compiler.models import SemanticKernelParam, SemanticStructField, SemanticSymbol
 
 def _install_fake_generated_modules(monkeypatch):
     """Install minimal ANTLR-generated modules so debug_compiler can import."""
@@ -738,6 +738,33 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     ]
 
 
+def test_visitor_stream_redeclaration_is_pipeline_local(debug_compiler_module):
+    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+
+    visitor.visitPipelineDecl(_ctx(ID=lambda: _token("P1")))
+    visitor.visitStreamDecl(
+        _ctx(
+            start_line=2,
+            start_col=1,
+            typeName=lambda: _token("Vec3"),
+            INT=lambda: _token("8"),
+            ID=lambda: _token("s"),
+        )
+    )
+    visitor.visitPipelineDecl(_ctx(ID=lambda: _token("P2")))
+    visitor.visitStreamDecl(
+        _ctx(
+            start_line=6,
+            start_col=1,
+            typeName=lambda: _token("Vec3"),
+            INT=lambda: _token("8"),
+            ID=lambda: _token("s"),
+        )
+    )
+
+    assert visitor.diagnostics == []
+
+
 def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
@@ -918,6 +945,67 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
         "Compilation failed with 1 parse error.",
         "line 4:2 unexpected",
     ]
+
+
+def test_run_cli_internal_error_default_mode_keeps_generic_message(debug_compiler_module):
+    def failing_compiler(_source):
+        raise RuntimeError("kaboom")
+
+    stderr = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline Broken {"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    assert exit_code == 1
+    assert stderr.getvalue().splitlines() == [
+        "Compilation failed due to an internal error.",
+    ]
+
+
+def test_run_cli_debug_mode_emits_exception_details_and_traceback(debug_compiler_module):
+    def failing_compiler(_source):
+        raise debug_compiler_module.LockstepCompileError(
+            [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="error",
+                    code="LCK001",
+                    message="unexpected",
+                    line=4,
+                    column=2,
+                    hint="Fix syntax errors before semantic analysis can continue.",
+                )
+            ],
+            diagnostics=[
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK201",
+                    message="Struct redeclared",
+                    line=2,
+                    column=1,
+                    hint="Rename duplicate struct.",
+                )
+            ],
+        )
+
+    stderr = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        ["--debug"],
+        stdin=io.StringIO("pipeline Broken {"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    output = stderr.getvalue()
+    assert exit_code == 1
+    assert "Compilation failed with 1 parse error." in output
+    assert "line 4:2 unexpected" in output
+    assert "diagnostics:" in output
+    assert '"code": "LCK201"' in output
+    assert "LockstepCompileError: Compilation failed with 1 parse error." in output
+    assert "Traceback (most recent call last):" in output
 
 
 def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
@@ -1360,6 +1448,135 @@ def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == []
+def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _Param:
+        def __init__(self, modifier, declared_type, name):
+            self._modifier = _token(modifier)
+            self._declared_type = _token(declared_type)
+            self._name = _token(name)
+
+        def getChild(self, index):
+            assert index == 0
+            return self._modifier
+
+        def typeName(self):
+            return self._declared_type
+
+        def ID(self):
+            return self._name
+
+    class _ParamList:
+        def __init__(self, params):
+            self._params = params
+
+        def param(self):
+            return self._params
+
+    validator.visitStructDecl(_ctx(ID=lambda: _token("Particle"), structMember=lambda: []))
+    validator.visitVarDecl(_ctx(ID=lambda: _token("entity"), typeName=lambda: _token("Particle")))
+    validator.visitStreamDecl(
+        _ctx(ID=lambda: _token("particles"), typeName=lambda: _token("Particle"))
+    )
+    validator.visitAccumDecl(_ctx(ID=lambda: _token("acc_particles"), typeName=lambda: _token("Particle")))
+    validator.visitUniformDecl(_ctx(ID=lambda: _token("u_enabled"), typeName=lambda: _token("bool")))
+
+    validator.visitShaderDecl(
+        _ctx(
+            ID=lambda: _token("Apply"),
+            paramList=lambda: _ParamList([_Param("in", "Particle", "inp"), _Param("out", "Particle", "outp")]),
+        )
+    )
+    validator.visitFilterDecl(
+        _ctx(
+            ID=lambda: _token("OnlyEnabled"),
+            paramList=lambda: _ParamList([_Param("uniform", "bool", "enabled")]),
+        )
+    )
+
+    validator._declare("acc_fold", "Particle", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator.visitBindStmt(
+        _ctx(
+            ID=lambda: [_token("u_particle"), _token("acc_fold")],
+            foldOperator=lambda: _token("sum"),
+            argList=lambda: None,
+            typeName=lambda: _token("Particle"),
+        )
+    )
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _Param:
+        def __init__(self, modifier, declared_type, name):
+            self._modifier = _token(modifier)
+            self._declared_type = _token(declared_type)
+            self._name = _token(name)
+
+        def getChild(self, index):
+            assert index == 0
+            return self._modifier
+
+        def typeName(self):
+            return self._declared_type
+
+        def ID(self):
+            return self._name
+
+    class _ParamList:
+        def __init__(self, params):
+            self._params = params
+
+        def param(self):
+            return self._params
+
+    validator._push_scope()
+    validator.visitVarDecl(_ctx(start_line=60, start_col=1, ID=lambda: _token("v0"), typeName=lambda: _token("flaot")))
+    validator.visitStreamDecl(
+        _ctx(start_line=61, start_col=1, ID=lambda: _token("s0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitAccumDecl(
+        _ctx(start_line=62, start_col=1, ID=lambda: _token("a0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitUniformDecl(
+        _ctx(start_line=63, start_col=1, ID=lambda: _token("u0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitShaderDecl(
+        _ctx(
+            start_line=64,
+            start_col=1,
+            ID=lambda: _token("S"),
+            paramList=lambda: _ParamList([_Param("in", "flaot", "inp")]),
+        )
+    )
+    validator.visitFilterDecl(
+        _ctx(
+            start_line=65,
+            start_col=1,
+            ID=lambda: _token("F"),
+            paramList=lambda: _ParamList([_Param("uniform", "flaot", "u")]),
+        )
+    )
+    validator._declare("acc_src", "flaot", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator.visitBindStmt(
+        _ctx(
+            start_line=66,
+            start_col=1,
+            ID=lambda: [_token("u_fold"), _token("acc_src")],
+            foldOperator=lambda: _token("sum"),
+            argList=lambda: None,
+            typeName=lambda: _token("flaot"),
+        )
+    )
+
+    type_errors = [diag for diag in validator.diagnostics if diag.code == "LCK310"]
+    assert len(type_errors) == 7
+    assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
+    assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
 
 
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
@@ -1433,6 +1650,49 @@ def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_m
     validator.visitLvalue(lvalue_ctx)
 
     assert validator.diagnostics == []
+
+
+def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(start_line=60, start_col=6, typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+            _ctx(start_line=61, start_col=8, typeName=lambda: _token("float"), ID=lambda: _token("position")),
+        ],
+    )
+
+    validator.visitStructDecl(struct_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK311",
+            message="Struct 'Particle' has duplicate field declaration 'position'.",
+            line=61,
+            column=8,
+            hint="Rename or remove duplicate struct member declarations.",
+        )
+    ]
+
+
+def test_semantic_validator_struct_decl_keeps_first_duplicate_member(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+            _ctx(typeName=lambda: _token("float"), ID=lambda: _token("position")),
+        ],
+    )
+
+    validator.visitStructDecl(struct_ctx)
+
+    assert validator.structs["Particle"] == {
+        "position": SemanticStructField(name="position", declared_type="Vec3")
+    }
 
 
 def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_module):
