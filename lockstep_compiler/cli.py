@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -14,14 +15,20 @@ def build_arg_parser():
         nargs="?",
         help="Optional path to a Lockstep source file. Reads from stdin when omitted.",
     )
+    parser.add_argument(
+        "--dump",
+        action="store_true",
+        help="Print compiled entities (pipeline topology and bounds) as JSON.",
+    )
     return parser
 
 
-def run_cli(argv=None, *, stdin=None, stderr=None, compiler=None):
+def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
     stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
 
     if args.path:
@@ -59,7 +66,7 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=None):
         return 1
 
     try:
-        compiler(source)
+        result = compiler(source)
     except LockstepCompileError as err:
         count = len(err.errors)
         suffix = "" if count == 1 else "s"
@@ -73,5 +80,9 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=None):
     except Exception:
         print("Compilation failed due to an internal error.", file=stderr)
         return 1
+
+    if args.dump:
+        entities = getattr(result, "entities", result)
+        print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
 
     return 0
