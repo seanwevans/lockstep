@@ -813,6 +813,22 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
 
 
+def test_run_cli_returns_non_zero_when_compiler_missing(debug_compiler_module):
+    stderr = io.StringIO()
+
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline MissingCompiler { }"),
+        stderr=stderr,
+        compiler=None,
+    )
+
+    assert exit_code == 1
+    assert stderr.getvalue().splitlines() == [
+        "Compiler configuration error: no compiler callable was provided.",
+    ]
+
+
 def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
