@@ -320,6 +320,13 @@ def build_semantic_validator(base_visitor_cls):
             return symbol["type"] if symbol else None
 
         def _type_check_bind_call(self, ctx, target_name: str, callee_name: str, arg_names):
+            modifier_to_kind = {
+                "in": "stream",
+                "out": "stream",
+                "uniform": "uniform",
+                "accum": "accumulator",
+            }
+
             kernel = self.shaders.get(callee_name) or self.filters.get(callee_name)
             if kernel is None:
                 self._add_diagnostic(
@@ -355,6 +362,45 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Declare pipeline streams/accumulators/uniforms before binding.",
                 )
+            else:
+                output_params = [param for param in kernel if param["modifier"] == "out"]
+                if not output_params:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK309",
+                        message=(
+                            f"Bind target '{target_name}' is assigned from '{callee_name}', "
+                            "but the kernel has no out parameter."
+                        ),
+                        ctx=ctx,
+                        hint="Bind only kernels that declare an out parameter.",
+                    )
+                else:
+                    expected_output = output_params[0]
+                    expected_output_kind = modifier_to_kind[expected_output["modifier"]]
+                    if target_symbol["kind"] != expected_output_kind:
+                        self._add_diagnostic(
+                            severity="error",
+                            code="LCK309",
+                            message=(
+                                f"Bind target '{target_name}' for '{callee_name}' must be a "
+                                f"{expected_output_kind} for out parameter '{expected_output['name']}', "
+                                f"got {target_symbol['kind']}."
+                            ),
+                            ctx=ctx,
+                            hint="Route kernel outputs to a stream-compatible bind target.",
+                        )
+                    if target_symbol["type"] != expected_output["type"]:
+                        self._add_diagnostic(
+                            severity="error",
+                            code="LCK305",
+                            message=(
+                                f"Type mismatch for bind target '{target_name}' in '{callee_name}': "
+                                f"expected {expected_output['type']}, got {target_symbol['type']}."
+                            ),
+                            ctx=ctx,
+                            hint="Align bind target type with the kernel out parameter type.",
+                        )
 
             for arg_name, expected in zip(arg_names, kernel):
                 actual_symbol = self._lookup(arg_name)
@@ -367,6 +413,21 @@ def build_semantic_validator(base_visitor_cls):
                         hint="Declare pipeline symbols before passing them to bind.",
                     )
                     continue
+
+                expected_kind = modifier_to_kind.get(expected["modifier"])
+                if expected_kind is not None and actual_symbol["kind"] != expected_kind:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK308",
+                        message=(
+                            f"Modifier mismatch for argument '{arg_name}' in '{callee_name}': "
+                            f"parameter '{expected['name']}' requires {expected['modifier']} "
+                            f"({expected_kind}), got {actual_symbol['kind']}."
+                        ),
+                        ctx=ctx,
+                        hint="Pass a symbol with the kind required by the parameter modifier.",
+                    )
+
                 actual_type = actual_symbol["type"]
                 if actual_type != expected["type"]:
                     self._add_diagnostic(
