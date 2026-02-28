@@ -1313,6 +1313,137 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
     assert validator.scopes[-1]["u1"] == SemanticSymbol(name="u1", declared_type="float", kind="uniform")
 
 
+def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _Param:
+        def __init__(self, modifier, declared_type, name):
+            self._modifier = _token(modifier)
+            self._declared_type = _token(declared_type)
+            self._name = _token(name)
+
+        def getChild(self, index):
+            assert index == 0
+            return self._modifier
+
+        def typeName(self):
+            return self._declared_type
+
+        def ID(self):
+            return self._name
+
+    class _ParamList:
+        def __init__(self, params):
+            self._params = params
+
+        def param(self):
+            return self._params
+
+    validator.visitStructDecl(_ctx(ID=lambda: _token("Particle"), structMember=lambda: []))
+    validator.visitVarDecl(_ctx(ID=lambda: _token("entity"), typeName=lambda: _token("Particle")))
+    validator.visitStreamDecl(
+        _ctx(ID=lambda: _token("particles"), typeName=lambda: _token("Particle"))
+    )
+    validator.visitAccumDecl(_ctx(ID=lambda: _token("acc_particles"), typeName=lambda: _token("Particle")))
+    validator.visitUniformDecl(_ctx(ID=lambda: _token("u_enabled"), typeName=lambda: _token("bool")))
+
+    validator.visitShaderDecl(
+        _ctx(
+            ID=lambda: _token("Apply"),
+            paramList=lambda: _ParamList([_Param("in", "Particle", "inp"), _Param("out", "Particle", "outp")]),
+        )
+    )
+    validator.visitFilterDecl(
+        _ctx(
+            ID=lambda: _token("OnlyEnabled"),
+            paramList=lambda: _ParamList([_Param("uniform", "bool", "enabled")]),
+        )
+    )
+
+    validator._declare("acc_fold", "Particle", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator.visitBindStmt(
+        _ctx(
+            ID=lambda: [_token("u_particle"), _token("acc_fold")],
+            foldOperator=lambda: _token("sum"),
+            argList=lambda: None,
+            typeName=lambda: _token("Particle"),
+        )
+    )
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _Param:
+        def __init__(self, modifier, declared_type, name):
+            self._modifier = _token(modifier)
+            self._declared_type = _token(declared_type)
+            self._name = _token(name)
+
+        def getChild(self, index):
+            assert index == 0
+            return self._modifier
+
+        def typeName(self):
+            return self._declared_type
+
+        def ID(self):
+            return self._name
+
+    class _ParamList:
+        def __init__(self, params):
+            self._params = params
+
+        def param(self):
+            return self._params
+
+    validator._push_scope()
+    validator.visitVarDecl(_ctx(start_line=60, start_col=1, ID=lambda: _token("v0"), typeName=lambda: _token("flaot")))
+    validator.visitStreamDecl(
+        _ctx(start_line=61, start_col=1, ID=lambda: _token("s0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitAccumDecl(
+        _ctx(start_line=62, start_col=1, ID=lambda: _token("a0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitUniformDecl(
+        _ctx(start_line=63, start_col=1, ID=lambda: _token("u0"), typeName=lambda: _token("flaot"))
+    )
+    validator.visitShaderDecl(
+        _ctx(
+            start_line=64,
+            start_col=1,
+            ID=lambda: _token("S"),
+            paramList=lambda: _ParamList([_Param("in", "flaot", "inp")]),
+        )
+    )
+    validator.visitFilterDecl(
+        _ctx(
+            start_line=65,
+            start_col=1,
+            ID=lambda: _token("F"),
+            paramList=lambda: _ParamList([_Param("uniform", "flaot", "u")]),
+        )
+    )
+    validator._declare("acc_src", "flaot", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator.visitBindStmt(
+        _ctx(
+            start_line=66,
+            start_col=1,
+            ID=lambda: [_token("u_fold"), _token("acc_src")],
+            foldOperator=lambda: _token("sum"),
+            argList=lambda: None,
+            typeName=lambda: _token("flaot"),
+        )
+    )
+
+    type_errors = [diag for diag in validator.diagnostics if diag.code == "LCK310"]
+    assert len(type_errors) == 7
+    assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
+    assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
+
+
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
     debug_compiler_module,
 ):

@@ -1,3 +1,4 @@
+from difflib import get_close_matches
 from typing import Any
 
 from .models import (
@@ -251,6 +252,7 @@ def build_semantic_validator(base_visitor_cls):
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
+            self._primitive_types = {"int", "float", "bool"}
 
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
@@ -292,6 +294,31 @@ def build_semantic_validator(base_visitor_cls):
         def _declared_in_current_scope(self, name: str) -> bool:
             return bool(self.scopes and name in self.scopes[-1])
 
+        def _known_types(self) -> set[str]:
+            return self._primitive_types | set(self.structs.keys())
+
+        def _validate_declared_type(self, type_name: str, ctx, code: str) -> bool:
+            known_types = self._known_types()
+            if type_name in known_types:
+                return True
+
+            suggestions = get_close_matches(type_name, sorted(known_types), n=2, cutoff=0.6)
+            hint = (
+                f"Unknown type '{type_name}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
+                "or declare a struct with this name before using it."
+            )
+            if suggestions:
+                hint = f"Did you mean {', '.join(suggestions)}? {hint}"
+
+            self._add_diagnostic(
+                severity="error",
+                code=code,
+                message=f"Unknown declared type '{type_name}'.",
+                ctx=ctx,
+                hint=hint,
+            )
+            return False
+
         def _record_kernel_signature(self, ctx, target: dict[str, list[SemanticKernelParam]]):
             name = ctx.ID().getText()
             if name in target:
@@ -305,6 +332,11 @@ def build_semantic_validator(base_visitor_cls):
             params = []
             if ctx.paramList():
                 for param in ctx.paramList().param():
+                    self._validate_declared_type(
+                        param.typeName().getText(),
+                        param.typeName(),
+                        "LCK310",
+                    )
                     params.append(
                         SemanticKernelParam(
                             name=param.ID().getText(),
@@ -566,6 +598,7 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitVarDecl(self, ctx):
+            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="local")
             return self.visitChildren(ctx)
 
@@ -576,14 +609,17 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStreamDecl(self, ctx):
+            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="stream")
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
+            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="accumulator")
             return self.visitChildren(ctx)
 
         def visitUniformDecl(self, ctx):
+            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="uniform")
             return self.visitChildren(ctx)
 
@@ -600,6 +636,8 @@ def build_semantic_validator(base_visitor_cls):
             fold_operator = ctx.foldOperator().getText()
             fold_source = id_tokens[1].getText()
             declared_type = ctx.typeName().getText()
+
+            self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
 
             self._declare(
                 fold_target,
