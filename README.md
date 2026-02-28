@@ -117,7 +117,11 @@ Each diagnostic includes:
 
 ### Behavior
 
-* **Non-fatal observations** (for example empty `bind` blocks or duplicate declarations) are returned in `LockstepCompileResult.diagnostics` and compilation still succeeds.
+* **Non-fatal observations** (for example empty `bind` blocks, duplicate declarations, or unreachable statements after a pure-function return) are returned in `LockstepCompileResult.diagnostics` and compilation still succeeds.
+* **Pure function return enforcement** is semantic and strict:
+  * `LCK413` (`error`) is emitted when a `pure` function body has no `return` statement.
+  * `LCK414` (`warning`) is emitted when a `pure` function body contains multiple `return` statements.
+  * `LCK415` (`warning`) is emitted for statements that appear after the first `return` in a `pure` function body.
 * **Fatal parse errors** still raise `LockstepCompileError`.
   * `LockstepCompileError.errors` contains parse diagnostics.
   * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.

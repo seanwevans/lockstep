@@ -627,6 +627,55 @@ def build_semantic_validator(base_visitor_cls):
                 "params": params,
             }
 
+            statements = []
+            if hasattr(ctx, "statement") and callable(ctx.statement):
+                statement_nodes = ctx.statement() or []
+                if isinstance(statement_nodes, list):
+                    statements = statement_nodes
+                else:
+                    statements = [statement_nodes]
+
+            return_statements: list[tuple[int, Any]] = []
+            for index, statement in enumerate(statements):
+                if not hasattr(statement, "returnStmt") or not callable(statement.returnStmt):
+                    continue
+                return_stmt = statement.returnStmt()
+                if return_stmt is not None:
+                    return_statements.append((index, return_stmt))
+
+            if not return_statements:
+                self._add_diagnostic(
+                    severity="error",
+                    code="LCK413",
+                    message=f"Pure function '{name}' must include a return statement.",
+                    ctx=ctx,
+                    hint="Add a return statement that produces a value matching the declared return type.",
+                )
+            else:
+                if len(return_statements) > 1:
+                    self._add_diagnostic(
+                        severity="warning",
+                        code="LCK414",
+                        message=(
+                            f"Pure function '{name}' contains multiple return statements; "
+                            "only the first return is reachable in straight-line semantics."
+                        ),
+                        ctx=return_statements[1][1],
+                        hint="Keep a single terminal return to avoid dead code and ambiguous intent.",
+                    )
+
+                first_return_index = return_statements[0][0]
+                for unreachable_stmt in statements[first_return_index + 1 :]:
+                    self._add_diagnostic(
+                        severity="warning",
+                        code="LCK415",
+                        message=(
+                            f"Unreachable statement in pure function '{name}' after return statement."
+                        ),
+                        ctx=unreachable_stmt,
+                        hint="Remove or move statements before the return.",
+                    )
+
             self._push_scope()
             previous_pure_function = self._current_pure_function
             self._current_pure_function = {"name": name, "return_type": return_type}

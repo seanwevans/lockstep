@@ -1345,6 +1345,103 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
     }
 
 
+def test_semantic_validator_reports_error_for_pure_function_without_return(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    non_return_stmt = _ctx(start_line=40, start_col=2, returnStmt=lambda: None)
+    pure_decl_ctx = _ctx(
+        start_line=39,
+        start_col=0,
+        ID=lambda: _token("blend"),
+        typeName=lambda: _token("float"),
+        pureParamList=lambda: None,
+        statement=lambda: [non_return_stmt],
+    )
+
+    validator.visitPureDecl(pure_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK413",
+            message="Pure function 'blend' must include a return statement.",
+            line=39,
+            column=0,
+            hint="Add a return statement that produces a value matching the declared return type.",
+        )
+    ]
+
+
+def test_semantic_validator_accepts_pure_function_with_single_return(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    return_stmt = _ctx(start_line=42, start_col=4)
+    pure_decl_ctx = _ctx(
+        start_line=41,
+        start_col=0,
+        ID=lambda: _token("blend"),
+        typeName=lambda: _token("float"),
+        pureParamList=lambda: None,
+        statement=lambda: [_ctx(start_line=42, start_col=4, returnStmt=lambda: return_stmt)],
+    )
+
+    validator.visitPureDecl(pure_decl_ctx)
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    first_return_stmt = _ctx(start_line=44, start_col=4)
+    second_return_stmt = _ctx(start_line=45, start_col=4)
+    unreachable_stmt = _ctx(start_line=46, start_col=4, returnStmt=lambda: None)
+    pure_decl_ctx = _ctx(
+        start_line=43,
+        start_col=0,
+        ID=lambda: _token("blend"),
+        typeName=lambda: _token("float"),
+        pureParamList=lambda: None,
+        statement=lambda: [
+            _ctx(start_line=44, start_col=4, returnStmt=lambda: first_return_stmt),
+            _ctx(start_line=45, start_col=4, returnStmt=lambda: second_return_stmt),
+            unreachable_stmt,
+        ],
+    )
+
+    validator.visitPureDecl(pure_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK414",
+            message=(
+                "Pure function 'blend' contains multiple return statements; "
+                "only the first return is reachable in straight-line semantics."
+            ),
+            line=45,
+            column=4,
+            hint="Keep a single terminal return to avoid dead code and ambiguous intent.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK415",
+            message="Unreachable statement in pure function 'blend' after return statement.",
+            line=45,
+            column=4,
+            hint="Remove or move statements before the return.",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK415",
+            message="Unreachable statement in pure function 'blend' after return statement.",
+            line=46,
+            column=4,
+            hint="Remove or move statements before the return.",
+        ),
+    ]
+
+
 def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
