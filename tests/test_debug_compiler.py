@@ -466,6 +466,116 @@ def test_compile_lockstep_normalizes_diagnostics_order_and_duplicates(
     ]
 
 
+def test_compile_lockstep_dedup_prefers_highest_severity_for_same_key(
+    debug_compiler_module, monkeypatch
+):
+    class SuccessParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class SpyVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = []
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.diagnostics = [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK777",
+                    message="same issue",
+                    line=6,
+                    column=2,
+                    hint="visitor hint",
+                ),
+            ]
+
+        def visit(self, tree):
+            return tree
+
+    monkeypatch.setattr(
+        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
+    )
+    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
+    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
+    monkeypatch.setattr(
+        debug_compiler_module,
+        "validate_semantics",
+        lambda _parse_tree: [
+            debug_compiler_module.LockstepDiagnostic(
+                severity="error",
+                code="LCK777",
+                message="same issue",
+                line=6,
+                column=2,
+                hint="semantic hint",
+            ),
+        ],
+    )
+
+    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
+        debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+
+    assert exc_info.value.errors == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK777",
+            message="same issue",
+            line=6,
+            column=2,
+            hint="semantic hint",
+        )
+    ]
+
+
+def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity(
+    debug_compiler_module,
+):
+    diagnostics = [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK888",
+            message="same issue",
+            line=9,
+            column=3,
+            hint="",
+        ),
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK888",
+            message="same issue",
+            line=9,
+            column=3,
+            hint="detailed hint",
+        ),
+    ]
+
+    assert debug_compiler_module.normalize_diagnostics(diagnostics) == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK888",
+            message="same issue",
+            line=9,
+            column=3,
+            hint="detailed hint",
+        )
+    ]
+
+
 def _token(text):
     return types.SimpleNamespace(getText=lambda: text)
 
