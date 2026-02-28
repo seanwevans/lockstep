@@ -1,9 +1,12 @@
 [project]
-name = "Lockstep"
+name = "lockstep"
 version = "0.1.0"
 dependencies = [
     "antlr4-python3-runtime",
 ]
+
+[project.scripts]
+lockstep-frontend = "lockstep_frontend:run_cli"
 
 [project.optional-dependencies]
 test = [
@@ -12,7 +15,7 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-q -ra --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml"
+addopts = "-q -ra"
 testpaths = ["tests"]
 
 [tool.coverage.run]
