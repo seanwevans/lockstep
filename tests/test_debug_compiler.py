@@ -738,6 +738,33 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     ]
 
 
+def test_visitor_stream_redeclaration_is_pipeline_local(debug_compiler_module):
+    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+
+    visitor.visitPipelineDecl(_ctx(ID=lambda: _token("P1")))
+    visitor.visitStreamDecl(
+        _ctx(
+            start_line=2,
+            start_col=1,
+            typeName=lambda: _token("Vec3"),
+            INT=lambda: _token("8"),
+            ID=lambda: _token("s"),
+        )
+    )
+    visitor.visitPipelineDecl(_ctx(ID=lambda: _token("P2")))
+    visitor.visitStreamDecl(
+        _ctx(
+            start_line=6,
+            start_col=1,
+            typeName=lambda: _token("Vec3"),
+            INT=lambda: _token("8"),
+            ID=lambda: _token("s"),
+        )
+    )
+
+    assert visitor.diagnostics == []
+
+
 def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
