@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-from lockstep_compiler.models import SemanticKernelParam, SemanticSymbol
+from lockstep_compiler.models import SemanticKernelParam, SemanticStructField, SemanticSymbol
 
 def _install_fake_generated_modules(monkeypatch):
     """Install minimal ANTLR-generated modules so debug_compiler can import."""
@@ -1384,6 +1384,49 @@ def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_m
     validator.visitLvalue(lvalue_ctx)
 
     assert validator.diagnostics == []
+
+
+def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(start_line=60, start_col=6, typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+            _ctx(start_line=61, start_col=8, typeName=lambda: _token("float"), ID=lambda: _token("position")),
+        ],
+    )
+
+    validator.visitStructDecl(struct_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK311",
+            message="Struct 'Particle' has duplicate field declaration 'position'.",
+            line=61,
+            column=8,
+            hint="Rename or remove duplicate struct member declarations.",
+        )
+    ]
+
+
+def test_semantic_validator_struct_decl_keeps_first_duplicate_member(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+            _ctx(typeName=lambda: _token("float"), ID=lambda: _token("position")),
+        ],
+    )
+
+    validator.visitStructDecl(struct_ctx)
+
+    assert validator.structs["Particle"] == {
+        "position": SemanticStructField(name="position", declared_type="Vec3")
+    }
 
 
 def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_module):

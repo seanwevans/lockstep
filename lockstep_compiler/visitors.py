@@ -530,8 +530,22 @@ def build_semantic_validator(base_visitor_cls):
         def visitStructDecl(self, ctx):
             struct_name = ctx.ID().getText()
             fields = {}
+            seen_field_names: set[str] = set()
             for member in ctx.structMember() or []:
                 field_name = member.ID().getText()
+                if field_name in seen_field_names:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK311",
+                        message=(
+                            f"Struct '{struct_name}' has duplicate field declaration "
+                            f"'{field_name}'."
+                        ),
+                        ctx=member,
+                        hint="Rename or remove duplicate struct member declarations.",
+                    )
+                    continue
+                seen_field_names.add(field_name)
                 fields[field_name] = SemanticStructField(name=field_name, declared_type=member.typeName().getText())
             self.structs[struct_name] = fields
             return self.visitChildren(ctx)
