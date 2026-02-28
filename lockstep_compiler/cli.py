@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
 from .errors import LockstepCompileError
@@ -19,6 +20,11 @@ def build_arg_parser():
         "--dump",
         action="store_true",
         help="Print compiled entities (pipeline topology and bounds) as JSON.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print detailed exception diagnostics and traceback on failures.",
     )
     return parser
 
@@ -76,9 +82,35 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         )
         for error in err.errors:
             print(f"line {error.line}:{error.column} {error.message}", file=stderr)
+        if args.debug:
+            if err.diagnostics:
+                print("diagnostics:", file=stderr)
+                print(
+                    json.dumps(
+                        [
+                            {
+                                "severity": diagnostic.severity,
+                                "code": diagnostic.code,
+                                "message": diagnostic.message,
+                                "line": diagnostic.line,
+                                "column": diagnostic.column,
+                                "hint": diagnostic.hint,
+                            }
+                            for diagnostic in err.diagnostics
+                        ],
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    file=stderr,
+                )
+            print(f"{type(err).__name__}: {err}", file=stderr)
+            traceback.print_exc(file=stderr)
         return 1
-    except Exception:
+    except Exception as err:
         print("Compilation failed due to an internal error.", file=stderr)
+        if args.debug:
+            print(f"{type(err).__name__}: {err}", file=stderr)
+            traceback.print_exc(file=stderr)
         return 1
 
     if args.dump:
