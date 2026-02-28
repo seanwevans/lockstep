@@ -2,16 +2,10 @@ from antlr4 import CommonTokenStream
 import sys
 from pathlib import Path
 
-from lockstep_compiler import (
-    LockstepCompileError,
-    LockstepDiagnostic,
-    ParseErrorCollector,
-    build_arg_parser,
-    normalize_diagnostics,
-    run_cli,
-)
+from lockstep_compiler.cli import run_cli
+from lockstep_compiler.errors import LockstepCompileError, ParseErrorCollector
+from lockstep_compiler.models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
 from lockstep_compiler.compiler import _compile_lockstep_with_dependencies as _compile_lockstep
-from lockstep_compiler.models import LockstepCompileResult
 from lockstep_compiler.visitors import (
     build_debug_visitor,
     build_semantic_validator,

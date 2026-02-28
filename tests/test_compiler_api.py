@@ -82,3 +82,19 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
         "uniforms": [],
         "bind_routes": [],
     }
+
+
+def test_cli_main_wires_default_compiler(monkeypatch):
+    import lockstep_compiler.cli as cli_module
+
+    sentinel_compiler = object()
+
+    def fake_run_cli(argv, *, compiler):
+        assert argv == ["--dump"]
+        assert compiler is sentinel_compiler
+        return 7
+
+    monkeypatch.setattr(cli_module, "run_cli", fake_run_cli)
+    monkeypatch.setattr(compiler_module, "compile_lockstep", sentinel_compiler)
+
+    assert cli_module.main(["--dump"]) == 7

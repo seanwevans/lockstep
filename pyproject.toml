@@ -11,6 +11,9 @@ test = [
     "pytest-cov",
 ]
 
+[project.scripts]
+lockstepc = "lockstep_compiler.cli:main"
+
 [tool.pytest.ini_options]
 addopts = "-q -ra --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml"
 testpaths = ["tests"]
