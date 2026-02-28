@@ -10,7 +10,7 @@ from lockstep_compiler import (
     normalize_diagnostics,
     run_cli,
 )
-from lockstep_compiler.compiler import compile_lockstep as _compile_lockstep
+from lockstep_compiler.compiler import _compile_lockstep_with_dependencies as _compile_lockstep
 from lockstep_compiler.models import LockstepCompileResult
 from lockstep_compiler.visitors import (
     build_debug_visitor,

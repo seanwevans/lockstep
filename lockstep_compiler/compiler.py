@@ -7,7 +7,7 @@ from .models import LockstepCompileResult, normalize_diagnostics
 from .visitors import build_debug_visitor, validate_semantics
 
 
-def compile_lockstep(
+def _compile_lockstep_with_dependencies(
     source_code: str,
     *,
     verbose: bool = True,
@@ -61,4 +61,43 @@ def compile_lockstep(
             "bind_routes": visitor.bind_routes,
         },
         diagnostics=all_diagnostics,
+    )
+
+
+def _load_default_parser_classes() -> tuple[Any, Any, Any]:
+    from generated.parser.LockstepLexer import LockstepLexer
+    from generated.parser.LockstepParser import LockstepParser
+    from generated.parser.LockstepVisitor import LockstepVisitor
+
+    return LockstepLexer, LockstepParser, LockstepVisitor
+
+
+def compile_lockstep(
+    source_code: str,
+    *,
+    verbose: bool = True,
+    lexer_cls=None,
+    parser_cls=None,
+    visitor_cls=None,
+    semantic_validator=None,
+    token_stream_cls=CommonTokenStream,
+    debug_visitor_cls=None,
+) -> LockstepCompileResult:
+    if lexer_cls is None or parser_cls is None or visitor_cls is None:
+        default_lexer_cls, default_parser_cls, default_visitor_cls = (
+            _load_default_parser_classes()
+        )
+        lexer_cls = lexer_cls or default_lexer_cls
+        parser_cls = parser_cls or default_parser_cls
+        visitor_cls = visitor_cls or default_visitor_cls
+
+    return _compile_lockstep_with_dependencies(
+        source_code,
+        verbose=verbose,
+        lexer_cls=lexer_cls,
+        parser_cls=parser_cls,
+        visitor_cls=visitor_cls,
+        semantic_validator=semantic_validator,
+        token_stream_cls=token_stream_cls,
+        debug_visitor_cls=debug_visitor_cls,
     )
