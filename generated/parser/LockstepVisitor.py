@@ -94,6 +94,11 @@ class LockstepVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by LockstepParser#foldOperator.
+    def visitFoldOperator(self, ctx:LockstepParser.FoldOperatorContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by LockstepParser#argList.
     def visitArgList(self, ctx:LockstepParser.ArgListContext):
         return self.visitChildren(ctx)
