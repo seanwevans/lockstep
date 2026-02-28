@@ -44,6 +44,20 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=None):
     else:
         source = stdin.read()
 
+    if compiler is None:
+        print(
+            "Compiler configuration error: no compiler callable was provided.",
+            file=stderr,
+        )
+        return 1
+
+    if not callable(compiler):
+        print(
+            "Compiler configuration error: compiler must be callable.",
+            file=stderr,
+        )
+        return 1
+
     try:
         compiler(source)
     except LockstepCompileError as err:
@@ -55,6 +69,9 @@ def run_cli(argv=None, *, stdin=None, stderr=None, compiler=None):
         )
         for error in err.errors:
             print(f"line {error.line}:{error.column} {error.message}", file=stderr)
+        return 1
+    except Exception:
+        print("Compilation failed due to an internal error.", file=stderr)
         return 1
 
     return 0
