@@ -132,4 +132,22 @@ Run the project-native generator target:
 make generate-parser
 ```
 
-Generated Python parser files are emitted to `generated/parser/` and committed to source control. CI enforces freshness via `make check-generated-parser`, which regenerates and fails when tracked generated files are stale.
+The parser generator script pins ANTLR `4.13.2` to a known SHA-256 and verifies integrity before use. By default it uses `tools/antlr-4.13.2-complete.jar`, downloading the jar only when missing.
+
+### Secure workflow
+
+For controlled or air-gapped environments, pre-provision the jar and run in offline mode:
+
+```bash
+python scripts/generate_parser.py --offline --jar-path /path/to/antlr-4.13.2-complete.jar
+```
+
+If the jar is missing in offline mode, or the checksum does not match the pinned value, generation fails with a clear error.
+
+CI should use:
+
+```bash
+make check-generated-parser
+```
+
+This target enforces offline generation with an explicit jar path and fails when tracked generated files are stale.
