@@ -19,6 +19,34 @@ class LockstepCompileResult:
     diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class Symbol:
+    name: str
+    declared_type: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class KernelParameter:
+    name: str
+    declared_type: str
+    modifier: str
+
+
+@dataclass
+class Scope:
+    symbols: dict[str, Symbol] = field(default_factory=dict)
+
+    def declare(self, symbol: Symbol) -> bool:
+        if symbol.name in self.symbols:
+            return False
+        self.symbols[symbol.name] = symbol
+        return True
+
+    def lookup(self, name: str) -> Symbol | None:
+        return self.symbols.get(name)
+
+
 _SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
 
 

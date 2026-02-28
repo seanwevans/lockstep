@@ -1,6 +1,6 @@
 from typing import Any
 
-from .models import LockstepDiagnostic
+from .models import KernelParameter, LockstepDiagnostic, Scope, Symbol
 
 
 def build_debug_visitor(base_visitor_cls):
@@ -239,9 +239,9 @@ def build_semantic_validator(base_visitor_cls):
 
         def __init__(self):
             self.diagnostics: list[LockstepDiagnostic] = []
-            self.scopes: list[dict[str, dict[str, str]]] = []
-            self.shaders: dict[str, list[dict[str, str]]] = {}
-            self.filters: dict[str, list[dict[str, str]]] = {}
+            self.scopes: list[Scope] = []
+            self.shaders: dict[str, list[KernelParameter]] = {}
+            self.filters: dict[str, list[KernelParameter]] = {}
 
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
@@ -252,7 +252,7 @@ def build_semantic_validator(base_visitor_cls):
             self.diagnostics.append(LockstepDiagnostic(severity, code, message, line, column, hint))
 
         def _push_scope(self):
-            self.scopes.append({})
+            self.scopes.append(Scope())
 
         def _pop_scope(self):
             if self.scopes:
@@ -262,7 +262,8 @@ def build_semantic_validator(base_visitor_cls):
             if not self.scopes:
                 self._push_scope()
             current_scope = self.scopes[-1]
-            if name in current_scope:
+            symbol = Symbol(name=name, declared_type=declared_type, kind=kind)
+            if not current_scope.declare(symbol):
                 self._add_diagnostic(
                     severity="error",
                     code=duplicate_code,
@@ -271,19 +272,19 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Rename one declaration or move it to a different scope.",
                 )
                 return False
-            current_scope[name] = {"type": declared_type, "kind": kind}
             return True
 
-        def _lookup(self, name: str) -> dict[str, str] | None:
+        def _lookup(self, name: str) -> Symbol | None:
             for scope in reversed(self.scopes):
-                if name in scope:
-                    return scope[name]
+                symbol = scope.lookup(name)
+                if symbol is not None:
+                    return symbol
             return None
 
         def _declared_in_current_scope(self, name: str) -> bool:
-            return bool(self.scopes and name in self.scopes[-1])
+            return bool(self.scopes and self.scopes[-1].lookup(name) is not None)
 
-        def _record_kernel_signature(self, ctx, target: dict[str, list[dict[str, str]]]):
+        def _record_kernel_signature(self, ctx, target: dict[str, list[KernelParameter]]):
             name = ctx.ID().getText()
             if name in target:
                 self._add_diagnostic(
@@ -297,14 +298,23 @@ def build_semantic_validator(base_visitor_cls):
             if ctx.paramList():
                 for param in ctx.paramList().param():
                     params.append(
-                        {
-                            "name": param.ID().getText(),
-                            "type": param.typeName().getText(),
-                            "modifier": param.getChild(0).getText(),
-                        }
+                        KernelParameter(
+                            name=param.ID().getText(),
+                            declared_type=param.typeName().getText(),
+                            modifier=param.getChild(0).getText(),
+                        )
                     )
             target[name] = params
             return name, params
+
+        def _to_kernel_param(self, raw_param: KernelParameter | dict[str, str]) -> KernelParameter:
+            if isinstance(raw_param, KernelParameter):
+                return raw_param
+            return KernelParameter(
+                name=raw_param["name"],
+                declared_type=raw_param["type"],
+                modifier=raw_param["modifier"],
+            )
 
         def _check_expression_identifier(self, name: str, ctx):
             if self._lookup(name) is None:
@@ -317,7 +327,7 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return None
             symbol = self._lookup(name)
-            return symbol["type"] if symbol else None
+            return symbol.declared_type if symbol else None
 
         def _type_check_bind_call(self, ctx, target_name: str, callee_name: str, arg_names):
             modifier_to_kind = {
@@ -327,7 +337,8 @@ def build_semantic_validator(base_visitor_cls):
                 "accum": "accumulator",
             }
 
-            kernel = self.shaders.get(callee_name) or self.filters.get(callee_name)
+            raw_kernel = self.shaders.get(callee_name) or self.filters.get(callee_name)
+            kernel = [self._to_kernel_param(param) for param in raw_kernel] if raw_kernel is not None else None
             if kernel is None:
                 self._add_diagnostic(
                     severity="error",
@@ -363,7 +374,7 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Declare pipeline streams/accumulators/uniforms before binding.",
                 )
             else:
-                output_params = [param for param in kernel if param["modifier"] == "out"]
+                output_params = [param for param in kernel if param.modifier == "out"]
                 if not output_params:
                     self._add_diagnostic(
                         severity="error",
@@ -377,26 +388,26 @@ def build_semantic_validator(base_visitor_cls):
                     )
                 else:
                     expected_output = output_params[0]
-                    expected_output_kind = modifier_to_kind[expected_output["modifier"]]
-                    if target_symbol["kind"] != expected_output_kind:
+                    expected_output_kind = modifier_to_kind[expected_output.modifier]
+                    if target_symbol.kind != expected_output_kind:
                         self._add_diagnostic(
                             severity="error",
                             code="LCK309",
                             message=(
                                 f"Bind target '{target_name}' for '{callee_name}' must be a "
-                                f"{expected_output_kind} for out parameter '{expected_output['name']}', "
-                                f"got {target_symbol['kind']}."
+                                f"{expected_output_kind} for out parameter '{expected_output.name}', "
+                                f"got {target_symbol.kind}."
                             ),
                             ctx=ctx,
                             hint="Route kernel outputs to a stream-compatible bind target.",
                         )
-                    if target_symbol["type"] != expected_output["type"]:
+                    if target_symbol.declared_type != expected_output.declared_type:
                         self._add_diagnostic(
                             severity="error",
                             code="LCK305",
                             message=(
                                 f"Type mismatch for bind target '{target_name}' in '{callee_name}': "
-                                f"expected {expected_output['type']}, got {target_symbol['type']}."
+                                f"expected {expected_output.declared_type}, got {target_symbol.declared_type}."
                             ),
                             ctx=ctx,
                             hint="Align bind target type with the kernel out parameter type.",
@@ -414,28 +425,28 @@ def build_semantic_validator(base_visitor_cls):
                     )
                     continue
 
-                expected_kind = modifier_to_kind.get(expected["modifier"])
-                if expected_kind is not None and actual_symbol["kind"] != expected_kind:
+                expected_kind = modifier_to_kind.get(expected.modifier)
+                if expected_kind is not None and actual_symbol.kind != expected_kind:
                     self._add_diagnostic(
                         severity="error",
                         code="LCK308",
                         message=(
                             f"Modifier mismatch for argument '{arg_name}' in '{callee_name}': "
-                            f"parameter '{expected['name']}' requires {expected['modifier']} "
-                            f"({expected_kind}), got {actual_symbol['kind']}."
+                            f"parameter '{expected.name}' requires {expected.modifier} "
+                            f"({expected_kind}), got {actual_symbol.kind}."
                         ),
                         ctx=ctx,
                         hint="Pass a symbol with the kind required by the parameter modifier.",
                     )
 
-                actual_type = actual_symbol["type"]
-                if actual_type != expected["type"]:
+                actual_type = actual_symbol.declared_type
+                if actual_type != expected.declared_type:
                     self._add_diagnostic(
                         severity="error",
                         code="LCK305",
                         message=(
                             f"Type mismatch for argument '{arg_name}' in '{callee_name}': "
-                            f"expected {expected['type']}, got {actual_type}."
+                            f"expected {expected.declared_type}, got {actual_type}."
                         ),
                         ctx=ctx,
                         hint="Align argument types with the shader/filter signature.",
@@ -451,7 +462,7 @@ def build_semantic_validator(base_visitor_cls):
             _name, params = self._record_kernel_signature(ctx, self.shaders)
             self._push_scope()
             for param in params:
-                self._declare(param["name"], param["type"], ctx, duplicate_code="LCK306", kind=f"param:{param['modifier']}")
+                self._declare(param.name, param.declared_type, ctx, duplicate_code="LCK306", kind=f"param:{param.modifier}")
             result = self.visitChildren(ctx)
             self._pop_scope()
             return result
@@ -460,7 +471,7 @@ def build_semantic_validator(base_visitor_cls):
             _name, params = self._record_kernel_signature(ctx, self.filters)
             self._push_scope()
             for param in params:
-                self._declare(param["name"], param["type"], ctx, duplicate_code="LCK306", kind=f"param:{param['modifier']}")
+                self._declare(param.name, param.declared_type, ctx, duplicate_code="LCK306", kind=f"param:{param.modifier}")
             result = self.visitChildren(ctx)
             self._pop_scope()
             return result
@@ -518,13 +529,13 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Declare an accumulator and use it as the fold source.",
                 )
-            elif fold_source_symbol["kind"] != "accumulator":
+            elif fold_source_symbol.kind != "accumulator":
                 self._add_diagnostic(
                     severity="error",
                     code="LCK403",
                     message=(
                         f"Fold source '{fold_source}' must reference an accumulator, "
-                        f"got {fold_source_symbol['kind']}."
+                        f"got {fold_source_symbol.kind}."
                     ),
                     ctx=ctx,
                     hint="Use an accumulator as the input to fold.",
@@ -537,13 +548,13 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Use a valid fold operator such as sum, avg, min, or max.",
                 )
-            elif fold_source_symbol["type"] != declared_type:
+            elif fold_source_symbol.declared_type != declared_type:
                 self._add_diagnostic(
                     severity="error",
                     code="LCK404",
                     message=(
                         f"Fold target '{fold_target}' has type {declared_type}, but fold source "
-                        f"'{fold_source}' has accumulator type {fold_source_symbol['type']}."
+                        f"'{fold_source}' has accumulator type {fold_source_symbol.declared_type}."
                     ),
                     ctx=ctx,
                     hint="Match the folded uniform type to the accumulator type.",

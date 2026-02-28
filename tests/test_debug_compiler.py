@@ -1159,7 +1159,10 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
 
     assert validator.diagnostics == []
     assert validator.scopes
-    assert validator.scopes[-1]["u1"] == {"type": "float", "kind": "uniform"}
+    symbol = validator.scopes[-1].lookup("u1")
+    assert symbol is not None
+    assert symbol.declared_type == "float"
+    assert symbol.kind == "uniform"
 
 
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
