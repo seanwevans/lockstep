@@ -118,3 +118,9 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
 
     return 0
+
+
+def main(argv=None):
+    from .compiler import compile_lockstep
+
+    return run_cli(argv, compiler=compile_lockstep)

@@ -98,6 +98,15 @@ The compiler generates a C-compatible header for the Host application (C/C++, Ru
 
 ## 6. Compiler Frontend Usage
 
+Install in editable mode to enable the packaged CLI entrypoint:
+
+```bash
+pip install -e .
+lockstepc path/to/program.lock
+# or read source from stdin
+cat path/to/program.lock | lockstepc --dump
+```
+
 `debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
 
 * `parse_tree`: ANTLR parse tree for the source.
