@@ -831,6 +831,64 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     assert captured["source"] == "pipeline FromFile { }"
 
 
+def test_run_cli_dump_prints_compiled_entities(debug_compiler_module):
+    def fake_compiler(_source):
+        return debug_compiler_module.LockstepCompileResult(
+            parse_tree=None,
+            entities={
+                "streams": [{"name": "positions", "capacity": 1000}],
+                "bind_routes": ["out = Simulate(inp);"],
+            },
+            diagnostics=[],
+        )
+
+    stdout = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        ["--dump"],
+        stdin=io.StringIO("pipeline Physics { }"),
+        stdout=stdout,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue().splitlines() == [
+        "{",
+        '  "bind_routes": [',
+        '    "out = Simulate(inp);"',
+        "  ],",
+        '  "streams": [',
+        "    {",
+        '      "capacity": 1000,',
+        '      "name": "positions"',
+        "    }",
+        "  ]",
+        "}",
+    ]
+
+
+def test_run_cli_dump_falls_back_to_compiler_result(debug_compiler_module):
+    def fake_compiler(_source):
+        return {"nodes": ["a", "b"]}
+
+    stdout = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        ["--dump"],
+        stdin=io.StringIO("pipeline Physics { }"),
+        stdout=stdout,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    assert stdout.getvalue().splitlines() == [
+        "{",
+        '  "nodes": [',
+        '    "a",',
+        '    "b"',
+        "  ]",
+        "}",
+    ]
+
+
 def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     def failing_compiler(_source):
         raise debug_compiler_module.LockstepCompileError(
