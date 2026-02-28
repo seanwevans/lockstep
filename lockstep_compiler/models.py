@@ -22,6 +22,26 @@ class LockstepCompileResult:
 _SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
 
 
+def _should_replace_diagnostic(
+    existing: LockstepDiagnostic,
+    candidate: LockstepDiagnostic,
+) -> bool:
+    existing_priority = _SEVERITY_PRIORITY.get(existing.severity, 99)
+    candidate_priority = _SEVERITY_PRIORITY.get(candidate.severity, 99)
+    if candidate_priority != existing_priority:
+        return candidate_priority < existing_priority
+
+    existing_hint = (existing.hint or "").strip()
+    candidate_hint = (candidate.hint or "").strip()
+    if bool(candidate_hint) != bool(existing_hint):
+        return bool(candidate_hint)
+
+    if candidate_hint and existing_hint:
+        return candidate_hint < existing_hint
+
+    return False
+
+
 def normalize_diagnostics(
     diagnostics: list[LockstepDiagnostic],
 ) -> list[LockstepDiagnostic]:
@@ -35,7 +55,7 @@ def normalize_diagnostics(
             diagnostic.line,
             diagnostic.column,
         )
-        if key not in deduped:
+        if key not in deduped or _should_replace_diagnostic(deduped[key], diagnostic):
             deduped[key] = diagnostic
 
     return sorted(
