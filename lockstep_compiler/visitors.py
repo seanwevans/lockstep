@@ -451,6 +451,9 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return
 
+            out_param_index = next((index for index, param in enumerate(kernel) if param.modifier == "out"), None)
+            out_param = kernel[out_param_index] if out_param_index is not None else None
+
             target_symbol = self._lookup(target_name)
             if target_symbol is None:
                 self._add_diagnostic(
@@ -461,8 +464,7 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Declare pipeline streams/accumulators/uniforms before binding.",
                 )
             else:
-                output_params = [param for param in kernel if param.modifier == "out"]
-                if not output_params:
+                if out_param is None:
                     self._add_diagnostic(
                         severity="error",
                         code="LCK309",
@@ -474,27 +476,39 @@ def build_semantic_validator(base_visitor_cls):
                         hint="Bind only kernels that declare an out parameter.",
                     )
                 else:
-                    expected_output = output_params[0]
-                    expected_output_kind = modifier_to_kind[expected_output.modifier]
+                    out_arg_name = arg_names[out_param_index]
+                    if out_arg_name != target_name:
+                        self._add_diagnostic(
+                            severity="error",
+                            code="LCK312",
+                            message=(
+                                f"Bind target '{target_name}' must match out argument "
+                                f"'{out_arg_name}' for parameter '{out_param.name}' in '{callee_name}'."
+                            ),
+                            ctx=ctx,
+                            hint="Use the same symbol for assignment target and out argument.",
+                        )
+
+                    expected_output_kind = modifier_to_kind[out_param.modifier]
                     if target_symbol.kind != expected_output_kind:
                         self._add_diagnostic(
                             severity="error",
                             code="LCK309",
                             message=(
                                 f"Bind target '{target_name}' for '{callee_name}' must be a "
-                                f"{expected_output_kind} for out parameter '{expected_output.name}', "
+                                f"{expected_output_kind} for out parameter '{out_param.name}', "
                                 f"got {target_symbol.kind}."
                             ),
                             ctx=ctx,
                             hint="Route kernel outputs to a stream-compatible bind target.",
                         )
-                    if target_symbol.declared_type != expected_output.declared_type:
+                    if target_symbol.declared_type != out_param.declared_type:
                         self._add_diagnostic(
                             severity="error",
                             code="LCK305",
                             message=(
                                 f"Type mismatch for bind target '{target_name}' in '{callee_name}': "
-                                f"expected {expected_output.declared_type}, got {target_symbol.declared_type}."
+                                f"expected {out_param.declared_type}, got {target_symbol.declared_type}."
                             ),
                             ctx=ctx,
                             hint="Align bind target type with the kernel out parameter type.",
