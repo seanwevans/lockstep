@@ -84,6 +84,12 @@ def _install_fake_generated_modules(monkeypatch):
         class LvalueContext:
             pass
 
+        class AssignStmtContext:
+            pass
+
+        class ReturnStmtContext:
+            pass
+
         def __init__(self, stream):
             self.stream = stream
             self._listeners = []
@@ -1727,3 +1733,126 @@ def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_m
             hint="Use one of the fields declared on this struct.",
         )
     ]
+
+
+def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("x", "int", _ctx(), duplicate_code="LCK306", kind="local")
+
+    assign_ctx = _ctx(
+        start_line=70,
+        start_col=3,
+        lvalue=lambda: _ctx(ID=lambda: [_token("x")]),
+        expr=lambda: _ctx(declared_type="float"),
+    )
+
+    validator.visitAssignStmt(assign_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK413",
+            message="Type mismatch in assignment: left-hand side expects int, got float.",
+            line=70,
+            column=3,
+            hint="Assign expressions whose type matches the lvalue declaration.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    var_decl_ctx = _ctx(
+        start_line=72,
+        start_col=1,
+        ID=lambda: _token("count"),
+        typeName=lambda: _token("int"),
+        expr=lambda: _ctx(declared_type="float"),
+    )
+
+    validator.visitVarDecl(var_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK414",
+            message="Type mismatch in initializer for 'count': expected int, got float.",
+            line=72,
+            column=1,
+            hint="Use an initializer expression with the same type as the declared variable.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    return_ctx = _ctx(start_line=74, start_col=5, expr=lambda: _ctx(declared_type="float"))
+    pure_ctx = _ctx(
+        ID=lambda: _token("compute"),
+        typeName=lambda: _token("int"),
+        pureParamList=lambda: None,
+        returnStmt=lambda: return_ctx,
+    )
+
+    original_visit_children = validator.visitChildren
+
+    def _visit_children(ctx):
+        if hasattr(ctx, "returnStmt") and callable(ctx.returnStmt) and ctx.returnStmt() is not None:
+            validator.visitReturnStmt(ctx.returnStmt())
+        return original_visit_children(ctx)
+
+    validator.visitChildren = _visit_children
+    validator.visitPureDecl(pure_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK415",
+            message="Return type mismatch in pure function 'compute': expected int, got float.",
+            line=74,
+            column=5,
+            hint="Return an expression whose type matches the pure function return type.",
+        )
+    ]
+
+
+def test_semantic_validator_accepts_matching_assignment_initializer_and_return(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("x", "int", _ctx(), duplicate_code="LCK306", kind="local")
+
+    assign_ctx = _ctx(
+        lvalue=lambda: _ctx(ID=lambda: [_token("x")]),
+        expr=lambda: _ctx(declared_type="int"),
+    )
+    validator.visitAssignStmt(assign_ctx)
+
+    var_decl_ctx = _ctx(
+        ID=lambda: _token("count"),
+        typeName=lambda: _token("int"),
+        expr=lambda: _ctx(declared_type="int"),
+    )
+    validator.visitVarDecl(var_decl_ctx)
+
+    return_ctx = _ctx(expr=lambda: _ctx(declared_type="int"))
+    pure_ctx = _ctx(
+        ID=lambda: _token("compute"),
+        typeName=lambda: _token("int"),
+        pureParamList=lambda: None,
+        returnStmt=lambda: return_ctx,
+    )
+
+    original_visit_children = validator.visitChildren
+
+    def _visit_children(ctx):
+        if hasattr(ctx, "returnStmt") and callable(ctx.returnStmt) and ctx.returnStmt() is not None:
+            validator.visitReturnStmt(ctx.returnStmt())
+        return original_visit_children(ctx)
+
+    validator.visitChildren = _visit_children
+    validator.visitPureDecl(pure_ctx)
+
+    assert validator.diagnostics == []
