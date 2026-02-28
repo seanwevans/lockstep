@@ -920,6 +920,67 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     ]
 
 
+def test_run_cli_internal_error_default_mode_keeps_generic_message(debug_compiler_module):
+    def failing_compiler(_source):
+        raise RuntimeError("kaboom")
+
+    stderr = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline Broken {"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    assert exit_code == 1
+    assert stderr.getvalue().splitlines() == [
+        "Compilation failed due to an internal error.",
+    ]
+
+
+def test_run_cli_debug_mode_emits_exception_details_and_traceback(debug_compiler_module):
+    def failing_compiler(_source):
+        raise debug_compiler_module.LockstepCompileError(
+            [
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="error",
+                    code="LCK001",
+                    message="unexpected",
+                    line=4,
+                    column=2,
+                    hint="Fix syntax errors before semantic analysis can continue.",
+                )
+            ],
+            diagnostics=[
+                debug_compiler_module.LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK201",
+                    message="Struct redeclared",
+                    line=2,
+                    column=1,
+                    hint="Rename duplicate struct.",
+                )
+            ],
+        )
+
+    stderr = io.StringIO()
+    exit_code = debug_compiler_module.run_cli(
+        ["--debug"],
+        stdin=io.StringIO("pipeline Broken {"),
+        stderr=stderr,
+        compiler=failing_compiler,
+    )
+
+    output = stderr.getvalue()
+    assert exit_code == 1
+    assert "Compilation failed with 1 parse error." in output
+    assert "line 4:2 unexpected" in output
+    assert "diagnostics:" in output
+    assert '"code": "LCK201"' in output
+    assert "LockstepCompileError: Compilation failed with 1 parse error." in output
+    assert "Traceback (most recent call last):" in output
+
+
 def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
     missing = tmp_path / "missing.lock"
     stderr = io.StringIO()
