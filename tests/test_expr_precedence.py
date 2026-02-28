@@ -157,3 +157,15 @@ def test_logical_and_binds_tighter_than_or(generated_parser):
     assert right_lhs.primaryExpr().lvalue().getText() == "c"
     assert right_rhs.primaryExpr().lvalue().getText() == "d"
     assert "&&" in right_and.getText()
+
+
+def test_boolean_literals_parse_as_primary_expressions(generated_parser):
+    lexer_cls, parser_cls = generated_parser
+    true_tree, _ = _parse_expr("true", lexer_cls, parser_cls)
+    false_tree, _ = _parse_expr("false", lexer_cls, parser_cls)
+
+    true_primary = true_tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].equalityExpr()[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr()
+    false_primary = false_tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].equalityExpr()[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr()
+
+    assert true_primary.BOOL().getText() == "true"
+    assert false_primary.BOOL().getText() == "false"

@@ -69,12 +69,14 @@ primaryExpr
     | lvalue
     | INT
     | FLOAT
+    | BOOL
     ;
 
 exprList: expr (',' expr)*;
 lvalue: ID ('.' ID)*;
 typeName: ID;
 
+BOOL: 'true' | 'false';
 ID: [a-zA-Z_][a-zA-Z0-9_]*;
 FLOAT
     : [0-9]+ '.' [0-9]* EXPONENT?
