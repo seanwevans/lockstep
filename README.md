@@ -66,8 +66,8 @@ pipeline Simulation {
 
     bind {
         particles = Calculate(particles, energy_sum);
-        // fold_sum consumes the linear type and produces a global scalar
-        uniform float total_e = fold_sum(energy_sum);
+        // fold sum consumes the linear type and produces a global scalar
+        uniform float total_e = fold sum(energy_sum);
     }
 }
 
