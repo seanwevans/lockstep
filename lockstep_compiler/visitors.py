@@ -254,6 +254,7 @@ def build_semantic_validator(base_visitor_cls):
             self.pure_functions: dict[str, dict[str, Any]] = {}
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
             self._primitive_types = {"int", "float", "bool"}
+            self._current_pure_function: dict[str, str] | None = None
 
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
@@ -600,12 +601,19 @@ def build_semantic_validator(base_visitor_cls):
 
         def visitPureDecl(self, ctx):
             name = ctx.ID().getText()
+            return_type = ctx.typeName().getText()
+            self._validate_declared_type(return_type, ctx.typeName(), "LCK310")
             params = []
             if ctx.pureParamList() is not None:
                 param_list = ctx.pureParamList()
                 param_types = param_list.typeName()
                 param_names = param_list.ID()
                 for index, param_name in enumerate(param_names):
+                    self._validate_declared_type(
+                        param_types[index].getText(),
+                        param_types[index],
+                        "LCK310",
+                    )
                     params.append(
                         SemanticKernelParam(
                             name=param_name.getText(),
@@ -615,11 +623,13 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
             self.pure_functions[name] = {
-                "return_type": ctx.typeName().getText(),
+                "return_type": return_type,
                 "params": params,
             }
 
             self._push_scope()
+            previous_pure_function = self._current_pure_function
+            self._current_pure_function = {"name": name, "return_type": return_type}
             for param in params:
                 self._declare(
                     param.name,
@@ -629,6 +639,7 @@ def build_semantic_validator(base_visitor_cls):
                     kind=f"param:{param.modifier}",
                 )
             result = self.visitChildren(ctx)
+            self._current_pure_function = previous_pure_function
             self._pop_scope()
             return result
 
@@ -719,8 +730,66 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
         def visitVarDecl(self, ctx):
-            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="local")
+            declared_type = ctx.typeName().getText()
+            self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
+            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="local")
+
+            has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            if has_initializer:
+                initializer_type = self._resolve_expr_type(ctx.expr())
+                if initializer_type is not None and initializer_type != declared_type:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK414",
+                        message=(
+                            f"Type mismatch in initializer for '{ctx.ID().getText()}': "
+                            f"expected {declared_type}, got {initializer_type}."
+                        ),
+                        ctx=ctx,
+                        hint="Use an initializer expression with the same type as the declared variable.",
+                    )
+            return self.visitChildren(ctx)
+
+        def visitAssignStmt(self, ctx):
+            lvalue_ctx = ctx.lvalue() if hasattr(ctx, "lvalue") and callable(ctx.lvalue) else None
+            expr_ctx = ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+
+            lvalue_type = self._resolve_lvalue_type(lvalue_ctx) if lvalue_ctx is not None else None
+            expr_type = self._resolve_expr_type(expr_ctx)
+
+            if lvalue_type is not None and expr_type is not None and lvalue_type != expr_type:
+                self._add_diagnostic(
+                    severity="error",
+                    code="LCK413",
+                    message=(
+                        "Type mismatch in assignment: "
+                        f"left-hand side expects {lvalue_type}, got {expr_type}."
+                    ),
+                    ctx=ctx,
+                    hint="Assign expressions whose type matches the lvalue declaration.",
+                )
+
+            return self.visitChildren(ctx)
+
+        def visitReturnStmt(self, ctx):
+            if self._current_pure_function is None:
+                return self.visitChildren(ctx)
+
+            expected_type = self._current_pure_function["return_type"]
+            return_expr = ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+            actual_type = self._resolve_expr_type(return_expr)
+            if actual_type is not None and actual_type != expected_type:
+                self._add_diagnostic(
+                    severity="error",
+                    code="LCK415",
+                    message=(
+                        f"Return type mismatch in pure function '{self._current_pure_function['name']}': "
+                        f"expected {expected_type}, got {actual_type}."
+                    ),
+                    ctx=ctx,
+                    hint="Return an expression whose type matches the pure function return type.",
+                )
+
             return self.visitChildren(ctx)
 
         def visitPipelineDecl(self, ctx):
