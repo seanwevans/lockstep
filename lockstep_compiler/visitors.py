@@ -438,20 +438,17 @@ def build_semantic_validator(base_visitor_cls):
             fold_target = id_tokens[0].getText()
             fold_operator = id_tokens[1].getText()
             fold_source = id_tokens[2].getText()
+            declared_type = ctx.typeName().getText()
 
-            if self._declared_in_current_scope(fold_target):
-                self._add_diagnostic(
-                    severity="error",
-                    code="LCK306",
-                    message=f"Duplicate declaration for '{fold_target}' in the same scope.",
-                    ctx=ctx,
-                    hint="Rename one declaration or move it to a different scope.",
-                )
-            else:
-                self.scopes[-1][fold_target] = {"type": ctx.typeName().getText(), "kind": "uniform"}
+            self._declare(
+                fold_target,
+                declared_type,
+                ctx,
+                duplicate_code="LCK306",
+                kind="uniform",
+            )
 
             fold_source_symbol = self._lookup(fold_source)
-            declared_type = ctx.typeName().getText()
             if fold_source_symbol is None:
                 self._add_diagnostic(
                     severity="error",

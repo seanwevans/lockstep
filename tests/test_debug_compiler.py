@@ -932,6 +932,53 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     assert "has type int" in validator.diagnostics[1].message
 
 
+def test_semantic_validator_reports_duplicate_fold_target(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare("u0", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+
+    duplicate_fold_ctx = _ctx(
+        start_line=33,
+        start_col=4,
+        ID=lambda: [_token("u0"), _token("sum"), _token("acc_energy")],
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(duplicate_fold_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK306",
+            message="Duplicate declaration for 'u0' in the same scope.",
+            line=33,
+            column=4,
+            hint="Rename one declaration or move it to a different scope.",
+        )
+    ]
+
+
+def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    fold_ctx = _ctx(
+        start_line=34,
+        start_col=5,
+        ID=lambda: [_token("u1"), _token("sum"), _token("acc_energy")],
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(fold_ctx)
+
+    assert validator.diagnostics == []
+    assert validator.scopes
+    assert validator.scopes[-1]["u1"] == {"type": "float", "kind": "uniform"}
+
+
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
     debug_compiler_module,
 ):
