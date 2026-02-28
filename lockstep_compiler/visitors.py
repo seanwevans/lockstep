@@ -247,6 +247,7 @@ def build_semantic_validator(base_visitor_cls):
             self.scopes: list[dict[str, SemanticSymbol]] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
+            self.pure_functions: dict[str, dict[str, Any]] = {}
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
 
         def _line_col(self, ctx) -> tuple[int, int]:
@@ -548,6 +549,126 @@ def build_semantic_validator(base_visitor_cls):
             self._pop_scope()
             return result
 
+        def visitPureDecl(self, ctx):
+            name = ctx.ID().getText()
+            params = []
+            if ctx.pureParamList() is not None:
+                param_list = ctx.pureParamList()
+                param_types = param_list.typeName()
+                param_names = param_list.ID()
+                for index, param_name in enumerate(param_names):
+                    params.append(
+                        SemanticKernelParam(
+                            name=param_name.getText(),
+                            declared_type=param_types[index].getText(),
+                            modifier="value",
+                        )
+                    )
+
+            self.pure_functions[name] = {
+                "return_type": ctx.typeName().getText(),
+                "params": params,
+            }
+
+            self._push_scope()
+            for param in params:
+                self._declare(
+                    param.name,
+                    param.declared_type,
+                    ctx,
+                    duplicate_code="LCK306",
+                    kind=f"param:{param.modifier}",
+                )
+            result = self.visitChildren(ctx)
+            self._pop_scope()
+            return result
+
+        def _resolve_expr_type(self, ctx):
+            if ctx is None:
+                return None
+
+            if hasattr(ctx, "declared_type"):
+                return ctx.declared_type
+
+            if hasattr(ctx, "INT") and callable(ctx.INT) and ctx.INT() is not None:
+                return "int"
+            if hasattr(ctx, "FLOAT") and callable(ctx.FLOAT) and ctx.FLOAT() is not None:
+                return "float"
+            if hasattr(ctx, "BOOL") and callable(ctx.BOOL) and ctx.BOOL() is not None:
+                return "bool"
+
+            if hasattr(ctx, "lvalue") and callable(ctx.lvalue) and ctx.lvalue() is not None:
+                return self._resolve_lvalue_type(ctx.lvalue())
+
+            if hasattr(ctx, "ID") and callable(ctx.ID) and ctx.ID() is not None:
+                if hasattr(ctx, "exprList") and callable(ctx.exprList) and ctx.exprList() is not None:
+                    function_name = ctx.ID().getText()
+                    function_signature = self.pure_functions.get(function_name)
+                    if function_signature is not None:
+                        return function_signature["return_type"]
+                    return None
+                return self._check_expression_identifier(ctx.ID().getText(), ctx)
+
+            if hasattr(ctx, "primaryExpr") and callable(ctx.primaryExpr) and ctx.primaryExpr() is not None:
+                return self._resolve_expr_type(ctx.primaryExpr())
+
+            if hasattr(ctx, "expr") and callable(ctx.expr):
+                child_expr = ctx.expr()
+                if isinstance(child_expr, list):
+                    if len(child_expr) == 1:
+                        return self._resolve_expr_type(child_expr[0])
+                    return None
+                if child_expr is not None:
+                    return self._resolve_expr_type(child_expr)
+
+            return None
+
+        def _type_check_pure_call(self, ctx):
+            callee_name = ctx.ID().getText()
+            signature = self.pure_functions.get(callee_name)
+            if signature is None:
+                self._add_diagnostic(
+                    severity="error",
+                    code="LCK410",
+                    message=f"Undefined pure function '{callee_name}'.",
+                    ctx=ctx,
+                    hint="Declare the pure function before calling it.",
+                )
+                return
+
+            expected_params: list[SemanticKernelParam] = signature["params"]
+            actual_args = []
+            if ctx.exprList() is not None:
+                actual_args = ctx.exprList().expr()
+
+            if len(actual_args) != len(expected_params):
+                self._add_diagnostic(
+                    severity="error",
+                    code="LCK411",
+                    message=(
+                        f"Pure function '{callee_name}' expects {len(expected_params)} argument(s), "
+                        f"but got {len(actual_args)}."
+                    ),
+                    ctx=ctx,
+                    hint="Pass the exact number of arguments declared in the pure function signature.",
+                )
+                return
+
+            for index, (arg_expr, expected) in enumerate(zip(actual_args, expected_params), start=1):
+                actual_type = self._resolve_expr_type(arg_expr)
+                if actual_type != expected.declared_type:
+                    resolved_actual = actual_type if actual_type is not None else "<unresolved>"
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK412",
+                        message=(
+                            f"Type mismatch for argument {index} in pure call '{callee_name}': "
+                            f"expected {expected.declared_type}, got {resolved_actual}."
+                        ),
+                        ctx=ctx,
+                        hint="Ensure each argument type matches the pure function parameter type.",
+                    )
+
         def visitVarDecl(self, ctx):
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="local")
             return self.visitChildren(ctx)
@@ -638,6 +759,8 @@ def build_semantic_validator(base_visitor_cls):
             if ctx.ID():
                 if ctx.exprList() is None:
                     self._check_expression_identifier(ctx.ID().getText(), ctx)
+                else:
+                    self._type_check_pure_call(ctx)
                 return self.visitChildren(ctx)
             return self.visitChildren(ctx)
 
