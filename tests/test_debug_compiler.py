@@ -1214,8 +1214,84 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
     )
     validator.visitBindStmt(mismatch_ctx)
 
+    assert [diag.code for diag in validator.diagnostics] == ["LCK312", "LCK309"]
+    assert "must match out argument" in validator.diagnostics[0].message
+    assert "must be a stream" in validator.diagnostics[1].message
+
+
+def test_semantic_validator_allows_bind_when_target_matches_out_argument(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="outp", declared_type="Vec3", modifier="out"),
+        ]
+    }
+    validator._push_scope()
+    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    bind_ctx = _ctx(
+        start_line=28,
+        start_col=2,
+        ID=lambda: [_token("out_stream"), _token("Apply"), _token("inp_stream"), _token("out_stream")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(bind_ctx)
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="outp", declared_type="Vec3", modifier="out"),
+        ]
+    }
+    validator._push_scope()
+    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("other_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    bind_ctx = _ctx(
+        start_line=29,
+        start_col=2,
+        ID=lambda: [_token("out_stream"), _token("Apply"), _token("inp_stream"), _token("other_stream")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(bind_ctx)
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK312"]
+    assert "must match out argument 'other_stream'" in validator.diagnostics[0].message
+
+
+def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="energy", declared_type="float", modifier="accum"),
+        ]
+    }
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("acc", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    bind_ctx = _ctx(
+        start_line=30,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("acc")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(bind_ctx)
+
     assert [diag.code for diag in validator.diagnostics] == ["LCK309"]
-    assert "must be a stream" in validator.diagnostics[0].message
+    assert "kernel has no out parameter" in validator.diagnostics[0].message
 
 
 def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
