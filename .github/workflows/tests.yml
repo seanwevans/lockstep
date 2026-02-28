@@ -1,4 +1,4 @@
-name: Tests & Coverage
+name: CI
 
 on:
     push:
@@ -34,6 +34,24 @@ jobs:
             run: |
               make check-generated-parser
 
+
+    lint:
+        name: Static checks
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v4
+
+          - name: Setup Python
+            uses: actions/setup-python@v5
+            with:
+              python-version: "3.12"
+
+          - name: Verify Python modules compile
+            run: |
+              python -m compileall debug_compiler.py lockstep_compiler tests
+
     test:
         name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
         runs-on: ${{ matrix.os }}
@@ -61,7 +79,7 @@ jobs:
 
           - name: Run unit tests with coverage
             run: |
-              python3 -m pytest
+              python -m pytest --junitxml=pytest-junit.xml
 
           - name: Upload coverage artifacts
             if: always()
