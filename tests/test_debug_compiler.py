@@ -1313,6 +1313,141 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
     assert validator.scopes[-1]["u1"] == SemanticSymbol(name="u1", declared_type="float", kind="uniform")
 
 
+def test_semantic_validator_records_pure_signature_from_declaration(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    pure_param_list_ctx = _ctx(
+        typeName=lambda: [_token("float"), _token("int")],
+        ID=lambda: [_token("left"), _token("right")],
+    )
+    pure_decl_ctx = _ctx(
+        ID=lambda: _token("blend"),
+        typeName=lambda: _token("float"),
+        pureParamList=lambda: pure_param_list_ctx,
+    )
+
+    validator.visitPureDecl(pure_decl_ctx)
+
+    assert validator.pure_functions == {
+        "blend": {
+            "return_type": "float",
+            "params": [
+                SemanticKernelParam(name="left", declared_type="float", modifier="value"),
+                SemanticKernelParam(name="right", declared_type="int", modifier="value"),
+            ],
+        }
+    }
+
+
+def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    call_ctx = _ctx(
+        start_line=36,
+        start_col=3,
+        ID=lambda: _token("missing_pure"),
+        exprList=lambda: _ctx(expr=lambda: []),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK410",
+            message="Undefined pure function 'missing_pure'.",
+            line=36,
+            column=3,
+            hint="Declare the pure function before calling it.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.pure_functions = {
+        "mix": {
+            "return_type": "float",
+            "params": [
+                SemanticKernelParam(name="a", declared_type="float", modifier="value"),
+                SemanticKernelParam(name="b", declared_type="float", modifier="value"),
+            ],
+        }
+    }
+
+    call_ctx = _ctx(
+        start_line=37,
+        start_col=3,
+        ID=lambda: _token("mix"),
+        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float")]),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK411",
+            message="Pure function 'mix' expects 2 argument(s), but got 1.",
+            line=37,
+            column=3,
+            hint="Pass the exact number of arguments declared in the pure function signature.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_pure_call_argument_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.pure_functions = {
+        "negate": {
+            "return_type": "float",
+            "params": [SemanticKernelParam(name="value", declared_type="float", modifier="value")],
+        }
+    }
+
+    call_ctx = _ctx(
+        start_line=38,
+        start_col=3,
+        ID=lambda: _token("negate"),
+        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="int")]),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK412",
+            message="Type mismatch for argument 1 in pure call 'negate': expected float, got int.",
+            line=38,
+            column=3,
+            hint="Ensure each argument type matches the pure function parameter type.",
+        )
+    ]
+
+
+def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.pure_functions = {
+        "dot": {
+            "return_type": "float",
+            "params": [
+                SemanticKernelParam(name="x", declared_type="float", modifier="value"),
+                SemanticKernelParam(name="y", declared_type="float", modifier="value"),
+            ],
+        }
+    }
+
+    call_ctx = _ctx(
+        start_line=39,
+        start_col=3,
+        ID=lambda: _token("dot"),
+        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == []
 def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
