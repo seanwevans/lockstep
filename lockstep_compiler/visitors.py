@@ -580,8 +580,8 @@ def build_semantic_validator(base_visitor_cls):
                 return self.visitChildren(ctx)
 
             fold_target = id_tokens[0].getText()
-            fold_operator = id_tokens[1].getText()
-            fold_source = id_tokens[2].getText()
+            fold_operator = ctx.foldOperator().getText()
+            fold_source = id_tokens[1].getText()
             declared_type = ctx.typeName().getText()
 
             self._declare(

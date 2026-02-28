@@ -161,6 +161,15 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#foldOperator.
+    def enterFoldOperator(self, ctx:LockstepParser.FoldOperatorContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#foldOperator.
+    def exitFoldOperator(self, ctx:LockstepParser.FoldOperatorContext):
+        pass
+
+
     # Enter a parse tree produced by LockstepParser#argList.
     def enterArgList(self, ctx:LockstepParser.ArgListContext):
         pass
