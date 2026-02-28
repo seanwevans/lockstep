@@ -19,6 +19,26 @@ class LockstepCompileResult:
     diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class SemanticSymbol:
+    name: str
+    declared_type: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class SemanticKernelParam:
+    name: str
+    declared_type: str
+    modifier: str
+
+
+@dataclass(frozen=True)
+class SemanticStructField:
+    name: str
+    declared_type: str
+
+
 _SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
 
 

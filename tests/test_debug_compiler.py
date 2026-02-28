@@ -7,11 +7,12 @@ import types
 
 import pytest
 
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+
+from lockstep_compiler.models import SemanticKernelParam, SemanticSymbol
 
 def _install_fake_generated_modules(monkeypatch):
     """Install minimal ANTLR-generated modules so debug_compiler can import."""
@@ -1001,8 +1002,8 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
-            {"name": "inp", "type": "Vec3", "modifier": "in"},
-            {"name": "outp", "type": "Vec3", "modifier": "out"},
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="outp", declared_type="Vec3", modifier="out"),
         ]
     }
     validator._push_scope()
@@ -1034,8 +1035,8 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
-            {"name": "inp", "type": "Vec3", "modifier": "in"},
-            {"name": "energy", "type": "float", "modifier": "accum"},
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="energy", declared_type="float", modifier="accum"),
         ]
     }
     validator._push_scope()
@@ -1072,9 +1073,9 @@ def test_semantic_validator_reports_bind_modifier_kind_mismatches(debug_compiler
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
-            {"name": "inp", "type": "Vec3", "modifier": "in"},
-            {"name": "u_dt", "type": "float", "modifier": "uniform"},
-            {"name": "energy", "type": "float", "modifier": "accum"},
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="u_dt", declared_type="float", modifier="uniform"),
+            SemanticKernelParam(name="energy", declared_type="float", modifier="accum"),
         ]
     }
     validator._push_scope()
@@ -1101,8 +1102,8 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
-            {"name": "inp", "type": "Vec3", "modifier": "in"},
-            {"name": "outp", "type": "Vec3", "modifier": "out"},
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="outp", declared_type="Vec3", modifier="out"),
         ]
     }
     validator._push_scope()
@@ -1221,7 +1222,7 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
 
     assert validator.diagnostics == []
     assert validator.scopes
-    assert validator.scopes[-1]["u1"] == {"type": "float", "kind": "uniform"}
+    assert validator.scopes[-1]["u1"] == SemanticSymbol(name="u1", declared_type="float", kind="uniform")
 
 
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
