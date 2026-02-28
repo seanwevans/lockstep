@@ -1094,7 +1094,8 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     non_acc_fold_ctx = _ctx(
         start_line=30,
         start_col=6,
-        ID=lambda: [_token("u0"), _token("sum"), _token("not_acc")],
+        ID=lambda: [_token("u0"), _token("not_acc")],
+        foldOperator=lambda: _token("sum"),
         argList=lambda: None,
         typeName=lambda: _token("float"),
     )
@@ -1103,7 +1104,8 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     mismatched_type_ctx = _ctx(
         start_line=31,
         start_col=6,
-        ID=lambda: [_token("u1"), _token("sum"), _token("acc_energy")],
+        ID=lambda: [_token("u1"), _token("acc_energy")],
+        foldOperator=lambda: _token("sum"),
         argList=lambda: None,
         typeName=lambda: _token("int"),
     )
@@ -1124,7 +1126,8 @@ def test_semantic_validator_reports_duplicate_fold_target(debug_compiler_module)
     duplicate_fold_ctx = _ctx(
         start_line=33,
         start_col=4,
-        ID=lambda: [_token("u0"), _token("sum"), _token("acc_energy")],
+        ID=lambda: [_token("u0"), _token("acc_energy")],
+        foldOperator=lambda: _token("sum"),
         argList=lambda: None,
         typeName=lambda: _token("float"),
     )
@@ -1150,7 +1153,8 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
     fold_ctx = _ctx(
         start_line=34,
         start_col=5,
-        ID=lambda: [_token("u1"), _token("sum"), _token("acc_energy")],
+        ID=lambda: [_token("u1"), _token("acc_energy")],
+        foldOperator=lambda: _token("sum"),
         argList=lambda: None,
         typeName=lambda: _token("float"),
     )

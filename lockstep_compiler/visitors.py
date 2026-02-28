@@ -497,8 +497,7 @@ def build_semantic_validator(base_visitor_cls):
                 return self.visitChildren(ctx)
 
             fold_target = id_tokens[0].getText()
-            fold_operator = id_tokens[1].getText()
-            fold_source = id_tokens[2].getText()
+            fold_source = id_tokens[1].getText()
             declared_type = ctx.typeName().getText()
 
             self._declare(
@@ -528,14 +527,6 @@ def build_semantic_validator(base_visitor_cls):
                     ),
                     ctx=ctx,
                     hint="Use an accumulator as the input to fold.",
-                )
-            elif fold_operator not in {"sum", "avg", "min", "max"}:
-                self._add_diagnostic(
-                    severity="error",
-                    code="LCK402",
-                    message=f"Unsupported fold operator '{fold_operator}'.",
-                    ctx=ctx,
-                    hint="Use a valid fold operator such as sum, avg, min, or max.",
                 )
             elif fold_source_symbol["type"] != declared_type:
                 self._add_diagnostic(

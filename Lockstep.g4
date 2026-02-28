@@ -38,7 +38,14 @@ bindBlock: 'bind' '{' bindStmt* '}';
 
 bindStmt
     : ID '=' ID '(' argList ')' ';'
-    | 'uniform' typeName ID '=' 'fold' ID '(' ID ')' ';'
+    | 'uniform' typeName ID '=' 'fold' foldOperator '(' ID ')' ';'
+    ;
+
+foldOperator
+    : 'sum'
+    | 'avg'
+    | 'min'
+    | 'max'
     ;
 
 argList: ID (',' ID)*;
