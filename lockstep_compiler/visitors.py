@@ -329,6 +329,62 @@ def build_semantic_validator(base_visitor_cls):
             symbol = self._lookup(name)
             return symbol.declared_type if symbol else None
 
+        def _collect_id_tokens(self, ctx):
+            id_tokens = ctx.ID()
+            if isinstance(id_tokens, list):
+                return id_tokens
+
+            tokens = []
+            index = 0
+            while True:
+                try:
+                    token = ctx.ID(index)
+                except Exception:
+                    break
+                if token is None:
+                    break
+                tokens.append(token)
+                index += 1
+            return tokens or [id_tokens]
+
+        def _resolve_lvalue_type(self, ctx):
+            id_tokens = self._collect_id_tokens(ctx)
+            if not id_tokens:
+                return None
+
+            root_identifier = id_tokens[0].getText()
+            current_type = self._check_expression_identifier(root_identifier, ctx)
+            if current_type is None:
+                return None
+
+            for field_token in id_tokens[1:]:
+                field_name = field_token.getText()
+                struct_fields = self.structs.get(current_type)
+                if struct_fields is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK302",
+                        message=(
+                            f"Cannot access field '{field_name}' on non-struct type "
+                            f"'{current_type}'."
+                        ),
+                        ctx=ctx,
+                        hint="Use field access only on values declared as struct types.",
+                    )
+                    return None
+                if field_name not in struct_fields:
+                    self._add_diagnostic(
+                        severity="error",
+                        code="LCK302",
+                        message=f"Struct '{current_type}' has no field '{field_name}'.",
+                        ctx=ctx,
+                        hint="Use one of the fields declared on this struct.",
+                    )
+                    return None
+                current_type = struct_fields[field_name]
+
+            return current_type
+
         def _type_check_bind_call(self, ctx, target_name: str, callee_name: str, arg_names):
             modifier_to_kind = {
                 "in": "stream",
@@ -467,6 +523,14 @@ def build_semantic_validator(base_visitor_cls):
             self._pop_scope()
             return result
 
+        def visitStructDecl(self, ctx):
+            struct_name = ctx.ID().getText()
+            fields = {}
+            for member in ctx.structMember() or []:
+                fields[member.ID().getText()] = member.typeName().getText()
+            self.structs[struct_name] = fields
+            return self.visitChildren(ctx)
+
         def visitFilterDecl(self, ctx):
             _name, params = self._record_kernel_signature(ctx, self.filters)
             self._push_scope()
@@ -570,8 +634,7 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitLvalue(self, ctx):
-            root_identifier = ctx.ID(0).getText()
-            self._check_expression_identifier(root_identifier, ctx)
+            self._resolve_lvalue_type(ctx)
             return self.visitChildren(ctx)
 
         def validate(self, tree):
