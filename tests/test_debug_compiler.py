@@ -1201,3 +1201,69 @@ def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
             hint="Declare the identifier in scope before using it.",
         )
     ]
+
+
+def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+        ],
+    )
+    nested_struct_ctx = _ctx(
+        ID=lambda: _token("Vec3"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("float"), ID=lambda: _token("x")),
+        ],
+    )
+    validator.visitStructDecl(struct_ctx)
+    validator.visitStructDecl(nested_struct_ctx)
+
+    validator._push_scope()
+    validator._declare("entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local")
+
+    lvalue_ctx = _ctx(
+        start_line=50,
+        start_col=2,
+        ID=lambda: [_token("entity"), _token("position"), _token("x")],
+    )
+
+    validator.visitLvalue(lvalue_ctx)
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    struct_ctx = _ctx(
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+        ],
+    )
+    validator.visitStructDecl(struct_ctx)
+
+    validator._push_scope()
+    validator._declare("entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local")
+
+    lvalue_ctx = _ctx(
+        start_line=52,
+        start_col=4,
+        ID=lambda: [_token("entity"), _token("velocity")],
+    )
+
+    validator.visitLvalue(lvalue_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK302",
+            message="Struct 'Particle' has no field 'velocity'.",
+            line=52,
+            column=4,
+            hint="Use one of the fields declared on this struct.",
+        )
+    ]
