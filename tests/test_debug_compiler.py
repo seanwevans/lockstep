@@ -894,8 +894,65 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
 
     assert validator.diagnostics[0].code == "LCK304"
     assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
-    assert validator.diagnostics[1].code == "LCK305"
-    assert "expected float, got int" in validator.diagnostics[1].message
+    assert validator.diagnostics[1].code == "LCK309"
+    assert "kernel has no out parameter" in validator.diagnostics[1].message
+    assert validator.diagnostics[2].code == "LCK305"
+    assert "expected float, got int" in validator.diagnostics[2].message
+
+
+def test_semantic_validator_reports_bind_modifier_kind_mismatches(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "u_dt", "type": "float", "modifier": "uniform"},
+            {"name": "energy", "type": "float", "modifier": "accum"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("dt_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("dt_uniform", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+
+    mismatch_ctx = _ctx(
+        start_line=24,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("dt_stream"), _token("dt_uniform")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(mismatch_ctx)
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK309", "LCK308", "LCK308"]
+    assert "kernel has no out parameter" in validator.diagnostics[0].message
+    assert "requires uniform" in validator.diagnostics[1].message
+    assert "requires accum" in validator.diagnostics[2].message
+
+
+def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            {"name": "inp", "type": "Vec3", "modifier": "in"},
+            {"name": "outp", "type": "Vec3", "modifier": "out"},
+        ]
+    }
+    validator._push_scope()
+    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("target_uniform", "Vec3", _ctx(), duplicate_code="LCK306", kind="uniform")
+
+    mismatch_ctx = _ctx(
+        start_line=26,
+        start_col=2,
+        ID=lambda: [_token("target_uniform"), _token("Apply"), _token("inp_stream"), _token("out_stream")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(mismatch_ctx)
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK309"]
+    assert "must be a stream" in validator.diagnostics[0].message
 
 
 def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
