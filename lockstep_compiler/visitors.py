@@ -649,6 +649,17 @@ def build_semantic_validator(base_visitor_cls):
                 else:
                     statements = [statement_nodes]
 
+            # Lightweight test doubles may expose a direct returnStmt() on the
+            # pure declaration context instead of nesting it under statement().
+            # Mirror parser behavior by treating that as a single statement.
+            if (
+                not statements
+                and hasattr(ctx, "returnStmt")
+                and callable(ctx.returnStmt)
+                and ctx.returnStmt() is not None
+            ):
+                statements = [ctx]
+
             return_statements: list[tuple[int, Any]] = []
             for index, statement in enumerate(statements):
                 if not hasattr(statement, "returnStmt") or not callable(statement.returnStmt):
