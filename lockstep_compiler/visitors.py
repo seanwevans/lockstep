@@ -460,7 +460,7 @@ def build_semantic_validator(base_visitor_cls):
             if kernel is None:
                 self._add_diagnostic(
                     severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_argument_count_mismatch"],
+                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_unknown_target"],
                     message=f"Undefined shader/filter '{callee_name}' in bind statement.",
                     ctx=ctx,
                     hint="Declare the shader/filter before using it in bind.",
@@ -472,7 +472,7 @@ def build_semantic_validator(base_visitor_cls):
             if expected_arity != actual_arity:
                 self._add_diagnostic(
                     severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_unknown_target"],
+                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_argument_count_mismatch"],
                     message=(
                         f"Invocation of '{callee_name}' expects {expected_arity} argument(s), "
                         f"but got {actual_arity}."
