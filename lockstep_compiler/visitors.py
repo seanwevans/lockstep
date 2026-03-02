@@ -461,20 +461,33 @@ def build_semantic_validator(base_visitor_cls):
                 "accum": "accumulator",
             }
 
+            def bind_fixit(action: str) -> str:
+                return f"Fix-it: {action}."
+
+            known_kernels = sorted(set(self.shaders.keys()) | set(self.filters.keys()))
+            kernel_suggestions = get_close_matches(callee_name, known_kernels, n=2, cutoff=0.3)
+
             kernel = self.shaders.get(callee_name) or self.filters.get(callee_name)
             if kernel is None:
+                hint = "Declare the shader/filter before using it in bind."
+                if kernel_suggestions:
+                    suggestion = kernel_suggestions[0]
+                    fix = bind_fixit(f"replace '{callee_name}' with '{suggestion}'")
+                    hint = f"Did you mean '{suggestion}'? {fix} {hint}"
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["bind_unknown_target"],
                     message=f"Undefined shader/filter '{callee_name}' in bind statement.",
                     ctx=ctx,
-                    hint="Declare the shader/filter before using it in bind.",
+                    hint=hint,
                 )
                 return
 
             expected_arity = len(kernel)
             actual_arity = len(arg_names)
             if expected_arity != actual_arity:
+                parameter_names = [param.name for param in kernel]
+                call_example = f"{target_name} = {callee_name}({', '.join(parameter_names)});"
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["bind_argument_count_mismatch"],
@@ -483,7 +496,10 @@ def build_semantic_validator(base_visitor_cls):
                         f"but got {actual_arity}."
                     ),
                     ctx=ctx,
-                    hint="Match bind arguments to the shader/filter parameter list.",
+                    hint=(
+                        f"{bind_fixit(f'use the full signature `{call_example}`')} "
+                        "Match bind arguments to the shader/filter parameter list."
+                    ),
                 )
                 return
 
@@ -522,7 +538,10 @@ def build_semantic_validator(base_visitor_cls):
                                 f"'{out_arg_name}' for parameter '{out_param.name}' in '{callee_name}'."
                             ),
                             ctx=ctx,
-                            hint="Use the same symbol for assignment target and out argument.",
+                            hint=(
+                                f"{bind_fixit(f'change the bind target to \'{out_arg_name}\' or the out argument to \'{target_name}\'')} "
+                                "Use the same symbol for assignment target and out argument."
+                            ),
                         )
 
                     expected_output_kind = modifier_to_kind[out_param.modifier]
@@ -536,7 +555,10 @@ def build_semantic_validator(base_visitor_cls):
                                 f"got {target_symbol.kind}."
                             ),
                             ctx=ctx,
-                            hint="Route kernel outputs to a stream-compatible bind target.",
+                            hint=(
+                                f"{bind_fixit(f"bind output to a '{expected_output_kind}' symbol")} "
+                                "Route kernel outputs to a stream-compatible bind target."
+                            ),
                         )
                     if target_symbol.declared_type != out_param.declared_type:
                         self._add_diagnostic(
@@ -558,7 +580,10 @@ def build_semantic_validator(base_visitor_cls):
                         code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
                         message=f"Undefined identifier '{arg_name}'.",
                         ctx=ctx,
-                        hint="Declare pipeline symbols before passing them to bind.",
+                        hint=(
+                            f"{bind_fixit(f'declare `{arg_name}` in the pipeline block')} "
+                            "Declare pipeline symbols before passing them to bind."
+                        ),
                     )
                     continue
 
@@ -573,7 +598,10 @@ def build_semantic_validator(base_visitor_cls):
                             f"({expected_kind}), got {actual_symbol.kind}."
                         ),
                         ctx=ctx,
-                        hint="Pass a symbol with the kind required by the parameter modifier.",
+                        hint=(
+                            f"{bind_fixit(f'replace `{arg_name}` with a {expected_kind} symbol')} "
+                            "Pass a symbol with the kind required by the parameter modifier."
+                        ),
                     )
 
                 actual_type = actual_symbol.declared_type
