@@ -4,7 +4,7 @@ from antlr4 import CommonTokenStream, InputStream
 
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
-from .visitors import build_debug_visitor, validate_semantics
+from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
 
 
 def _compile_lockstep_with_dependencies(
@@ -64,12 +64,18 @@ def _compile_lockstep_with_dependencies(
     )
 
 
-def _load_default_parser_classes() -> tuple[Any, Any, Any]:
+def load_default_parser_classes() -> tuple[Any, Any, Any]:
     from generated.parser.LockstepLexer import LockstepLexer
     from generated.parser.LockstepParser import LockstepParser
     from generated.parser.LockstepVisitor import LockstepVisitor
 
     return LockstepLexer, LockstepParser, LockstepVisitor
+
+
+def validate_semantics(parse_tree: Any, visitor_cls=None):
+    if visitor_cls is None:
+        _, _, visitor_cls = load_default_parser_classes()
+    return _validate_semantics(parse_tree, visitor_cls)
 
 
 def compile_lockstep(
@@ -101,3 +107,7 @@ def compile_lockstep(
         token_stream_cls=token_stream_cls,
         debug_visitor_cls=debug_visitor_cls,
     )
+
+
+# Backward-compatible alias for existing internal imports.
+_load_default_parser_classes = load_default_parser_classes
