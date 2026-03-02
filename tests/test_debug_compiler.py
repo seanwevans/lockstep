@@ -1546,6 +1546,32 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler
     ]
 
 
+def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    uniform_decl_ctx = _ctx(
+        start_line=73,
+        start_col=2,
+        ID=lambda: _token("u_count"),
+        typeName=lambda: _token("int"),
+        expr=lambda: _ctx(declared_type="float"),
+    )
+
+    validator.visitUniformDecl(uniform_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK419",
+            message="Type mismatch in uniform initializer for 'u_count': expected int, got float.",
+            line=73,
+            column=2,
+            hint="Use an initializer expression with the same type as the declared uniform.",
+        )
+    ]
+
+
 def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
@@ -1596,6 +1622,13 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
         expr=lambda: _ctx(declared_type="int"),
     )
     validator.visitVarDecl(var_decl_ctx)
+
+    uniform_decl_ctx = _ctx(
+        ID=lambda: _token("u_count"),
+        typeName=lambda: _token("int"),
+        expr=lambda: _ctx(declared_type="int"),
+    )
+    validator.visitUniformDecl(uniform_decl_ctx)
 
     return_ctx = _ctx(expr=lambda: _ctx(declared_type="int"))
     pure_ctx = _ctx(
