@@ -37,6 +37,7 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "assignment_type_mismatch": "LCK417",
     "pure_return_type_mismatch": "LCK418",
     "uniform_initializer_type_mismatch": "LCK419",
+    "invalid_operand_types": "LCK420",
 }
 
 
@@ -751,6 +752,118 @@ def build_semantic_validator(base_visitor_cls):
         def _resolve_expr_type(self, ctx):
             if ctx is None:
                 return None
+
+            def _as_list(value):
+                if value is None:
+                    return []
+                return value if isinstance(value, list) else [value]
+
+            def _child_text(index: int) -> str | None:
+                if not hasattr(ctx, "getChild"):
+                    return None
+                try:
+                    child = ctx.getChild(index)
+                except Exception:
+                    return None
+                return child.getText() if child is not None and hasattr(child, "getText") else None
+
+            def _report_operand_error(operator: str, expected: str, actual_types: list[str | None]):
+                rendered_types = ", ".join(type_name if type_name is not None else "<unresolved>" for type_name in actual_types)
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["invalid_operand_types"],
+                    message=(
+                        f"Operator '{operator}' expects {expected} operand type(s), "
+                        f"but got [{rendered_types}]."
+                    ),
+                    ctx=ctx,
+                    hint="Adjust operand types so they match the operator semantics.",
+                )
+
+            def _resolve_numeric_sequence(operator: str, operand_contexts: list[Any]):
+                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
+                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                if any(operand_type not in {"int", "float"} for operand_type in known):
+                    _report_operand_error(operator, "numeric", operand_types)
+                    return None
+                if len(known) != len(operand_contexts):
+                    return None
+                return "float" if "float" in known else "int"
+
+            def _resolve_boolean_sequence(operator: str, operand_contexts: list[Any]):
+                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
+                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                if any(operand_type != "bool" for operand_type in known):
+                    _report_operand_error(operator, "bool", operand_types)
+                    return None
+                if len(known) != len(operand_contexts):
+                    return None
+                return "bool"
+
+            if hasattr(ctx, "logicalAndExpr") and callable(ctx.logicalAndExpr):
+                operands = _as_list(ctx.logicalAndExpr())
+                if len(operands) > 1:
+                    return _resolve_boolean_sequence("||", operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "equalityExpr") and callable(ctx.equalityExpr):
+                operands = _as_list(ctx.equalityExpr())
+                if len(operands) > 1:
+                    return _resolve_boolean_sequence("&&", operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "relExpr") and callable(ctx.relExpr):
+                operands = _as_list(ctx.relExpr())
+                if len(operands) > 1:
+                    operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operands]
+                    known = [operand_type for operand_type in operand_types if operand_type is not None]
+                    if any(operand_type not in {"int", "float", "bool"} for operand_type in known):
+                        operator = _child_text(1) or "=="
+                        _report_operand_error(operator, "comparable", operand_types)
+                        return None
+                    if len(set(known)) > 1:
+                        operator = _child_text(1) or "=="
+                        _report_operand_error(operator, "matching", operand_types)
+                        return None
+                    if len(known) != len(operands):
+                        return None
+                    return "bool"
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "addExpr") and callable(ctx.addExpr):
+                operands = _as_list(ctx.addExpr())
+                if len(operands) > 1:
+                    operator = _child_text(1) or ">"
+                    numeric_type = _resolve_numeric_sequence(operator, operands)
+                    return "bool" if numeric_type is not None else None
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "mulExpr") and callable(ctx.mulExpr):
+                operands = _as_list(ctx.mulExpr())
+                if len(operands) > 1:
+                    operator = _child_text(1) or "+"
+                    return _resolve_numeric_sequence(operator, operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "unaryExpr") and callable(ctx.unaryExpr) and ctx.unaryExpr() is not None:
+                operator = _child_text(0) or ""
+                operand_type = self._resolve_expr_type(ctx.unaryExpr())
+                if operator == "-":
+                    if operand_type is not None and operand_type not in {"int", "float"}:
+                        _report_operand_error(operator, "numeric", [operand_type])
+                        return None
+                    return operand_type
+                if operator == "!":
+                    if operand_type is not None and operand_type != "bool":
+                        _report_operand_error(operator, "bool", [operand_type])
+                        return None
+                    return "bool" if operand_type is not None else None
+                return operand_type
 
             if hasattr(ctx, "declared_type"):
                 return ctx.declared_type

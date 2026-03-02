@@ -1783,3 +1783,57 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
     validator.visitPureDecl(pure_ctx)
 
     assert validator.diagnostics == []
+
+
+def test_semantic_validator_infers_arithmetic_and_relational_expression_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    add_ctx = _ctx(mulExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="float")], getChild=lambda i: _token("+"))
+    rel_ctx = _ctx(addExpr=lambda: [add_ctx, _ctx(declared_type="float")], getChild=lambda i: _token(">"))
+
+    assert validator._resolve_expr_type(add_ctx) == "float"
+    assert validator._resolve_expr_type(rel_ctx) == "bool"
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_reports_invalid_logical_operand_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    logical_and_ctx = _ctx(equalityExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")])
+
+    resolved_type = validator._resolve_expr_type(logical_and_ctx)
+
+    assert resolved_type is None
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK420",
+            message="Operator '&&' expects bool operand type(s), but got [bool, int].",
+            line=0,
+            column=0,
+            hint="Adjust operand types so they match the operator semantics.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_invalid_unary_operand_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    unary_not_ctx = _ctx(
+        unaryExpr=lambda: _ctx(declared_type="float"),
+        getChild=lambda i: _token("!" if i == 0 else "value"),
+    )
+
+    resolved_type = validator._resolve_expr_type(unary_not_ctx)
+
+    assert resolved_type is None
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK420",
+            message="Operator '!' expects bool operand type(s), but got [float].",
+            line=0,
+            column=0,
+            hint="Adjust operand types so they match the operator semantics.",
+        )
+    ]
