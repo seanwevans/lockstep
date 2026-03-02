@@ -5,6 +5,7 @@ from antlr4 import CommonTokenStream, InputStream
 
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
+from .optimizer import optimize_bind_routes
 from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
 
 
@@ -48,6 +49,11 @@ def _compile_lockstep_with_dependencies(
     visitor = debug_visitor_cls(verbose=verbose)
     visitor.visit(tree)
     all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *visitor.diagnostics])
+    bind_optimization = optimize_bind_routes(
+        visitor.bind_routes,
+        shader_names={shader["name"] for shader in visitor.shaders},
+        filter_names={flt["name"] for flt in visitor.filters},
+    )
 
     return LockstepCompileResult(
         parse_tree=tree,
@@ -60,6 +66,8 @@ def _compile_lockstep_with_dependencies(
             "accumulators": visitor.accumulators,
             "uniforms": visitor.uniforms,
             "bind_routes": visitor.bind_routes,
+            "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
+            "fused_bind_groups": bind_optimization["fused_groups"],
         },
         diagnostics=all_diagnostics,
     )
