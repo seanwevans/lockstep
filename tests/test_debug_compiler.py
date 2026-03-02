@@ -1595,6 +1595,46 @@ def test_semantic_validator_struct_decl_keeps_first_duplicate_member(debug_compi
     }
 
 
+def test_semantic_validator_struct_decl_reports_duplicate_struct_and_keeps_original(
+    debug_compiler_module,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    first_struct_ctx = _ctx(
+        start_line=70,
+        start_col=1,
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
+        ],
+    )
+    duplicate_struct_ctx = _ctx(
+        start_line=74,
+        start_col=1,
+        ID=lambda: _token("Particle"),
+        structMember=lambda: [
+            _ctx(typeName=lambda: _token("float"), ID=lambda: _token("mass")),
+        ],
+    )
+
+    validator.visitStructDecl(first_struct_ctx)
+    validator.visitStructDecl(duplicate_struct_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK306",
+            message="Duplicate struct declaration for 'Particle'.",
+            line=74,
+            column=1,
+            hint="Rename one struct declaration to keep type names unique.",
+        )
+    ]
+    assert validator.structs["Particle"] == {
+        "position": SemanticStructField(name="position", declared_type="Vec3")
+    }
+
+
 def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
