@@ -990,14 +990,31 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     ]
 
 
-def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module):
+def test_semantic_validator_reports_fold_source_missing_error_code(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    missing_source_ctx = _ctx(
+        start_line=30,
+        start_col=6,
+        ID=lambda: [_token("u0"), _token("missing_acc")],
+        foldOperator=lambda: _token("sum"),
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(missing_source_ctx)
+
+    assert validator.diagnostics[0].code == "LCK403"
+    assert "is undefined" in validator.diagnostics[0].message
+
+
+def test_semantic_validator_reports_fold_source_kind_error_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
-    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
 
     non_acc_fold_ctx = _ctx(
-        start_line=30,
+        start_line=31,
         start_col=6,
         ID=lambda: [_token("u0"), _token("not_acc")],
         foldOperator=lambda: _token("sum"),
@@ -1006,8 +1023,36 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     )
     validator.visitBindStmt(non_acc_fold_ctx)
 
+    assert validator.diagnostics[0].code == "LCK403"
+    assert "must reference an accumulator" in validator.diagnostics[0].message
+
+
+def test_semantic_validator_reports_fold_operator_error_code(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
+    invalid_operator_ctx = _ctx(
+        start_line=32,
+        start_col=6,
+        ID=lambda: [_token("u1"), _token("acc_energy")],
+        foldOperator=lambda: _token("median"),
+        argList=lambda: None,
+        typeName=lambda: _token("float"),
+    )
+    validator.visitBindStmt(invalid_operator_ctx)
+
+    assert validator.diagnostics[0].code == "LCK401"
+    assert "Unsupported fold operator 'median'" in validator.diagnostics[0].message
+
+
+def test_semantic_validator_reports_fold_type_mismatch_error_code(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+
     mismatched_type_ctx = _ctx(
-        start_line=31,
+        start_line=33,
         start_col=6,
         ID=lambda: [_token("u1"), _token("acc_energy")],
         foldOperator=lambda: _token("sum"),
@@ -1016,13 +1061,11 @@ def test_semantic_validator_reports_fold_reference_errors(debug_compiler_module)
     )
     validator.visitBindStmt(mismatched_type_ctx)
 
-    assert validator.diagnostics[0].code == "LCK403"
-    assert "must reference an accumulator" in validator.diagnostics[0].message
-    assert validator.diagnostics[1].code == "LCK404"
-    assert "has type int" in validator.diagnostics[1].message
+    assert validator.diagnostics[0].code == "LCK402"
+    assert "has type int" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_duplicate_fold_target(debug_compiler_module):
+def test_semantic_validator_reports_duplicate_fold_target_with_target_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
@@ -1042,7 +1085,7 @@ def test_semantic_validator_reports_duplicate_fold_target(debug_compiler_module)
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
-            code="LCK306",
+            code="LCK404",
             message="Duplicate declaration for 'u0' in the same scope.",
             line=33,
             column=4,
@@ -1429,7 +1472,9 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
     )
 
     type_errors = [diag for diag in validator.diagnostics if diag.code == "LCK310"]
-    assert len(type_errors) == 7
+    fold_target_errors = [diag for diag in validator.diagnostics if diag.code == "LCK404"]
+    assert len(type_errors) == 6
+    assert len(fold_target_errors) == 1
     assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
     assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
 

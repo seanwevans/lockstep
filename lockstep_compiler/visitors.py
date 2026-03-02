@@ -948,21 +948,31 @@ def build_semantic_validator(base_visitor_cls):
             fold_source = id_tokens[1].getText()
             declared_type = ctx.typeName().getText()
 
-            self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
+            self._validate_declared_type(declared_type, ctx.typeName(), SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"])
 
             self._declare(
                 fold_target,
                 declared_type,
                 ctx,
-                duplicate_code="LCK306",
+                duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"],
                 kind="uniform",
             )
+
+            if fold_operator not in {"sum", "avg", "min", "max"}:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
+                    message=f"Unsupported fold operator '{fold_operator}'.",
+                    ctx=ctx,
+                    hint="Use a valid fold operator such as sum, avg, min, or max.",
+                )
+                return self.visitChildren(ctx)
 
             fold_source_symbol = self._lookup(fold_source)
             if fold_source_symbol is None:
                 self._add_diagnostic(
                     severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
                     message=f"Fold source accumulator '{fold_source}' is undefined.",
                     ctx=ctx,
                     hint="Declare an accumulator and use it as the fold source.",
@@ -978,18 +988,10 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Use an accumulator as the input to fold.",
                 )
-            elif fold_operator not in {"sum", "avg", "min", "max"}:
-                self._add_diagnostic(
-                    severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
-                    message=f"Unsupported fold operator '{fold_operator}'.",
-                    ctx=ctx,
-                    hint="Use a valid fold operator such as sum, avg, min, or max.",
-                )
             elif fold_source_symbol.declared_type != declared_type:
                 self._add_diagnostic(
                     severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"],
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
                     message=(
                         f"Fold target '{fold_target}' has type {declared_type}, but fold source "
                         f"'{fold_source}' has accumulator type {fold_source_symbol.declared_type}."
