@@ -1616,3 +1616,85 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
     validator.visitPureDecl(pure_ctx)
 
     assert validator.diagnostics == []
+
+
+def test_semantic_validator_infers_binary_expression_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _BinaryExpr:
+        def __init__(self, accessor, operands, operator):
+            self._accessor = accessor
+            self._operands = operands
+            self._operator = operator
+
+        def __getattr__(self, name):
+            if name == self._accessor:
+                return lambda: self._operands
+            raise AttributeError(name)
+
+        def getChildren(self):
+            children = [self._operands[0]]
+            for operand in self._operands[1:]:
+                children.append(_token(self._operator))
+                children.append(operand)
+            return children
+
+    add_expr = _BinaryExpr("unaryExpr", [_ctx(declared_type="int"), _ctx(declared_type="float")], "+")
+    assert validator._resolve_expr_type(add_expr) == "float"
+
+    logical_expr = _BinaryExpr("logicalAndExpr", [_ctx(declared_type="bool"), _ctx(declared_type="bool")], "||")
+    assert validator._resolve_expr_type(logical_expr) == "bool"
+
+
+
+def test_semantic_validator_reports_invalid_binary_operand_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _BinaryExpr:
+        def __init__(self):
+            self.start = types.SimpleNamespace(line=18, column=2)
+
+        def logicalAndExpr(self):
+            return [_ctx(declared_type="bool"), _ctx(declared_type="int")]
+
+        def getChildren(self):
+            return [_ctx(declared_type="bool"), _token("||"), _ctx(declared_type="int")]
+
+    assert validator._resolve_expr_type(_BinaryExpr()) is None
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK420",
+            message="Operator '||' requires bool operands, got bool and int.",
+            line=18,
+            column=2,
+            hint="Adjust operand expressions to the expected operator types.",
+        )
+    ]
+
+
+
+def test_semantic_validator_reports_uniform_initializer_type_mismatch(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    uniform_ctx = _ctx(
+        start_line=21,
+        start_col=4,
+        ID=lambda: _token("enabled"),
+        typeName=lambda: _token("bool"),
+        expr=lambda: _ctx(declared_type="int"),
+    )
+
+    validator.visitUniformDecl(uniform_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK416",
+            message="Type mismatch in initializer for 'enabled': expected bool, got int.",
+            line=21,
+            column=4,
+            hint="Use an initializer expression with the same type as the declared variable.",
+        )
+    ]

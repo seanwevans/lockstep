@@ -36,6 +36,8 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "var_initializer_type_mismatch": "LCK416",
     "assignment_type_mismatch": "LCK417",
     "pure_return_type_mismatch": "LCK418",
+    "invalid_unary_operand_type": "LCK419",
+    "invalid_binary_operand_type": "LCK420",
 }
 
 
@@ -754,6 +756,149 @@ def build_semantic_validator(base_visitor_cls):
             if hasattr(ctx, "declared_type"):
                 return ctx.declared_type
 
+            def _is_numeric(type_name: str | None) -> bool:
+                return type_name in {"int", "float"}
+
+            def _binary_result_type(left_type: str, right_type: str) -> str:
+                if "float" in {left_type, right_type}:
+                    return "float"
+                return "int"
+
+            def _operator_texts(node, known_ops: set[str]) -> list[str]:
+                if not hasattr(node, "getChildren") or not callable(node.getChildren):
+                    return []
+                operators = []
+                for child in node.getChildren():
+                    if not hasattr(child, "getText") or not callable(child.getText):
+                        continue
+                    text = child.getText()
+                    if text in known_ops:
+                        operators.append(text)
+                return operators
+
+            def _resolve_binary_chain(node, operand_getter: str, known_ops: set[str], validator):
+                if not hasattr(node, operand_getter) or not callable(getattr(node, operand_getter)):
+                    return None
+
+                operands = getattr(node, operand_getter)()
+                if not isinstance(operands, list):
+                    operands = [operands] if operands is not None else []
+                if not operands:
+                    return None
+
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+                operators = _operator_texts(node, known_ops)
+                resolved_types = [self._resolve_expr_type(operand) for operand in operands]
+
+                valid = True
+                current_type = resolved_types[0]
+                for index in range(1, len(resolved_types)):
+                    operator = operators[index - 1] if index - 1 < len(operators) else "<op>"
+                    current_type = validator(current_type, resolved_types[index], operator, node)
+                    if current_type is None:
+                        valid = False
+                        break
+
+                return current_type if valid else None
+
+            if hasattr(ctx, "logicalOrExpr") and callable(ctx.logicalOrExpr) and ctx.logicalOrExpr() is not None:
+                return self._resolve_expr_type(ctx.logicalOrExpr())
+
+            if hasattr(ctx, "logicalAndExpr") and callable(ctx.logicalAndExpr):
+                return _resolve_binary_chain(
+                    ctx,
+                    "logicalAndExpr",
+                    {"||"},
+                    lambda left, right, op, diagnostic_ctx: self._validate_boolean_binary_operands(
+                        left, right, op, diagnostic_ctx
+                    ),
+                )
+
+            if hasattr(ctx, "equalityExpr") and callable(ctx.equalityExpr) and ctx.equalityExpr() is not None:
+                return self._resolve_expr_type(ctx.equalityExpr())
+
+            if hasattr(ctx, "relExpr") and callable(ctx.relExpr):
+                return _resolve_binary_chain(
+                    ctx,
+                    "relExpr",
+                    {"==", "!="},
+                    lambda left, right, op, diagnostic_ctx: self._validate_equality_operands(
+                        left, right, op, diagnostic_ctx
+                    ),
+                )
+
+            if hasattr(ctx, "addExpr") and callable(ctx.addExpr) and ctx.addExpr() is not None:
+                return self._resolve_expr_type(ctx.addExpr())
+
+            if hasattr(ctx, "mulExpr") and callable(ctx.mulExpr):
+                return _resolve_binary_chain(
+                    ctx,
+                    "mulExpr",
+                    {"<", "<=", ">", ">="},
+                    lambda left, right, op, diagnostic_ctx: self._validate_relational_operands(
+                        left, right, op, diagnostic_ctx
+                    ),
+                )
+
+            if hasattr(ctx, "unaryExpr") and callable(ctx.unaryExpr):
+                return _resolve_binary_chain(
+                    ctx,
+                    "unaryExpr",
+                    {"+", "-"},
+                    lambda left, right, op, diagnostic_ctx: self._validate_arithmetic_operands(
+                        left, right, op, diagnostic_ctx
+                    ),
+                )
+
+            if hasattr(ctx, "primaryExpr") and callable(ctx.primaryExpr):
+                return _resolve_binary_chain(
+                    ctx,
+                    "primaryExpr",
+                    {"*", "/", "%"},
+                    lambda left, right, op, diagnostic_ctx: self._validate_arithmetic_operands(
+                        left, right, op, diagnostic_ctx
+                    ),
+                )
+
+            if hasattr(ctx, "unaryExpr") and callable(ctx.unaryExpr) and ctx.unaryExpr() is not None:
+                unary_ops = _operator_texts(ctx, {"-", "!"})
+                operand_type = self._resolve_expr_type(ctx.unaryExpr())
+                if not unary_ops:
+                    return operand_type
+
+                unary_op = unary_ops[0]
+                if unary_op == "-":
+                    if not _is_numeric(operand_type):
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["invalid_unary_operand_type"],
+                            message=(
+                                f"Unary operator '{unary_op}' requires a numeric operand, got "
+                                f"{operand_type if operand_type is not None else '<unresolved>'}."
+                            ),
+                            ctx=ctx,
+                            hint="Use int or float operands with unary '-'.",
+                        )
+                        return None
+                    return operand_type
+
+                if unary_op == "!":
+                    if operand_type != "bool":
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["invalid_unary_operand_type"],
+                            message=(
+                                f"Unary operator '{unary_op}' requires a bool operand, got "
+                                f"{operand_type if operand_type is not None else '<unresolved>'}."
+                            ),
+                            ctx=ctx,
+                            hint="Use a bool expression with unary '!'.",
+                        )
+                        return None
+                    return "bool"
+
             if hasattr(ctx, "INT") and callable(ctx.INT) and ctx.INT() is not None:
                 return "int"
             if hasattr(ctx, "FLOAT") and callable(ctx.FLOAT) and ctx.FLOAT() is not None:
@@ -786,6 +931,69 @@ def build_semantic_validator(base_visitor_cls):
                     return self._resolve_expr_type(child_expr)
 
             return None
+
+        def _validate_boolean_binary_operands(self, left_type, right_type, operator, ctx):
+            if left_type == "bool" and right_type == "bool":
+                return "bool"
+            self._add_binary_operand_diagnostic(operator, "bool", left_type, right_type, ctx)
+            return None
+
+        def _validate_equality_operands(self, left_type, right_type, operator, ctx):
+            if left_type is not None and right_type is not None and left_type == right_type:
+                return "bool"
+            self._add_diagnostic(
+                severity="error",
+                code=SEMANTIC_DIAGNOSTIC_CODES["invalid_binary_operand_type"],
+                message=(
+                    f"Operator '{operator}' requires operands of the same type, got "
+                    f"{left_type if left_type is not None else '<unresolved>'} and "
+                    f"{right_type if right_type is not None else '<unresolved>'}."
+                ),
+                ctx=ctx,
+                hint="Compare values with matching types.",
+            )
+            return None
+
+        def _validate_relational_operands(self, left_type, right_type, operator, ctx):
+            if left_type in {"int", "float"} and right_type in {"int", "float"}:
+                return "bool"
+            self._add_binary_operand_diagnostic(operator, "numeric", left_type, right_type, ctx)
+            return None
+
+        def _validate_arithmetic_operands(self, left_type, right_type, operator, ctx):
+            if left_type in {"int", "float"} and right_type in {"int", "float"}:
+                if operator == "%" and (left_type != "int" or right_type != "int"):
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["invalid_binary_operand_type"],
+                        message=(
+                            "Operator '%' requires int operands, got "
+                            f"{left_type if left_type is not None else '<unresolved>'} and "
+                            f"{right_type if right_type is not None else '<unresolved>'}."
+                        ),
+                        ctx=ctx,
+                        hint="Use int values with the modulo operator.",
+                    )
+                    return None
+                if "float" in {left_type, right_type}:
+                    return "float"
+                return "int"
+
+            self._add_binary_operand_diagnostic(operator, "numeric", left_type, right_type, ctx)
+            return None
+
+        def _add_binary_operand_diagnostic(self, operator, expected, left_type, right_type, ctx):
+            self._add_diagnostic(
+                severity="error",
+                code=SEMANTIC_DIAGNOSTIC_CODES["invalid_binary_operand_type"],
+                message=(
+                    f"Operator '{operator}' requires {expected} operands, got "
+                    f"{left_type if left_type is not None else '<unresolved>'} and "
+                    f"{right_type if right_type is not None else '<unresolved>'}."
+                ),
+                ctx=ctx,
+                hint="Adjust operand expressions to the expected operator types.",
+            )
 
         def _type_check_pure_call(self, ctx):
             callee_name = ctx.ID().getText()
@@ -914,7 +1122,24 @@ def build_semantic_validator(base_visitor_cls):
 
         def visitUniformDecl(self, ctx):
             self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="uniform")
+            declared_type = ctx.typeName().getText()
+            uniform_name = ctx.ID().getText()
+            self._declare(uniform_name, declared_type, ctx, duplicate_code="LCK306", kind="uniform")
+
+            has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            if has_initializer:
+                initializer_type = self._resolve_expr_type(ctx.expr())
+                if initializer_type is not None and initializer_type != declared_type:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["var_initializer_type_mismatch"],
+                        message=(
+                            f"Type mismatch in initializer for '{uniform_name}': "
+                            f"expected {declared_type}, got {initializer_type}."
+                        ),
+                        ctx=ctx,
+                        hint="Use an initializer expression with the same type as the declared variable.",
+                    )
             return self.visitChildren(ctx)
 
         def visitBindStmt(self, ctx):
