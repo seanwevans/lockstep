@@ -36,6 +36,7 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "var_initializer_type_mismatch": "LCK416",
     "assignment_type_mismatch": "LCK417",
     "pure_return_type_mismatch": "LCK418",
+    "uniform_initializer_type_mismatch": "LCK419",
 }
 
 
@@ -913,8 +914,24 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitUniformDecl(self, ctx):
-            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="uniform")
+            declared_type = ctx.typeName().getText()
+            self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
+            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="uniform")
+
+            has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            if has_initializer:
+                initializer_type = self._resolve_expr_type(ctx.expr())
+                if initializer_type is not None and initializer_type != declared_type:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["uniform_initializer_type_mismatch"],
+                        message=(
+                            f"Type mismatch in uniform initializer for '{ctx.ID().getText()}': "
+                            f"expected {declared_type}, got {initializer_type}."
+                        ),
+                        ctx=ctx,
+                        hint="Use an initializer expression with the same type as the declared uniform.",
+                    )
             return self.visitChildren(ctx)
 
         def visitBindStmt(self, ctx):
