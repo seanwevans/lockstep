@@ -23,10 +23,10 @@ branch = true
 source = ["."]
 omit = [
     "tests/*",
-    "LockstepLexer.py",
-    "LockstepListener.py",
-    "LockstepParser.py",
-    "LockstepVisitor.py",
+    "generated/parser/LockstepLexer.py",
+    "generated/parser/LockstepListener.py",
+    "generated/parser/LockstepParser.py",
+    "generated/parser/LockstepVisitor.py",
 ]
 
 [tool.coverage.report]
