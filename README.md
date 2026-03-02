@@ -115,6 +115,30 @@ lockstepc path/to/program.lock --format
 * `entities`: extracted frontend entities (`structs`, `shaders`, `streams`, `accumulators`).
 * `diagnostics`: first-class compiler diagnostics (`LockstepDiagnostic`) for non-fatal observations.
 
+### Pipeline Simulation (small datasets)
+
+Use the CLI simulator to validate pipeline wiring/cardinality before LLVM backend generation:
+
+```bash
+lockstepc path/to/program.lock --simulate
+lockstepc path/to/program.lock --simulate --simulate-input path/to/input.json
+```
+
+`--simulate-input` expects JSON with optional `streams` and `accumulators` maps, for example:
+
+```json
+{
+  "streams": {
+    "raw_positions": [{"id": 1}, {"id": 2, "_keep": false}]
+  },
+  "accumulators": {
+    "energy": [0.5, 1.5]
+  }
+}
+```
+
+Simulation output includes per-route `input_count`/`output_count`, updated stream snapshots, accumulator contents, and folded uniform values.
+
 ### Diagnostic Shape
 
 Each diagnostic includes:

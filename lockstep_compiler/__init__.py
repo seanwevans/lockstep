@@ -3,6 +3,7 @@ from .compiler import compile_lockstep, load_default_parser_classes, validate_se
 from .errors import LockstepCompileError, ParseErrorCollector
 from .formatter import format_lockstep_source
 from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
+from .simulator import simulate_pipeline_entities, simulate_pipeline_source
 from .visitors import build_debug_visitor, build_semantic_validator
 
 __all__ = [
@@ -18,5 +19,7 @@ __all__ = [
     "load_default_parser_classes",
     "normalize_diagnostics",
     "run_cli",
+    "simulate_pipeline_entities",
+    "simulate_pipeline_source",
     "validate_semantics",
 ]
