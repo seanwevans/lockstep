@@ -382,7 +382,8 @@ def build_semantic_validator(base_visitor_cls):
             return name, params
 
         def _check_expression_identifier(self, name: str, ctx):
-            if self._lookup(name) is None:
+            symbol = self._lookup(name)
+            if symbol is None:
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
@@ -391,8 +392,7 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Declare the identifier in scope before using it.",
                 )
                 return None
-            symbol = self._lookup(name)
-            return symbol.declared_type if symbol else None
+            return symbol.declared_type
 
         def _collect_id_tokens(self, ctx):
             id_tokens = ctx.ID()
