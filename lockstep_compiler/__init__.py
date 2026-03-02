@@ -1,8 +1,8 @@
 from .cli import build_arg_parser, run_cli
-from .compiler import compile_lockstep
+from .compiler import compile_lockstep, load_default_parser_classes, validate_semantics
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
-from .visitors import build_debug_visitor, build_semantic_validator, validate_semantics
+from .visitors import build_debug_visitor, build_semantic_validator
 
 __all__ = [
     "LockstepCompileError",
@@ -13,6 +13,7 @@ __all__ = [
     "build_debug_visitor",
     "build_semantic_validator",
     "compile_lockstep",
+    "load_default_parser_classes",
     "normalize_diagnostics",
     "run_cli",
     "validate_semantics",

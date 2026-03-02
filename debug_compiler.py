@@ -1,44 +1,37 @@
-from antlr4 import CommonTokenStream
 import sys
-from pathlib import Path
 
-from lockstep_compiler.cli import run_cli
-from lockstep_compiler.errors import LockstepCompileError, ParseErrorCollector
-from lockstep_compiler.models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
-from lockstep_compiler.compiler import _compile_lockstep_with_dependencies as _compile_lockstep
-from lockstep_compiler.visitors import (
+from lockstep_compiler import (
+    LockstepCompileError,
+    LockstepCompileResult,
+    LockstepDiagnostic,
+    ParseErrorCollector,
     build_debug_visitor,
     build_semantic_validator,
-    validate_semantics as _validate_semantics,
+    compile_lockstep,
+    load_default_parser_classes,
+    normalize_diagnostics,
+    run_cli,
+    validate_semantics,
 )
 
-PARSER_DIR = Path(__file__).parent / "generated" / "parser"
-if str(PARSER_DIR) not in sys.path:
-    sys.path.insert(0, str(PARSER_DIR))
 
-from LockstepLexer import LockstepLexer
-from LockstepParser import LockstepParser
-from LockstepVisitor import LockstepVisitor
+_LockstepLexer, _LockstepParser, _LockstepVisitor = load_default_parser_classes()
+LockstepLexer = _LockstepLexer
+LockstepParser = _LockstepParser
+LockstepVisitor = _LockstepVisitor
 
-LockstepDebugVisitor = build_debug_visitor(LockstepVisitor)
-LockstepSemanticValidator = build_semantic_validator(LockstepVisitor)
+class _CompatibilityVisitor(LockstepVisitor):
+    """Visitor shim that keeps debug_compiler test doubles lightweight."""
+
+    def visitChildren(self, node):
+        get_child_count = getattr(node, "getChildCount", None)
+        if callable(get_child_count):
+            return super().visitChildren(node)
+        return node
 
 
-def validate_semantics(parse_tree):
-    return _validate_semantics(parse_tree, LockstepVisitor)
-
-
-def compile_lockstep(source_code: str, verbose: bool = True) -> LockstepCompileResult:
-    return _compile_lockstep(
-        source_code,
-        verbose=verbose,
-        lexer_cls=LockstepLexer,
-        parser_cls=LockstepParser,
-        visitor_cls=LockstepVisitor,
-        semantic_validator=validate_semantics,
-        token_stream_cls=CommonTokenStream,
-        debug_visitor_cls=LockstepDebugVisitor,
-    )
+LockstepDebugVisitor = build_debug_visitor(_CompatibilityVisitor)
+LockstepSemanticValidator = build_semantic_validator(_CompatibilityVisitor)
 
 
 TEST_SOURCE = """

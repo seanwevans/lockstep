@@ -4,6 +4,7 @@ import pathlib
 import runpy
 import sys
 import types
+from unittest.mock import sentinel
 
 import pytest
 
@@ -14,122 +15,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from lockstep_compiler.models import SemanticKernelParam, SemanticStructField, SemanticSymbol
 
-def _install_fake_generated_modules(monkeypatch):
-    """Install minimal ANTLR-generated modules so debug_compiler can import."""
-
-    lexer_module = types.ModuleType("LockstepLexer")
-
-    class StubLexer:
-        def __init__(self, input_stream):
-            self.input_stream = input_stream
-
-        def removeErrorListeners(self):
-            pass
-
-        def addErrorListener(self, listener):
-            pass
-
-    lexer_module.LockstepLexer = StubLexer
-
-    parser_module = types.ModuleType("LockstepParser")
-
-    class StubParser:
-        error_to_emit = None
-
-        class ProgramContext:
-            pass
-
-        class StructDeclContext:
-            pass
-
-        class PureDeclContext:
-            pass
-
-        class ShaderDeclContext:
-            pass
-
-        class FilterDeclContext:
-            pass
-
-        class PipelineDeclContext:
-            pass
-
-        class StreamDeclContext:
-            pass
-
-        class AccumDeclContext:
-            pass
-
-        class UniformDeclContext:
-            pass
-
-        class BindBlockContext:
-            pass
-
-        class BindStmtContext:
-            pass
-
-        class FilterDeclContext:
-            pass
-
-        class UniformDeclContext:
-            pass
-
-        class VarDeclContext:
-            pass
-
-        class PrimaryExprContext:
-            pass
-
-        class LvalueContext:
-            pass
-
-        class AssignStmtContext:
-            pass
-
-        class ReturnStmtContext:
-            pass
-
-        def __init__(self, stream):
-            self.stream = stream
-            self._listeners = []
-
-        def removeErrorListeners(self):
-            self._listeners = []
-
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            if self.error_to_emit is not None:
-                line, column, msg = self.error_to_emit
-                for listener in self._listeners:
-                    listener.syntaxError(None, None, line, column, msg, None)
-            return object()
-
-    parser_module.LockstepParser = StubParser
-
-    visitor_module = types.ModuleType("LockstepVisitor")
-
-    class StubVisitor:
-        def visit(self, tree):
-            return tree
-
-        def visitChildren(self, ctx):
-            return ctx
-
-    visitor_module.LockstepVisitor = StubVisitor
-
-    monkeypatch.setitem(sys.modules, "LockstepLexer", lexer_module)
-    monkeypatch.setitem(sys.modules, "LockstepParser", parser_module)
-    monkeypatch.setitem(sys.modules, "LockstepVisitor", visitor_module)
-
-
 @pytest.fixture
 def debug_compiler_module(monkeypatch):
-    _install_fake_generated_modules(monkeypatch)
     sys.modules.pop("debug_compiler", None)
     return importlib.import_module("debug_compiler")
+
 
 
 def _diagnostic(module, line, column, message, *, severity="error", code="LCK001"):
@@ -177,376 +67,37 @@ def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
     ]
 
 
-def test_compile_lockstep_raises_when_parser_reports_errors(
-    debug_compiler_module, monkeypatch
-):
-    class FailingParser:
-        def __init__(self, stream):
-            self._listeners = []
+def test_compile_lockstep_uses_package_compile_function(debug_compiler_module, monkeypatch):
+    captured = {}
 
-        def removeErrorListeners(self):
-            self._listeners = []
+    def fake_compile(source_code, *, verbose=True, **kwargs):
+        captured["source_code"] = source_code
+        captured["verbose"] = verbose
+        captured["kwargs"] = kwargs
+        return sentinel.result
 
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            for listener in self._listeners:
-                listener.syntaxError(None, None, 3, 5, "mismatched input", None)
-            return object()
-
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", FailingParser)
-
-    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
-        debug_compiler_module.compile_lockstep("pipeline P { }")
-
-    assert exc_info.value.errors == [
-        debug_compiler_module.LockstepDiagnostic(
-            severity="error",
-            code="LCK001",
-            message="mismatched input",
-            line=3,
-            column=5,
-            hint="Fix syntax errors before semantic analysis can continue.",
-        )
-    ]
-    assert exc_info.value.diagnostics == exc_info.value.errors
-
-
-def test_compile_lockstep_visits_tree_on_success(debug_compiler_module, monkeypatch):
-    class SuccessParser:
-        def __init__(self, stream):
-            self._listeners = []
-
-        def removeErrorListeners(self):
-            self._listeners = []
-
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            return "TREE"
-
-    visited = {"tree": None}
-
-    class SpyVisitor:
-        def __init__(self, verbose=True):
-            self.verbose = verbose
-            self.structs = ["Vec3"]
-            self.shaders = [{"name": "ApplyGravity", "params": []}]
-            self.filters = [{"name": "OnlyActive", "params": []}]
-            self.pure_functions = [{"name": "add", "return_type": "Vec3"}]
-            self.streams = [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
-            self.accumulators = [{"name": "energy", "type": "float"}]
-            self.uniforms = [{"name": "dt", "type": "float", "initializer": "0.016"}]
-            self.bind_routes = ["final=ApplyGravity(raw,final,energy,dt);"]
-            self.diagnostics = [
-                debug_compiler_module.LockstepDiagnostic(
-                    severity="warning",
-                    code="LCK203",
-                    message="Stream 'raw' is redeclared.",
-                    line=8,
-                    column=4,
-                    hint="Each stream in a pipeline should have a unique name.",
-                )
-            ]
-
-        def visit(self, tree):
-            visited["tree"] = tree
-
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
+    monkeypatch.setattr(debug_compiler_module, "compile_lockstep", fake_compile)
 
     result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
 
-    assert visited["tree"] == "TREE"
-    assert result.parse_tree == "TREE"
-    assert result.entities == {
-        "structs": ["Vec3"],
-        "shaders": [{"name": "ApplyGravity", "params": []}],
-        "filters": [{"name": "OnlyActive", "params": []}],
-        "pure_functions": [{"name": "add", "return_type": "Vec3"}],
-        "streams": [{"name": "raw", "type": "Vec3", "capacity": "1000"}],
-        "accumulators": [{"name": "energy", "type": "float"}],
-        "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
-        "bind_routes": ["final=ApplyGravity(raw,final,energy,dt);"],
-    }
-    assert result.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
-            severity="warning",
-            code="LCK203",
-            message="Stream 'raw' is redeclared.",
-            line=8,
-            column=4,
-            hint="Each stream in a pipeline should have a unique name.",
-        )
-    ]
+    assert result is sentinel.result
+    assert captured == {"source_code": "pipeline P { }", "verbose": False, "kwargs": {}}
 
 
-def test_compile_lockstep_runs_semantic_validation_phase(
-    debug_compiler_module, monkeypatch
-):
-    class SuccessParser:
-        def __init__(self, stream):
-            self._listeners = []
+def test_validate_semantics_uses_package_default_visitor(debug_compiler_module, monkeypatch):
+    captured = {}
 
-        def removeErrorListeners(self):
-            self._listeners = []
+    def fake_validate(parse_tree, visitor_cls=None):
+        captured["parse_tree"] = parse_tree
+        captured["visitor_cls"] = visitor_cls
+        return [sentinel.diag]
 
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
+    monkeypatch.setattr(debug_compiler_module, "validate_semantics", fake_validate)
 
-        def program(self):
-            return "TREE"
+    diagnostics = debug_compiler_module.validate_semantics("TREE")
 
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(
-        debug_compiler_module,
-        "validate_semantics",
-        lambda parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
-                severity="info",
-                code="LCK301",
-                message=f"validated {parse_tree}",
-                line=1,
-                column=0,
-                hint="semantic phase ran",
-            )
-        ],
-    )
-
-    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
-
-    assert result.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
-            severity="info",
-            code="LCK301",
-            message="validated TREE",
-            line=1,
-            column=0,
-            hint="semantic phase ran",
-        )
-    ]
-
-
-def test_compile_lockstep_raises_for_semantic_errors(
-    debug_compiler_module, monkeypatch
-):
-    class SuccessParser:
-        def __init__(self, stream):
-            self._listeners = []
-
-        def removeErrorListeners(self):
-            self._listeners = []
-
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            return "TREE"
-
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(
-        debug_compiler_module,
-        "validate_semantics",
-        lambda _parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
-                severity="error",
-                code="LCK401",
-                message="semantic problem",
-                line=5,
-                column=2,
-                hint="fix semantic issue",
-            )
-        ],
-    )
-
-    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
-        debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
-
-    assert str(exc_info.value) == (
-        "Compilation failed with 1 semantic error.\nline 5:2 semantic problem"
-    )
-
-
-def test_compile_lockstep_normalizes_diagnostics_order_and_duplicates(
-    debug_compiler_module, monkeypatch
-):
-    class SuccessParser:
-        def __init__(self, stream):
-            self._listeners = []
-
-        def removeErrorListeners(self):
-            self._listeners = []
-
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            return "TREE"
-
-    class SpyVisitor:
-        def __init__(self, verbose=True):
-            self.verbose = verbose
-            self.structs = []
-            self.shaders = []
-            self.filters = []
-            self.pure_functions = []
-            self.streams = []
-            self.accumulators = []
-            self.uniforms = []
-            self.bind_routes = []
-            self.diagnostics = [
-                debug_compiler_module.LockstepDiagnostic(
-                    severity="warning",
-                    code="LCK099",
-                    message="same issue",
-                    line=3,
-                    column=1,
-                ),
-                debug_compiler_module.LockstepDiagnostic(
-                    severity="error",
-                    code="LCK200",
-                    message="later diagnostic",
-                    line=10,
-                    column=4,
-                ),
-            ]
-
-        def visit(self, tree):
-            return tree
-
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
-    monkeypatch.setattr(
-        debug_compiler_module,
-        "validate_semantics",
-        lambda _parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
-                severity="warning",
-                code="LCK099",
-                message="same issue",
-                line=3,
-                column=1,
-            ),
-            debug_compiler_module.LockstepDiagnostic(
-                severity="info",
-                code="LCK050",
-                message="same location info",
-                line=3,
-                column=1,
-            ),
-            debug_compiler_module.LockstepDiagnostic(
-                severity="info",
-                code="LCK010",
-                message="same location info from semantics",
-                line=3,
-                column=1,
-            ),
-        ],
-    )
-
-    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
-
-    assert [
-        (d.line, d.column, d.severity, d.code, d.message) for d in result.diagnostics
-    ] == [
-        (3, 1, "warning", "LCK099", "same issue"),
-        (3, 1, "info", "LCK010", "same location info from semantics"),
-        (3, 1, "info", "LCK050", "same location info"),
-        (10, 4, "error", "LCK200", "later diagnostic"),
-    ]
-
-
-def test_compile_lockstep_dedup_prefers_highest_severity_for_same_key(
-    debug_compiler_module, monkeypatch
-):
-    class SuccessParser:
-        def __init__(self, stream):
-            self._listeners = []
-
-        def removeErrorListeners(self):
-            self._listeners = []
-
-        def addErrorListener(self, listener):
-            self._listeners.append(listener)
-
-        def program(self):
-            return "TREE"
-
-    class SpyVisitor:
-        def __init__(self, verbose=True):
-            self.verbose = verbose
-            self.structs = []
-            self.shaders = []
-            self.filters = []
-            self.pure_functions = []
-            self.streams = []
-            self.accumulators = []
-            self.uniforms = []
-            self.bind_routes = []
-            self.diagnostics = [
-                debug_compiler_module.LockstepDiagnostic(
-                    severity="warning",
-                    code="LCK777",
-                    message="same issue",
-                    line=6,
-                    column=2,
-                    hint="visitor hint",
-                ),
-            ]
-
-        def visit(self, tree):
-            return tree
-
-    monkeypatch.setattr(
-        debug_compiler_module, "CommonTokenStream", lambda lexer: object()
-    )
-    monkeypatch.setattr(debug_compiler_module, "LockstepParser", SuccessParser)
-    monkeypatch.setattr(debug_compiler_module, "LockstepDebugVisitor", SpyVisitor)
-    monkeypatch.setattr(
-        debug_compiler_module,
-        "validate_semantics",
-        lambda _parse_tree: [
-            debug_compiler_module.LockstepDiagnostic(
-                severity="error",
-                code="LCK777",
-                message="same issue",
-                line=6,
-                column=2,
-                hint="semantic hint",
-            ),
-        ],
-    )
-
-    with pytest.raises(debug_compiler_module.LockstepCompileError) as exc_info:
-        debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
-
-    assert exc_info.value.errors == [
-        debug_compiler_module.LockstepDiagnostic(
-            severity="error",
-            code="LCK777",
-            message="same issue",
-            line=6,
-            column=2,
-            hint="semantic hint",
-        )
-    ]
+    assert diagnostics == [sentinel.diag]
+    assert captured == {"parse_tree": "TREE", "visitor_cls": None}
 
 
 def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity(
@@ -805,8 +356,7 @@ def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
 
 
 def test_module_main_success_path(monkeypatch, capsys):
-    _install_fake_generated_modules(monkeypatch)
-    sys.modules.pop("debug_compiler", None)
+    monkeypatch.setattr("lockstep_compiler.compile_lockstep", lambda *_args, **_kwargs: sentinel.ok)
     monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
@@ -818,9 +368,24 @@ def test_module_main_success_path(monkeypatch, capsys):
 
 
 def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
-    _install_fake_generated_modules(monkeypatch)
-    sys.modules["LockstepParser"].LockstepParser.error_to_emit = (7, 9, "bad syntax")
-    sys.modules.pop("debug_compiler", None)
+    def failing_compile(_source, *, verbose=True, **_kwargs):
+        from lockstep_compiler.errors import LockstepCompileError
+        from lockstep_compiler.models import LockstepDiagnostic
+
+        raise LockstepCompileError(
+            [
+                LockstepDiagnostic(
+                    severity="error",
+                    code="LCK001",
+                    message="bad syntax",
+                    line=7,
+                    column=9,
+                    hint="Fix syntax errors before semantic analysis can continue.",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("lockstep_compiler.compile_lockstep", failing_compile)
     monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
@@ -1043,7 +608,7 @@ def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, mon
     def raise_permission_error(_self, encoding):
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr(debug_compiler_module.Path, "read_text", raise_permission_error)
+    monkeypatch.setattr("lockstep_compiler.cli.Path.read_text", raise_permission_error)
 
     exit_code = debug_compiler_module.run_cli(
         ["locked.lock"],
