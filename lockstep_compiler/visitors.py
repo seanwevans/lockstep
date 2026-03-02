@@ -609,6 +609,16 @@ def build_semantic_validator(base_visitor_cls):
 
         def visitStructDecl(self, ctx):
             struct_name = ctx.ID().getText()
+            if struct_name in self.structs:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                    message=f"Duplicate struct declaration for '{struct_name}'.",
+                    ctx=ctx,
+                    hint="Rename one struct declaration to keep type names unique.",
+                )
+                return self.visitChildren(ctx)
+
             fields = {}
             seen_field_names: set[str] = set()
             for member in ctx.structMember() or []:
