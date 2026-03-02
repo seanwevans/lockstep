@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import sys
 import traceback
@@ -69,8 +70,24 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         )
         return 1
 
+    supports_verbose = False
     try:
-        result = compiler(source)
+        signature = inspect.signature(compiler)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        supports_verbose = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "verbose"
+            for parameter in signature.parameters.values()
+        )
+
+    try:
+        if supports_verbose:
+            result = compiler(source, verbose=False)
+        else:
+            result = compiler(source)
     except LockstepCompileError as err:
         count = len(err.errors)
         suffix = "" if count == 1 else "s"

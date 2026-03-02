@@ -646,8 +646,9 @@ def test_run_cli_uses_default_compiler_when_compiler_missing(
 ):
     captured = {}
 
-    def fake_compiler(source):
+    def fake_compiler(source, *, verbose=True):
         captured["source"] = source
+        captured["verbose"] = verbose
 
     import lockstep_compiler.compiler as compiler_module
 
@@ -660,7 +661,52 @@ def test_run_cli_uses_default_compiler_when_compiler_missing(
     )
 
     assert exit_code == 0
-    assert captured["source"] == "pipeline MissingCompiler { }"
+    assert captured == {
+        "source": "pipeline MissingCompiler { }",
+        "verbose": False,
+    }
+
+
+def test_run_cli_preserves_injected_compiler_without_verbose_parameter(
+    debug_compiler_module,
+):
+    captured = {}
+
+    def fake_compiler(source):
+        captured["source"] = source
+
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline CustomCompiler { }"),
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    assert captured == {"source": "pipeline CustomCompiler { }"}
+
+
+def test_run_cli_default_execution_suppresses_verbose_visitor_logs(
+    debug_compiler_module, monkeypatch
+):
+    stderr = io.StringIO()
+
+    def fake_compiler(_source, *, verbose=True):
+        if verbose:
+            print("Visiting node: pipeline", file=stderr)
+
+    import lockstep_compiler.compiler as compiler_module
+
+    monkeypatch.setattr(compiler_module, "compile_lockstep", fake_compiler)
+
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline QuietByDefault { }"),
+        stderr=stderr,
+        compiler=None,
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
 
 
 def test_run_cli_returns_non_zero_when_compiler_not_callable(debug_compiler_module):
