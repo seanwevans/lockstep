@@ -734,7 +734,7 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
         ]
     }
     validator._push_scope()
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
 
     bind_ctx = _ctx(
         start_line=12,
@@ -877,8 +877,8 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("inp_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
     validator._declare("target_uniform", "Vec3", _ctx(), duplicate_code="LCK306", kind="uniform")
 
     mismatch_ctx = _ctx(
@@ -904,8 +904,8 @@ def test_semantic_validator_allows_bind_when_target_matches_out_argument(debug_c
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("inp_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
 
     bind_ctx = _ctx(
         start_line=28,
@@ -928,8 +928,8 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_com
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("inp_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
     validator._declare("other_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
 
     bind_ctx = _ctx(
@@ -1477,6 +1477,83 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
     assert len(fold_target_errors) == 1
     assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
     assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
+
+
+def test_semantic_validator_keeps_original_kernel_signature_after_duplicates(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    class _Param:
+        def __init__(self, modifier, declared_type, name):
+            self._modifier = _token(modifier)
+            self._declared_type = _token(declared_type)
+            self._name = _token(name)
+
+        def getChild(self, index):
+            assert index == 0
+            return self._modifier
+
+        def typeName(self):
+            return self._declared_type
+
+        def ID(self):
+            return self._name
+
+    class _ParamList:
+        def __init__(self, params):
+            self._params = params
+
+        def param(self):
+            return self._params
+
+    validator.visitShaderDecl(
+        _ctx(
+            start_line=70,
+            start_col=1,
+            ID=lambda: _token("Apply"),
+            paramList=lambda: _ParamList([_Param("in", "float", "inp"), _Param("out", "float", "outp")]),
+        )
+    )
+    validator.visitShaderDecl(
+        _ctx(
+            start_line=71,
+            start_col=1,
+            ID=lambda: _token("Apply"),
+            paramList=lambda: _ParamList([_Param("in", "float", "inp")]),
+        )
+    )
+
+    validator.visitFilterDecl(
+        _ctx(
+            start_line=72,
+            start_col=1,
+            ID=lambda: _token("Gate"),
+            paramList=lambda: _ParamList([_Param("uniform", "bool", "flag")]),
+        )
+    )
+    validator.visitFilterDecl(
+        _ctx(
+            start_line=73,
+            start_col=1,
+            ID=lambda: _token("Gate"),
+            paramList=lambda: _ParamList([_Param("uniform", "bool", "flag"), _Param("in", "float", "inp")]),
+        )
+    )
+
+    validator._push_scope()
+    validator._declare("inp_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("out_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    validator.visitBindStmt(
+        _ctx(
+            start_line=74,
+            start_col=1,
+            ID=lambda: [_token("out_stream"), _token("Apply"), _token("inp_stream"), _token("out_stream")],
+            argList=lambda: object(),
+            typeName=lambda: _token("float"),
+        )
+    )
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK307", "LCK307"]
 
 
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
