@@ -10,9 +10,14 @@ test = [
     "pytest",
     "pytest-cov",
 ]
+lsp = [
+    "pygls",
+    "lsprotocol",
+]
 
 [project.scripts]
 lockstepc = "lockstep_compiler.cli:main"
+lockstep-lsp = "lockstep_compiler.lsp:run_lsp_server"
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml"

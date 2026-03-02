@@ -105,6 +105,8 @@ pip install -e .
 lockstepc path/to/program.lock
 # or read source from stdin
 cat path/to/program.lock | lockstepc --dump
+# canonical straight-line formatting
+lockstepc path/to/program.lock --format
 ```
 
 `debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
@@ -174,3 +176,20 @@ make generate-parser
 ```
 
 Generated Python parser files are emitted to `generated/parser/` and committed to source control. CI enforces freshness via `make check-generated-parser`, which regenerates and fails when tracked generated files are stale.
+
+## 8. Language Server Protocol (LSP)
+
+Lockstep now ships an opt-in LSP server so editors can surface compiler diagnostics in real time and provide semantic assistance while authoring pipelines.
+
+```bash
+pip install -e .[lsp]
+lockstep-lsp
+```
+
+Current capabilities:
+
+* **Live diagnostics:** Mirrors compiler parse/semantic diagnostics via `textDocument/publishDiagnostics`.
+* **Go to Definition for struct members:** Resolves `foo.bar` member access back to the `struct` field declaration when the variable type can be inferred.
+* **Bind-route autocompletion:** Suggests existing `bind` routes and callable shader/pure symbols from the current file.
+
+The server communicates over stdio and is compatible with standard editor LSP client configuration.

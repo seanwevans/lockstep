@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .errors import LockstepCompileError
 from .simulator import parse_simulation_inputs, simulate_pipeline_entities
+from .formatter import format_lockstep_source
 
 
 def build_arg_parser():
@@ -18,10 +19,16 @@ def build_arg_parser():
         nargs="?",
         help="Optional path to a Lockstep source file. Reads from stdin when omitted.",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--dump",
         action="store_true",
         help="Print compiled entities (pipeline topology and bounds) as JSON.",
+    )
+    mode_group.add_argument(
+        "--format",
+        action="store_true",
+        help="Format Lockstep source code into canonical straight-line style.",
     )
     parser.add_argument(
         "--debug",
@@ -67,6 +74,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             return 1
     else:
         source = stdin.read()
+
+    if args.format:
+        print(format_lockstep_source(source), end="", file=stdout)
+        return 0
 
     if compiler is None:
         from .compiler import compile_lockstep
