@@ -56,7 +56,7 @@ statement
     | returnStmt
     ;
 
-varDecl: typeName ID ('=' expr)? ';';
+varDecl: (typeName)? ID ('=' expr)? ';';
 assignStmt: lvalue '=' expr ';';
 returnStmt: 'return' expr ';';
 
