@@ -1925,7 +1925,7 @@ def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_modu
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
-            code="LCK413",
+            code="LCK417",
             message="Type mismatch in assignment: left-hand side expects int, got float.",
             line=70,
             column=3,
@@ -1950,7 +1950,7 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
-            code="LCK414",
+            code="LCK416",
             message="Type mismatch in initializer for 'count': expected int, got float.",
             line=72,
             column=1,
@@ -1983,7 +1983,7 @@ def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_mod
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
-            code="LCK415",
+            code="LCK418",
             message="Return type mismatch in pure function 'compute': expected int, got float.",
             line=74,
             column=5,

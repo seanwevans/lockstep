@@ -9,6 +9,36 @@ from .models import (
 )
 
 
+SEMANTIC_DIAGNOSTIC_CODES = {
+    "undefined_identifier": "LCK301",
+    "invalid_field_access_non_struct": "LCK302",
+    "invalid_field_access_unknown_field": "LCK302",
+    "bind_argument_count_mismatch": "LCK303",
+    "bind_unknown_target": "LCK304",
+    "bind_type_mismatch": "LCK305",
+    "duplicate_declaration": "LCK306",
+    "duplicate_kernel_declaration": "LCK307",
+    "bind_modifier_mismatch": "LCK308",
+    "bind_output_target_kind_mismatch": "LCK309",
+    "unknown_declared_type": "LCK310",
+    "duplicate_struct_field": "LCK311",
+    "bind_output_symbol_mismatch": "LCK312",
+    "unknown_fold_operator": "LCK401",
+    "fold_type_mismatch": "LCK402",
+    "fold_unknown_source": "LCK403",
+    "fold_unknown_target": "LCK404",
+    "pure_unknown_function": "LCK410",
+    "pure_argument_count_mismatch": "LCK411",
+    "pure_argument_type_mismatch": "LCK412",
+    "pure_missing_return": "LCK413",
+    "pure_multiple_returns": "LCK414",
+    "pure_unreachable_after_return": "LCK415",
+    "var_initializer_type_mismatch": "LCK416",
+    "assignment_type_mismatch": "LCK417",
+    "pure_return_type_mismatch": "LCK418",
+}
+
+
 def build_debug_visitor(base_visitor_cls):
     class LockstepDebugVisitor(base_visitor_cls):
         """Walks the Parse Tree and extracts the pipeline architecture."""
@@ -326,7 +356,7 @@ def build_semantic_validator(base_visitor_cls):
             if name in target:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK307",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
                     message=f"Duplicate shader/filter declaration for '{name}'.",
                     ctx=ctx,
                     hint="Rename one declaration to avoid symbol collisions.",
@@ -353,7 +383,7 @@ def build_semantic_validator(base_visitor_cls):
             if self._lookup(name) is None:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK301",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
                     message=f"Undefined identifier '{name}'.",
                     ctx=ctx,
                     hint="Declare the identifier in scope before using it.",
@@ -396,7 +426,7 @@ def build_semantic_validator(base_visitor_cls):
                 if struct_fields is None:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK302",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["invalid_field_access_non_struct"],
                         message=(
                             f"Cannot access field '{field_name}' on non-struct type "
                             f"'{current_type}'."
@@ -408,7 +438,7 @@ def build_semantic_validator(base_visitor_cls):
                 if field_name not in struct_fields:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK302",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["invalid_field_access_unknown_field"],
                         message=f"Struct '{current_type}' has no field '{field_name}'.",
                         ctx=ctx,
                         hint="Use one of the fields declared on this struct.",
@@ -430,7 +460,7 @@ def build_semantic_validator(base_visitor_cls):
             if kernel is None:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK303",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_argument_count_mismatch"],
                     message=f"Undefined shader/filter '{callee_name}' in bind statement.",
                     ctx=ctx,
                     hint="Declare the shader/filter before using it in bind.",
@@ -442,7 +472,7 @@ def build_semantic_validator(base_visitor_cls):
             if expected_arity != actual_arity:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK304",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["bind_unknown_target"],
                     message=(
                         f"Invocation of '{callee_name}' expects {expected_arity} argument(s), "
                         f"but got {actual_arity}."
@@ -459,7 +489,7 @@ def build_semantic_validator(base_visitor_cls):
             if target_symbol is None:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK301",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
                     message=f"Undefined identifier '{target_name}'.",
                     ctx=ctx,
                     hint="Declare pipeline streams/accumulators/uniforms before binding.",
@@ -468,7 +498,7 @@ def build_semantic_validator(base_visitor_cls):
                 if out_param is None:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK309",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_target_kind_mismatch"],
                         message=(
                             f"Bind target '{target_name}' is assigned from '{callee_name}', "
                             "but the kernel has no out parameter."
@@ -481,7 +511,7 @@ def build_semantic_validator(base_visitor_cls):
                     if out_arg_name != target_name:
                         self._add_diagnostic(
                             severity="error",
-                            code="LCK312",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_symbol_mismatch"],
                             message=(
                                 f"Bind target '{target_name}' must match out argument "
                                 f"'{out_arg_name}' for parameter '{out_param.name}' in '{callee_name}'."
@@ -494,7 +524,7 @@ def build_semantic_validator(base_visitor_cls):
                     if target_symbol.kind != expected_output_kind:
                         self._add_diagnostic(
                             severity="error",
-                            code="LCK309",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_target_kind_mismatch"],
                             message=(
                                 f"Bind target '{target_name}' for '{callee_name}' must be a "
                                 f"{expected_output_kind} for out parameter '{out_param.name}', "
@@ -506,7 +536,7 @@ def build_semantic_validator(base_visitor_cls):
                     if target_symbol.declared_type != out_param.declared_type:
                         self._add_diagnostic(
                             severity="error",
-                            code="LCK305",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["bind_type_mismatch"],
                             message=(
                                 f"Type mismatch for bind target '{target_name}' in '{callee_name}': "
                                 f"expected {out_param.declared_type}, got {target_symbol.declared_type}."
@@ -520,7 +550,7 @@ def build_semantic_validator(base_visitor_cls):
                 if actual_symbol is None:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK301",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
                         message=f"Undefined identifier '{arg_name}'.",
                         ctx=ctx,
                         hint="Declare pipeline symbols before passing them to bind.",
@@ -531,7 +561,7 @@ def build_semantic_validator(base_visitor_cls):
                 if expected_kind is not None and actual_symbol.kind != expected_kind:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK308",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["bind_modifier_mismatch"],
                         message=(
                             f"Modifier mismatch for argument '{arg_name}' in '{callee_name}': "
                             f"parameter '{expected.name}' requires {expected.modifier} "
@@ -545,7 +575,7 @@ def build_semantic_validator(base_visitor_cls):
                 if actual_type != expected.declared_type:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK305",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["bind_type_mismatch"],
                         message=(
                             f"Type mismatch for argument '{arg_name}' in '{callee_name}': "
                             f"expected {expected.declared_type}, got {actual_type}."
@@ -584,7 +614,7 @@ def build_semantic_validator(base_visitor_cls):
                 if field_name in seen_field_names:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK311",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
                         message=(
                             f"Struct '{struct_name}' has duplicate field declaration "
                             f"'{field_name}'."
@@ -671,7 +701,7 @@ def build_semantic_validator(base_visitor_cls):
             if not return_statements:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK413",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_missing_return"],
                     message=f"Pure function '{name}' must include a return statement.",
                     ctx=ctx,
                     hint="Add a return statement that produces a value matching the declared return type.",
@@ -680,7 +710,7 @@ def build_semantic_validator(base_visitor_cls):
                 if len(return_statements) > 1:
                     self._add_diagnostic(
                         severity="warning",
-                        code="LCK414",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_multiple_returns"],
                         message=(
                             f"Pure function '{name}' contains multiple return statements; "
                             "only the first return is reachable in straight-line semantics."
@@ -693,7 +723,7 @@ def build_semantic_validator(base_visitor_cls):
                 for unreachable_stmt in statements[first_return_index + 1 :]:
                     self._add_diagnostic(
                         severity="warning",
-                        code="LCK415",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_unreachable_after_return"],
                         message=(
                             f"Unreachable statement in pure function '{name}' after return statement."
                         ),
@@ -763,7 +793,7 @@ def build_semantic_validator(base_visitor_cls):
             if signature is None:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK410",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_unknown_function"],
                     message=f"Undefined pure function '{callee_name}'.",
                     ctx=ctx,
                     hint="Declare the pure function before calling it.",
@@ -778,7 +808,7 @@ def build_semantic_validator(base_visitor_cls):
             if len(actual_args) != len(expected_params):
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK411",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
                     message=(
                         f"Pure function '{callee_name}' expects {len(expected_params)} argument(s), "
                         f"but got {len(actual_args)}."
@@ -794,7 +824,7 @@ def build_semantic_validator(base_visitor_cls):
                     resolved_actual = actual_type if actual_type is not None else "<unresolved>"
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK412",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_type_mismatch"],
                         message=(
                             f"Type mismatch for argument {index} in pure call '{callee_name}': "
                             f"expected {expected.declared_type}, got {resolved_actual}."
@@ -814,7 +844,7 @@ def build_semantic_validator(base_visitor_cls):
                 if initializer_type is not None and initializer_type != declared_type:
                     self._add_diagnostic(
                         severity="error",
-                        code="LCK414",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["var_initializer_type_mismatch"],
                         message=(
                             f"Type mismatch in initializer for '{ctx.ID().getText()}': "
                             f"expected {declared_type}, got {initializer_type}."
@@ -834,7 +864,7 @@ def build_semantic_validator(base_visitor_cls):
             if lvalue_type is not None and expr_type is not None and lvalue_type != expr_type:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK413",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
                     message=(
                         "Type mismatch in assignment: "
                         f"left-hand side expects {lvalue_type}, got {expr_type}."
@@ -855,7 +885,7 @@ def build_semantic_validator(base_visitor_cls):
             if actual_type is not None and actual_type != expected_type:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK415",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_return_type_mismatch"],
                     message=(
                         f"Return type mismatch in pure function '{self._current_pure_function['name']}': "
                         f"expected {expected_type}, got {actual_type}."
@@ -915,7 +945,7 @@ def build_semantic_validator(base_visitor_cls):
             if fold_source_symbol is None:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK401",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
                     message=f"Fold source accumulator '{fold_source}' is undefined.",
                     ctx=ctx,
                     hint="Declare an accumulator and use it as the fold source.",
@@ -923,7 +953,7 @@ def build_semantic_validator(base_visitor_cls):
             elif fold_source_symbol.kind != "accumulator":
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK403",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
                     message=(
                         f"Fold source '{fold_source}' must reference an accumulator, "
                         f"got {fold_source_symbol.kind}."
@@ -934,7 +964,7 @@ def build_semantic_validator(base_visitor_cls):
             elif fold_operator not in {"sum", "avg", "min", "max"}:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK402",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
                     message=f"Unsupported fold operator '{fold_operator}'.",
                     ctx=ctx,
                     hint="Use a valid fold operator such as sum, avg, min, or max.",
@@ -942,7 +972,7 @@ def build_semantic_validator(base_visitor_cls):
             elif fold_source_symbol.declared_type != declared_type:
                 self._add_diagnostic(
                     severity="error",
-                    code="LCK404",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"],
                     message=(
                         f"Fold target '{fold_target}' has type {declared_type}, but fold source "
                         f"'{fold_source}' has accumulator type {fold_source_symbol.declared_type}."
