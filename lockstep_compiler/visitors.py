@@ -355,14 +355,6 @@ def build_semantic_validator(base_visitor_cls):
 
         def _record_kernel_signature(self, ctx, target: dict[str, list[SemanticKernelParam]]):
             name = ctx.ID().getText()
-            if name in target:
-                self._add_diagnostic(
-                    severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
-                    message=f"Duplicate shader/filter declaration for '{name}'.",
-                    ctx=ctx,
-                    hint="Rename one declaration to avoid symbol collisions.",
-                )
             params = []
             if ctx.paramList():
                 for param in ctx.paramList().param():
@@ -378,6 +370,17 @@ def build_semantic_validator(base_visitor_cls):
                             modifier=param.getChild(0).getText(),
                         )
                     )
+
+            if name in target:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                    message=f"Duplicate shader/filter declaration for '{name}'.",
+                    ctx=ctx,
+                    hint="Rename one declaration to avoid symbol collisions.",
+                )
+                return name, params
+
             target[name] = params
             return name, params
 
