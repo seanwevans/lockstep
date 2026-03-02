@@ -1774,6 +1774,97 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler
     ]
 
 
+def test_semantic_validator_infers_var_type_from_initializer(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    var_decl_ctx = _ctx(
+        ID=lambda: _token("mass"),
+        typeName=lambda: None,
+        expr=lambda: _ctx(declared_type="float"),
+    )
+
+    validator.visitVarDecl(var_decl_ctx)
+
+    assert validator.diagnostics == []
+    assert validator.scopes[-1]["mass"] == SemanticSymbol(name="mass", declared_type="float", kind="local")
+
+
+def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    var_decl_ctx = _ctx(
+        start_line=72,
+        start_col=8,
+        ID=lambda: _token("mass"),
+        typeName=lambda: None,
+        expr=lambda: None,
+    )
+
+    validator.visitVarDecl(var_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK423",
+            message="Cannot infer type for local variable 'mass' without a typed initializer.",
+            line=72,
+            column=8,
+            hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_unused_local_variables(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator.visitVarDecl(
+        _ctx(
+            start_line=10,
+            start_col=3,
+            ID=lambda: _token("unused"),
+            typeName=lambda: _token("int"),
+            expr=lambda: _ctx(declared_type="int"),
+        )
+    )
+
+    validator._pop_scope()
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK421",
+            message="Local variable 'unused' is declared but never used.",
+            line=10,
+            column=3,
+            hint="Remove unused variables or use them in an expression/assignment.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_unbound_pipeline_resources(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    pipeline_ctx = _ctx(start_line=20, start_col=1)
+
+    original_visit_children = validator.visitChildren
+
+    def _visit_children(ctx):
+        if ctx is pipeline_ctx:
+            validator.visitStreamDecl(
+                _ctx(start_line=21, start_col=2, ID=lambda: _token("s0"), typeName=lambda: _token("float"))
+            )
+            validator.visitAccumDecl(
+                _ctx(start_line=22, start_col=2, ID=lambda: _token("acc"), typeName=lambda: _token("float"))
+            )
+        return original_visit_children(ctx)
+
+    validator.visitChildren = _visit_children
+    validator.visitPipelineDecl(pipeline_ctx)
+
+    assert [diagnostic.code for diagnostic in validator.diagnostics] == ["LCK422", "LCK422"]
+
+
 def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()

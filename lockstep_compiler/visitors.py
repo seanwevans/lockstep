@@ -38,6 +38,9 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "pure_return_type_mismatch": "LCK418",
     "uniform_initializer_type_mismatch": "LCK419",
     "invalid_operand_types": "LCK420",
+    "unused_symbol": "LCK421",
+    "unbound_pipeline_resource": "LCK422",
+    "cannot_infer_type": "LCK423",
 }
 
 
@@ -281,12 +284,16 @@ def build_semantic_validator(base_visitor_cls):
         def __init__(self):
             self.diagnostics: list[LockstepDiagnostic] = []
             self.scopes: list[dict[str, SemanticSymbol]] = []
+            self.scope_usages: list[dict[str, int]] = []
+            self.scope_declaration_ctxs: list[dict[str, Any]] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
             self.pure_functions: dict[str, dict[str, Any]] = {}
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
             self._primitive_types = {"int", "float", "bool"}
             self._current_pure_function: dict[str, str] | None = None
+            self._pipeline_resource_stack: list[dict[str, tuple[str, Any]]] = []
+            self._pipeline_bind_usage_stack: list[set[str]] = []
 
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
@@ -298,10 +305,29 @@ def build_semantic_validator(base_visitor_cls):
 
         def _push_scope(self):
             self.scopes.append({})
+            self.scope_usages.append({})
+            self.scope_declaration_ctxs.append({})
 
         def _pop_scope(self):
             if self.scopes:
+                scope = self.scopes[-1]
+                usage = self.scope_usages[-1]
+                declaration_ctxs = self.scope_declaration_ctxs[-1]
+                for name, symbol in scope.items():
+                    if symbol.kind != "local":
+                        continue
+                    if usage.get(name, 0) > 0:
+                        continue
+                    self._add_diagnostic(
+                        severity="warning",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["unused_symbol"],
+                        message=f"Local variable '{name}' is declared but never used.",
+                        ctx=declaration_ctxs.get(name),
+                        hint="Remove unused variables or use them in an expression/assignment.",
+                    )
                 self.scopes.pop()
+                self.scope_usages.pop()
+                self.scope_declaration_ctxs.pop()
 
         def _declare(self, name: str, declared_type: str, ctx, *, duplicate_code: str, kind: str = "symbol"):
             if not self.scopes:
@@ -317,7 +343,15 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return False
             current_scope[name] = SemanticSymbol(name=name, declared_type=declared_type, kind=kind)
+            self.scope_usages[-1][name] = 0
+            self.scope_declaration_ctxs[-1][name] = ctx
             return True
+
+        def _mark_symbol_used(self, name: str):
+            for scope, usage in zip(reversed(self.scopes), reversed(self.scope_usages)):
+                if name in scope:
+                    usage[name] = usage.get(name, 0) + 1
+                    return
 
         def _lookup(self, name: str) -> SemanticSymbol | None:
             for scope in reversed(self.scopes):
@@ -395,6 +429,7 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Declare the identifier in scope before using it.",
                 )
                 return None
+            self._mark_symbol_used(name)
             return symbol.declared_type
 
         def _collect_id_tokens(self, ctx):
@@ -524,7 +559,10 @@ def build_semantic_validator(base_visitor_cls):
                             ctx=ctx,
                             hint="Use the same symbol for assignment target and out argument.",
                         )
-
+                self._mark_symbol_used(target_name)
+                if self._pipeline_bind_usage_stack:
+                    self._pipeline_bind_usage_stack[-1].add(target_name)
+                if out_param is not None:
                     expected_output_kind = modifier_to_kind[out_param.modifier]
                     if target_symbol.kind != expected_output_kind:
                         self._add_diagnostic(
@@ -561,6 +599,9 @@ def build_semantic_validator(base_visitor_cls):
                         hint="Declare pipeline symbols before passing them to bind.",
                     )
                     continue
+                self._mark_symbol_used(arg_name)
+                if self._pipeline_bind_usage_stack:
+                    self._pipeline_bind_usage_stack[-1].add(arg_name)
 
                 expected_kind = modifier_to_kind.get(expected.modifier)
                 if expected_kind is not None and actual_symbol.kind != expected_kind:
@@ -961,13 +1002,31 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
         def visitVarDecl(self, ctx):
-            declared_type = ctx.typeName().getText()
-            self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="local")
+            type_ctx = ctx.typeName() if hasattr(ctx, "typeName") and callable(ctx.typeName) else None
+            declared_type = type_ctx.getText() if type_ctx is not None else None
+            if declared_type is not None:
+                self._validate_declared_type(declared_type, type_ctx, "LCK310")
 
             has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            initializer_type = self._resolve_expr_type(ctx.expr()) if has_initializer else None
+
+            if declared_type is None:
+                if initializer_type is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["cannot_infer_type"],
+                        message=(
+                            f"Cannot infer type for local variable '{ctx.ID().getText()}' without a typed initializer."
+                        ),
+                        ctx=ctx,
+                        hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
+                    )
+                    return self.visitChildren(ctx)
+                declared_type = initializer_type
+
+            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="local")
+
             if has_initializer:
-                initializer_type = self._resolve_expr_type(ctx.expr())
                 if initializer_type is not None and initializer_type != declared_type:
                     self._add_diagnostic(
                         severity="error",
@@ -1024,19 +1083,40 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitPipelineDecl(self, ctx):
+            self._pipeline_resource_stack.append({})
+            self._pipeline_bind_usage_stack.append(set())
             self._push_scope()
             result = self.visitChildren(ctx)
             self._pop_scope()
+
+            declared_resources = self._pipeline_resource_stack.pop()
+            bind_used_resources = self._pipeline_bind_usage_stack.pop()
+            for resource_name, (resource_kind, resource_ctx) in declared_resources.items():
+                if resource_name in bind_used_resources:
+                    continue
+                self._add_diagnostic(
+                    severity="warning",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unbound_pipeline_resource"],
+                    message=(
+                        f"Pipeline {resource_kind} '{resource_name}' is declared but not used in the bind block."
+                    ),
+                    ctx=resource_ctx,
+                    hint="Reference every declared stream/accumulator in at least one bind statement.",
+                )
             return result
 
         def visitStreamDecl(self, ctx):
             self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="stream")
+            if self._pipeline_resource_stack:
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = ("stream", ctx)
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
             self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
             self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="accumulator")
+            if self._pipeline_resource_stack:
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = ("accumulator", ctx)
             return self.visitChildren(ctx)
 
         def visitUniformDecl(self, ctx):
@@ -1129,6 +1209,10 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Match the folded uniform type to the accumulator type.",
                 )
+            else:
+                self._mark_symbol_used(fold_source)
+                if self._pipeline_bind_usage_stack:
+                    self._pipeline_bind_usage_stack[-1].add(fold_source)
 
             return self.visitChildren(ctx)
 
