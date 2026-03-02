@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import builtins
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -98,3 +99,24 @@ def test_cli_main_wires_default_compiler(monkeypatch):
     monkeypatch.setattr(compiler_module, "compile_lockstep", sentinel_compiler)
 
     assert cli_module.main(["--dump"]) == 7
+
+
+def test_load_default_parser_classes_is_cached(monkeypatch):
+    compiler_module.load_default_parser_classes.cache_clear()
+    import_count = 0
+    original_import = builtins.__import__
+
+    def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        nonlocal import_count
+        if name.startswith("generated.parser"):
+            import_count += 1
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+
+    first = compiler_module.load_default_parser_classes()
+    first_import_count = import_count
+    second = compiler_module.load_default_parser_classes()
+
+    assert first == second
+    assert import_count == first_import_count
