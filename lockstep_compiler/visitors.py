@@ -1032,8 +1032,32 @@ def build_semantic_validator(base_visitor_cls):
         def visitVarDecl(self, ctx):
             type_ctx = ctx.typeName() if hasattr(ctx, "typeName") and callable(ctx.typeName) else None
             declared_type = type_ctx.getText() if type_ctx is not None else None
+            symbol_name = ctx.ID().getText()
             if declared_type is not None:
                 self._validate_declared_type(declared_type, type_ctx, "LCK310")
+
+            if declared_type is None:
+                existing_symbol = self._lookup(symbol_name)
+                if existing_symbol is not None:
+                    has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+                    if has_initializer:
+                        initializer_type = self._resolve_expr_type(ctx.expr())
+                        if (
+                            initializer_type is not None
+                            and existing_symbol.declared_type != initializer_type
+                        ):
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
+                                message=(
+                                    "Type mismatch in assignment: "
+                                    f"left-hand side expects {existing_symbol.declared_type}, got {initializer_type}."
+                                ),
+                                ctx=ctx,
+                                hint="Assign expressions whose type matches the lvalue declaration.",
+                            )
+                    self._mark_symbol_used(symbol_name)
+                    return self.visitChildren(ctx)
 
             has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
             initializer_type = self._resolve_expr_type(ctx.expr()) if has_initializer else None
@@ -1044,7 +1068,7 @@ def build_semantic_validator(base_visitor_cls):
                         severity="error",
                         code=SEMANTIC_DIAGNOSTIC_CODES["cannot_infer_type"],
                         message=(
-                            f"Cannot infer type for local variable '{ctx.ID().getText()}' without a typed initializer."
+                            f"Cannot infer type for local variable '{symbol_name}' without a typed initializer."
                         ),
                         ctx=ctx,
                         hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
@@ -1052,7 +1076,7 @@ def build_semantic_validator(base_visitor_cls):
                     return self.visitChildren(ctx)
                 declared_type = initializer_type
 
-            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="local")
+            self._declare(symbol_name, declared_type, ctx, duplicate_code="LCK306", kind="local")
 
             if has_initializer:
                 if initializer_type is not None and initializer_type != declared_type:
