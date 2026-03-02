@@ -1140,6 +1140,60 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
     }
 
 
+def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    canonical_decl_ctx = _ctx(
+        ID=lambda: _token("shade"),
+        paramList=lambda: _ctx(
+            param=lambda: [
+                _ctx(
+                    ID=lambda: _token("inp_stream"),
+                    typeName=lambda: _token("float"),
+                    getChild=lambda _index: _token("in"),
+                ),
+                _ctx(
+                    ID=lambda: _token("out_stream"),
+                    typeName=lambda: _token("float"),
+                    getChild=lambda _index: _token("out"),
+                ),
+            ]
+        ),
+    )
+    duplicate_decl_ctx = _ctx(
+        start_line=52,
+        start_col=1,
+        ID=lambda: _token("shade"),
+        paramList=lambda: _ctx(
+            param=lambda: [
+                _ctx(
+                    ID=lambda: _token("intensity"),
+                    typeName=lambda: _token("float"),
+                    getChild=lambda _index: _token("uniform"),
+                )
+            ]
+        ),
+    )
+
+    validator.visitShaderDecl(canonical_decl_ctx)
+    validator.visitShaderDecl(duplicate_decl_ctx)
+
+    assert validator.shaders["shade"] == [
+        SemanticKernelParam(name="inp_stream", declared_type="float", modifier="in"),
+        SemanticKernelParam(name="out_stream", declared_type="float", modifier="out"),
+    ]
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK307",
+            message="Duplicate shader/filter declaration for 'shade'.",
+            line=52,
+            column=1,
+            hint="Rename one declaration to avoid symbol collisions.",
+        )
+    ]
+
+
 def test_semantic_validator_reports_error_for_pure_function_without_return(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
