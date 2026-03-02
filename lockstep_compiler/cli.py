@@ -58,11 +58,9 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         source = stdin.read()
 
     if compiler is None:
-        print(
-            "Compiler configuration error: no compiler callable was provided.",
-            file=stderr,
-        )
-        return 1
+        from .compiler import compile_lockstep
+
+        compiler = compile_lockstep
 
     if not callable(compiler):
         print(
