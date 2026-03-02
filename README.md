@@ -131,6 +131,10 @@ Each diagnostic includes:
   * `LCK413` (`error`) is emitted when a `pure` function body has no `return` statement.
   * `LCK414` (`warning`) is emitted when a `pure` function body contains multiple `return` statements.
   * `LCK415` (`warning`) is emitted for statements that appear after the first `return` in a `pure` function body.
+  * `LCK418` (`error`) is emitted when a pure `return` expression type does not match the declared return type.
+* **Type-check mismatches** each have distinct diagnostic codes:
+  * `LCK416` (`error`) is emitted for variable initializer type mismatches in `visitVarDecl`.
+  * `LCK417` (`error`) is emitted for assignment type mismatches in `visitAssignStmt`.
 * **Fatal parse errors** still raise `LockstepCompileError`.
   * `LockstepCompileError.errors` contains parse diagnostics.
   * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.
