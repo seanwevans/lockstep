@@ -1065,7 +1065,7 @@ def test_semantic_validator_reports_fold_type_mismatch_error_code(debug_compiler
     assert "has type int" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_duplicate_fold_target_with_target_code(debug_compiler_module):
+def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declaration_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
@@ -1085,7 +1085,7 @@ def test_semantic_validator_reports_duplicate_fold_target_with_target_code(debug
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
-            code="LCK404",
+            code="LCK306",
             message="Duplicate declaration for 'u0' in the same scope.",
             line=33,
             column=4,
@@ -1473,8 +1473,8 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
 
     type_errors = [diag for diag in validator.diagnostics if diag.code == "LCK310"]
     fold_target_errors = [diag for diag in validator.diagnostics if diag.code == "LCK404"]
-    assert len(type_errors) == 6
-    assert len(fold_target_errors) == 1
+    assert len(type_errors) == 7
+    assert len(fold_target_errors) == 0
     assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
     assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
 

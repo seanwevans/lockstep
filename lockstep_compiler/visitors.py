@@ -1061,13 +1061,17 @@ def build_semantic_validator(base_visitor_cls):
             fold_source = id_tokens[1].getText()
             declared_type = ctx.typeName().getText()
 
-            self._validate_declared_type(declared_type, ctx.typeName(), SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"])
+            self._validate_declared_type(
+                declared_type,
+                ctx.typeName(),
+                SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+            )
 
             self._declare(
                 fold_target,
                 declared_type,
                 ctx,
-                duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_target"],
+                duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
                 kind="uniform",
             )
 
