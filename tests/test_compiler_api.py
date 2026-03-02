@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
+from lockstep_compiler.codegen import emit_llvm_ir
 
 
 def test_package_exports_user_friendly_compile_function():
@@ -85,6 +86,33 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
         "optimized_bind_routes": [],
         "fused_bind_groups": [],
     }
+
+    assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
+    assert "define void @Lockstep_Tick()" in result.llvm_ir
+
+
+def test_emit_llvm_ir_generates_expected_declarations():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": ["Vec3"],
+            "shaders": [{"name": "ApplyGravity"}],
+            "filters": [{"name": "Cull"}],
+            "pure_functions": [{"name": "mix", "return_type": "float"}],
+            "streams": [{"name": "raw_positions", "type": "Vec3"}],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
+            "bind_routes": ["out = ApplyGravity(inp, out, energy, dt);"],
+        }
+    )
+
+    assert "%struct.Vec3 = type { i8 }" in llvm_ir
+    assert "declare float @pure_mix()" in llvm_ir
+    assert "declare void @shader_ApplyGravity()" in llvm_ir
+    assert "declare void @filter_Cull()" in llvm_ir
+    assert "@stream_raw_positions = external global %struct.Vec3" in llvm_ir
+    assert "@accum_energy = external global float" in llvm_ir
+    assert "@uniform_dt = external global float" in llvm_ir
+    assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
 
 
 def test_cli_main_wires_default_compiler(monkeypatch):

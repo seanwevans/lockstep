@@ -3,6 +3,7 @@ from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
 
+from .codegen import emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
 from .optimizer import optimize_bind_routes
@@ -35,7 +36,9 @@ def _compile_lockstep_with_dependencies(
     if error_listener.errors:
         raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
 
-    semantic_validator = semantic_validator or (lambda parse_tree: validate_semantics(parse_tree, visitor_cls))
+    semantic_validator = semantic_validator or (
+        lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
+    )
     semantic_diagnostics = normalize_diagnostics(semantic_validator(tree))
     semantic_errors = [d for d in semantic_diagnostics if d.severity == "error"]
     if semantic_errors:
@@ -55,6 +58,17 @@ def _compile_lockstep_with_dependencies(
         filter_names={flt["name"] for flt in visitor.filters},
     )
 
+    entities = {
+        "structs": visitor.structs,
+        "shaders": visitor.shaders,
+        "filters": visitor.filters,
+        "pure_functions": visitor.pure_functions,
+        "streams": visitor.streams,
+        "accumulators": visitor.accumulators,
+        "uniforms": visitor.uniforms,
+        "bind_routes": visitor.bind_routes,
+    }
+
     return LockstepCompileResult(
         parse_tree=tree,
         entities={
@@ -68,7 +82,8 @@ def _compile_lockstep_with_dependencies(
             "bind_routes": visitor.bind_routes,
             "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
             "fused_bind_groups": bind_optimization["fused_groups"],
-        },
+        },        
+        llvm_ir=emit_llvm_ir(entities),
         diagnostics=all_diagnostics,
     )
 

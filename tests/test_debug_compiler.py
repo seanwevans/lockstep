@@ -753,7 +753,10 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
             message="Undefined identifier 'missing_stream'.",
             line=12,
             column=3,
-            hint="Declare pipeline symbols before passing them to bind.",
+            hint=(
+                "Fix-it: declare `missing_stream` in the pipeline block. "
+                "Declare pipeline symbols before passing them to bind."
+            ),
         )
     ]
 
@@ -790,6 +793,7 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
 
     assert validator.diagnostics[0].code == "LCK303"
     assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
+    assert "Fix-it: use the full signature" in validator.diagnostics[0].hint
     assert validator.diagnostics[1].code == "LCK309"
     assert "kernel has no out parameter" in validator.diagnostics[1].message
     assert validator.diagnostics[2].code == "LCK305"
@@ -798,6 +802,11 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
 
 def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "KnownKernel": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+        ]
+    }
     validator._push_scope()
     validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
 
@@ -812,6 +821,7 @@ def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_modu
     validator.visitBindStmt(bind_ctx)
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK304"]
+    assert "Fix-it: replace 'MissingKernel' with 'KnownKernel'." in validator.diagnostics[0].hint
 
 
 def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(debug_compiler_module):
@@ -943,6 +953,7 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_com
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK312"]
     assert "must match out argument 'other_stream'" in validator.diagnostics[0].message
+    assert "Fix-it: change the bind target to 'other_stream'" in validator.diagnostics[0].hint
 
 
 def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_module):
@@ -1772,6 +1783,97 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler
             hint="Use an initializer expression with the same type as the declared variable.",
         )
     ]
+
+
+def test_semantic_validator_infers_var_type_from_initializer(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    var_decl_ctx = _ctx(
+        ID=lambda: _token("mass"),
+        typeName=lambda: None,
+        expr=lambda: _ctx(declared_type="float"),
+    )
+
+    validator.visitVarDecl(var_decl_ctx)
+
+    assert validator.diagnostics == []
+    assert validator.scopes[-1]["mass"] == SemanticSymbol(name="mass", declared_type="float", kind="local")
+
+
+def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    var_decl_ctx = _ctx(
+        start_line=72,
+        start_col=8,
+        ID=lambda: _token("mass"),
+        typeName=lambda: None,
+        expr=lambda: None,
+    )
+
+    validator.visitVarDecl(var_decl_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK423",
+            message="Cannot infer type for local variable 'mass' without a typed initializer.",
+            line=72,
+            column=8,
+            hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_unused_local_variables(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator.visitVarDecl(
+        _ctx(
+            start_line=10,
+            start_col=3,
+            ID=lambda: _token("unused"),
+            typeName=lambda: _token("int"),
+            expr=lambda: _ctx(declared_type="int"),
+        )
+    )
+
+    validator._pop_scope()
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="warning",
+            code="LCK421",
+            message="Local variable 'unused' is declared but never used.",
+            line=10,
+            column=3,
+            hint="Remove unused variables or use them in an expression/assignment.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_unbound_pipeline_resources(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    pipeline_ctx = _ctx(start_line=20, start_col=1)
+
+    original_visit_children = validator.visitChildren
+
+    def _visit_children(ctx):
+        if ctx is pipeline_ctx:
+            validator.visitStreamDecl(
+                _ctx(start_line=21, start_col=2, ID=lambda: _token("s0"), typeName=lambda: _token("float"))
+            )
+            validator.visitAccumDecl(
+                _ctx(start_line=22, start_col=2, ID=lambda: _token("acc"), typeName=lambda: _token("float"))
+            )
+        return original_visit_children(ctx)
+
+    validator.visitChildren = _visit_children
+    validator.visitPipelineDecl(pipeline_ctx)
+
+    assert [diagnostic.code for diagnostic in validator.diagnostics] == ["LCK422", "LCK422"]
 
 
 def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(debug_compiler_module):
