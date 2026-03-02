@@ -83,6 +83,8 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
         "accumulators": [],
         "uniforms": [],
         "bind_routes": [],
+        "optimized_bind_routes": [],
+        "fused_bind_groups": [],
     }
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
