@@ -753,7 +753,10 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
             message="Undefined identifier 'missing_stream'.",
             line=12,
             column=3,
-            hint="Declare pipeline symbols before passing them to bind.",
+            hint=(
+                "Fix-it: declare `missing_stream` in the pipeline block. "
+                "Declare pipeline symbols before passing them to bind."
+            ),
         )
     ]
 
@@ -790,6 +793,7 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
 
     assert validator.diagnostics[0].code == "LCK303"
     assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
+    assert "Fix-it: use the full signature" in validator.diagnostics[0].hint
     assert validator.diagnostics[1].code == "LCK309"
     assert "kernel has no out parameter" in validator.diagnostics[1].message
     assert validator.diagnostics[2].code == "LCK305"
@@ -798,6 +802,11 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
 
 def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "KnownKernel": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+        ]
+    }
     validator._push_scope()
     validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
 
@@ -812,6 +821,7 @@ def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_modu
     validator.visitBindStmt(bind_ctx)
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK304"]
+    assert "Fix-it: replace 'MissingKernel' with 'KnownKernel'." in validator.diagnostics[0].hint
 
 
 def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(debug_compiler_module):
@@ -943,6 +953,7 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_com
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK312"]
     assert "must match out argument 'other_stream'" in validator.diagnostics[0].message
+    assert "Fix-it: change the bind target to 'other_stream'" in validator.diagnostics[0].hint
 
 
 def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_module):
