@@ -742,12 +742,55 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
     )
     validator.visitBindStmt(type_ctx)
 
-    assert validator.diagnostics[0].code == "LCK304"
+    assert validator.diagnostics[0].code == "LCK303"
     assert "expects 2 argument(s), but got 1" in validator.diagnostics[0].message
     assert validator.diagnostics[1].code == "LCK309"
     assert "kernel has no out parameter" in validator.diagnostics[1].message
     assert validator.diagnostics[2].code == "LCK305"
     assert "expected float, got int" in validator.diagnostics[2].message
+
+
+def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+
+    bind_ctx = _ctx(
+        start_line=22,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("MissingKernel"), _token("s0")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(bind_ctx)
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK304"]
+
+
+def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator.shaders = {
+        "Apply": [
+            SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
+            SemanticKernelParam(name="energy", declared_type="float", modifier="accum"),
+        ]
+    }
+    validator._push_scope()
+    validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare("dt", "int", _ctx(), duplicate_code="LCK306", kind="uniform")
+
+    bind_ctx = _ctx(
+        start_line=23,
+        start_col=2,
+        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("dt")],
+        argList=lambda: object(),
+        typeName=lambda: _token("float"),
+    )
+
+    validator.visitBindStmt(bind_ctx)
+
+    assert [diag.code for diag in validator.diagnostics] == ["LCK309", "LCK308", "LCK305"]
 
 
 def test_semantic_validator_reports_bind_modifier_kind_mismatches(debug_compiler_module):
