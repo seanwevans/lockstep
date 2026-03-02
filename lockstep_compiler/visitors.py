@@ -532,7 +532,7 @@ def build_semantic_validator(base_visitor_cls):
                     ),
                     ctx=ctx,
                     hint=(
-                        f"{bind_fixit(f'use the full signature `{call_example}`')} "
+                        bind_fixit(f'use the full signature `{call_example}`') + " "
                         "Match bind arguments to the shader/filter parameter list."
                     ),
                 )
@@ -574,7 +574,7 @@ def build_semantic_validator(base_visitor_cls):
                             ),
                             ctx=ctx,
                             hint=(
-                                f"{bind_fixit(f'change the bind target to \'{out_arg_name}\' or the out argument to \'{target_name}\'')} "
+                                bind_fixit(f"change the bind target to '{out_arg_name}' or the out argument to '{target_name}'") + " "
                                 "Use the same symbol for assignment target and out argument."
                             ),
                         )
@@ -594,7 +594,7 @@ def build_semantic_validator(base_visitor_cls):
                             ),
                             ctx=ctx,
                             hint=(
-                                f"{bind_fixit(f"bind output to a '{expected_output_kind}' symbol")} "
+                                bind_fixit(f"bind output to a '{expected_output_kind}' symbol") + " "
                                 "Route kernel outputs to a stream-compatible bind target."
                             ),
                         )
@@ -619,7 +619,7 @@ def build_semantic_validator(base_visitor_cls):
                         message=f"Undefined identifier '{arg_name}'.",
                         ctx=ctx,
                         hint=(
-                            f"{bind_fixit(f'declare `{arg_name}` in the pipeline block')} "
+                            bind_fixit(f'declare `{arg_name}` in the pipeline block') + " "
                             "Declare pipeline symbols before passing them to bind."
                         ),
                     )
@@ -640,7 +640,7 @@ def build_semantic_validator(base_visitor_cls):
                         ),
                         ctx=ctx,
                         hint=(
-                            f"{bind_fixit(f'replace `{arg_name}` with a {expected_kind} symbol')} "
+                            bind_fixit(f'replace `{arg_name}` with a {expected_kind} symbol') + " "
                             "Pass a symbol with the kind required by the parameter modifier."
                         ),
                     )
