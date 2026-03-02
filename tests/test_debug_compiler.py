@@ -641,19 +641,41 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_when_compiler_missing(debug_compiler_module):
-    stderr = io.StringIO()
+def test_run_cli_uses_default_compiler_when_compiler_missing(
+    debug_compiler_module, monkeypatch
+):
+    captured = {}
+
+    def fake_compiler(source):
+        captured["source"] = source
+
+    import lockstep_compiler.compiler as compiler_module
+
+    monkeypatch.setattr(compiler_module, "compile_lockstep", fake_compiler)
 
     exit_code = debug_compiler_module.run_cli(
         [],
         stdin=io.StringIO("pipeline MissingCompiler { }"),
-        stderr=stderr,
         compiler=None,
+    )
+
+    assert exit_code == 0
+    assert captured["source"] == "pipeline MissingCompiler { }"
+
+
+def test_run_cli_returns_non_zero_when_compiler_not_callable(debug_compiler_module):
+    stderr = io.StringIO()
+
+    exit_code = debug_compiler_module.run_cli(
+        [],
+        stdin=io.StringIO("pipeline InvalidCompiler { }"),
+        stderr=stderr,
+        compiler=object(),
     )
 
     assert exit_code == 1
     assert stderr.getvalue().splitlines() == [
-        "Compiler configuration error: no compiler callable was provided.",
+        "Compiler configuration error: compiler must be callable.",
     ]
 
 
