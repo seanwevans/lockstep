@@ -1,3 +1,4 @@
+import functools
 from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
@@ -64,7 +65,13 @@ def _compile_lockstep_with_dependencies(
     )
 
 
+@functools.lru_cache(maxsize=1)
 def load_default_parser_classes() -> tuple[Any, Any, Any]:
+    """Load and cache the default generated parser classes.
+
+    The first call imports generated parser modules; subsequent calls reuse the
+    cached class tuple to avoid repeated import work.
+    """
     from generated.parser.LockstepLexer import LockstepLexer
     from generated.parser.LockstepParser import LockstepParser
     from generated.parser.LockstepVisitor import LockstepVisitor
