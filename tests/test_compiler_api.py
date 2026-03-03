@@ -89,7 +89,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     }
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert "define void @Lockstep_Tick()" in result.llvm_ir
+    assert "define void @\"Lockstep_Tick\"()" in result.llvm_ir
 
 
 def test_emit_llvm_ir_generates_expected_declarations():
@@ -98,7 +98,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
             "structs": ["Vec3"],
             "shaders": [{"name": "ApplyGravity"}],
             "filters": [{"name": "Cull"}],
-            "pure_functions": [{"name": "mix", "return_type": "float"}],
+            "pure_functions": [{"name": "mix", "return_type": "float", "params": [], "body": ["returnmix(0.0,1.0,step(0.5,1.0));"]}],
             "streams": [{"name": "raw_positions", "type": "Vec3"}],
             "accumulators": [{"name": "energy", "type": "float"}],
             "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
@@ -106,14 +106,16 @@ def test_emit_llvm_ir_generates_expected_declarations():
         }
     )
 
-    assert "%struct.Vec3 = type { i8 }" in llvm_ir
-    assert "declare float @pure_mix()" in llvm_ir
-    assert "declare void @shader_ApplyGravity()" in llvm_ir
-    assert "declare void @filter_Cull()" in llvm_ir
-    assert "@stream_raw_positions = external global %struct.Vec3" in llvm_ir
-    assert "@accum_energy = external global float" in llvm_ir
-    assert "@uniform_dt = external global float" in llvm_ir
+    assert "%\"struct.Vec3\" = type {i8}" in llvm_ir
+    assert "define float @\"pure_mix\"()" in llvm_ir
+    assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
+    assert "define void @\"filter_Cull\"()" in llvm_ir
+    assert '@"stream_raw_positions" = external global %"struct.Vec3"' in llvm_ir
+    assert '@"accum_energy" = external global float' in llvm_ir
+    assert '@"uniform_dt" = external global float' in llvm_ir
     assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
+    assert "fmul float" in llvm_ir
+    assert "uitofp i1" in llvm_ir
 
 
 def test_cli_main_wires_default_compiler(monkeypatch):
