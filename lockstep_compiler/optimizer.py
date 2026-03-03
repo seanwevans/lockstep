@@ -37,10 +37,28 @@ def optimize_bind_routes(
     *,
     shader_names: set[str],
     filter_names: set[str],
+    bind_routes_ir: list[dict] | None = None,
 ) -> dict[str, list]:
     """Fuse adjacent shader/filter bind routes that shuttle temporary SoA streams."""
 
-    parsed_routes = [_parse_bind_route(route) for route in bind_routes]
+    if bind_routes_ir:
+        parsed_routes = []
+        for index, route in enumerate(bind_routes_ir):
+            if route.get("kind") != "kernel":
+                parsed_routes.append(None)
+                continue
+            parsed_routes.append(
+                ParsedBindRoute(
+                    target=route.get("target", ""),
+                    callee=route.get("kernel", ""),
+                    args=tuple(route.get("args", [])),
+                    raw=route.get("route", bind_routes[index] if index < len(bind_routes) else ""),
+                )
+            )
+        if len(parsed_routes) < len(bind_routes):
+            parsed_routes.extend(_parse_bind_route(route) for route in bind_routes[len(parsed_routes) :])
+    else:
+        parsed_routes = [_parse_bind_route(route) for route in bind_routes]
     valid_kernel_names = shader_names | filter_names
 
     live_after_route: list[set[str]] = [set() for _ in bind_routes]

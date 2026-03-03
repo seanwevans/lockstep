@@ -24,3 +24,14 @@ def test_format_lockstep_source_preserves_struct_terminator():
         "    float z;\n"
         "};\n"
     )
+
+
+def test_format_lockstep_source_uses_lexer_tokens_for_nested_expressions():
+    source = "shader Integrate(in Vec3 p){Vec3 next=Step(p.x,p.y);return next;}"
+
+    assert format_lockstep_source(source) == (
+        "shader Integrate(in Vec3 p) {\n"
+        "    Vec3 next=Step(p.x,p.y);\n"
+        "    return next;\n"
+        "}\n"
+    )

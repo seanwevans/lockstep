@@ -99,6 +99,7 @@ def _compile_lockstep_with_dependencies(
         entities["bind_routes"],
         shader_names={shader["name"] for shader in entities["shaders"]},
         filter_names={flt["name"] for flt in entities["filters"]},
+        bind_routes_ir=entities.get("bind_routes_ir"),
     )
     entities = {
         **entities,

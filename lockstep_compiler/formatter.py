@@ -1,3 +1,4 @@
+from __future__ import annotations
 from antlr4 import CommonTokenStream, InputStream
 
 from generated.parser.LockstepLexer import LockstepLexer
@@ -10,30 +11,44 @@ def _tokenize(source):
     tokens = []
     current = []
 
-    for char in source:
-        if char in {"{", "}", ";", "\n"}:
-            if current:
-                token = "".join(current).strip()
-                if token:
-                    tokens.append(token)
-                current = []
-            tokens.append(char)
-        else:
-            current.append(char)
-
-    if current:
-        token = "".join(current).strip()
-        if token:
-            tokens.append(token)
-
-    return tokens
+from antlr4 import CommonTokenStream, InputStream
 
 
-def _format_token_stream(source, *, indent):
-    tokens = _tokenize(source)
+def _lex_tokens(source: str) -> list[str]:
+    from generated.parser.LockstepLexer import LockstepLexer
+
+    lexer = LockstepLexer(InputStream(source))
+    stream = CommonTokenStream(lexer)
+    stream.fill()
+    return [token.text for token in stream.tokens if token.type != -1]
+
+
+def _needs_space(previous: str, current: str) -> bool:
+    if not previous:
+        return False
+    if current in {")", "]", "}", ",", ";", "(", "<", ">", ".", "="}:
+        return False
+    if previous in {"(", "[", "{", ",", "<", ".", "="}:
+        return False
+    if previous[-1] == ">" and (current[0].isalnum() or current[0] == "_"):
+        return True
+    return (previous[-1].isalnum() or previous[-1] == "_") and (
+        current[0].isalnum() or current[0] == "_"
+    )
+
+
+def format_lockstep_source(source, *, indent="    "):
+    tokens = _lex_tokens(source)
     lines = []
     current = ""
     depth = 0
+
+    def append_token(token: str):
+        nonlocal current
+        if _needs_space(current, token):
+            current = f"{current} {token}"
+        else:
+            current = f"{current}{token}"
 
     def flush_current():
         nonlocal current
@@ -61,15 +76,10 @@ def _format_token_stream(source, *, indent):
                 index += 1
             lines.append(f"{indent * depth}{closing}")
         elif token == ";":
-            current = f"{current.strip()};"
-            flush_current()
-        elif token == "\n":
+            append_token(token)
             flush_current()
         else:
-            if current:
-                current = f"{current} {token}"
-            else:
-                current = token
+            append_token(token)
 
         index += 1
 
