@@ -43,14 +43,17 @@ def optimize_bind_routes(
     parsed_routes = [_parse_bind_route(route) for route in bind_routes]
     valid_kernel_names = shader_names | filter_names
 
-    use_count: dict[str, int] = {}
-    for parsed in parsed_routes:
+    live_after_route: list[set[str]] = [set() for _ in bind_routes]
+    live: set[str] = set()
+    for idx in range(len(parsed_routes) - 1, -1, -1):
+        parsed = parsed_routes[idx]
+        live_after_route[idx] = set(live)
         if parsed is None:
             continue
-        for arg in parsed.args:
-            if arg == parsed.target:
-                continue
-            use_count[arg] = use_count.get(arg, 0) + 1
+        # target is defined by the route, so the previous value is dead unless
+        # the route reads it as an argument.
+        live.discard(parsed.target)
+        live.update(parsed.args)
 
     fused_groups: list[dict[str, object]] = []
     optimized_bind_routes: list[str] = []
@@ -71,9 +74,12 @@ def optimize_bind_routes(
             prev = chain[-1]
             if nxt is None or nxt.callee not in valid_kernel_names:
                 break
-            if use_count.get(prev.target, 0) != 1:
-                break
             if prev.target not in nxt.args:
+                break
+            # The stream produced by `prev` is only fuseable when its value is
+            # dead after `nxt`, i.e. its lifetime is strictly contained by the
+            # adjacent kernels.
+            if prev.target in live_after_route[chain_end + 1]:
                 break
             chain.append(nxt)
             chain_end += 1
