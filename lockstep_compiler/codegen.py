@@ -6,6 +6,8 @@ from typing import Any
 
 from llvmlite import ir
 
+from .ast import AstProgram, ast_to_entities
+
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "bool": ir.IntType(1),
@@ -122,11 +124,70 @@ class _ExprParser:
 
 
 class _FunctionLowerer:
-    def __init__(self, module: ir.Module, function_map: dict[str, ir.Function]):
+    def __init__(
+        self,
+        module: ir.Module,
+        function_map: dict[str, ir.Function],
+        known_structs: dict[str, ir.IdentifiedStructType] | None = None,
+        struct_fields: dict[str, list[dict[str, str]]] | None = None,
+    ):
         self.module = module
         self.function_map = function_map
+        self.known_structs = known_structs or {}
+        self.struct_fields = struct_fields or {}
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
+
+    def _struct_name_for_type(self, llvm_type: ir.Type) -> str | None:
+        for name, known_ty in self.known_structs.items():
+            if llvm_type is known_ty:
+                return name
+        return None
+
+    def _field_index_and_type(self, llvm_type: ir.Type, field_name: str) -> tuple[int, ir.Type] | None:
+        struct_name = self._struct_name_for_type(llvm_type)
+        if struct_name is None:
+            return None
+        fields = self.struct_fields.get(struct_name, [])
+        for index, field in enumerate(fields):
+            if field.get("name") == field_name:
+                return index, self._llvm_type(field.get("type", "float"), self.known_structs)
+        return None
+
+    def _coerce_value_to_type(self, value: ir.Value, target_type: ir.Type) -> ir.Value:
+        if value.type == target_type:
+            return value
+        if isinstance(target_type, ir.FloatType):
+            return self._coerce_float(value)
+        if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.IntType):
+            if value.type.width < target_type.width:
+                return self.builder.sext(value, target_type)
+            if value.type.width > target_type.width:
+                return self.builder.trunc(value, target_type)
+        return value
+
+    def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
+        current = value
+        for field_name in path:
+            field_info = self._field_index_and_type(current.type, field_name)
+            if field_info is None:
+                return ir.Constant(ir.FloatType(), 0.0)
+            index, _ = field_info
+            current = self.builder.extract_value(current, index, name=f"{field_name}_field")
+        return current
+
+    def _insert_field_path(self, aggregate: ir.Value, path: list[str], value: ir.Value) -> ir.Value:
+        field_info = self._field_index_and_type(aggregate.type, path[0])
+        if field_info is None:
+            return aggregate
+        index, field_type = field_info
+        if len(path) == 1:
+            coerced = self._coerce_value_to_type(value, field_type)
+            return self.builder.insert_value(aggregate, coerced, index, name=f"set_{path[0]}")
+
+        nested = self.builder.extract_value(aggregate, index, name=f"load_{path[0]}")
+        updated_nested = self._insert_field_path(nested, path[1:], value)
+        return self.builder.insert_value(aggregate, updated_nested, index, name=f"set_{path[0]}")
 
     def _llvm_type(self, type_name: str, known_structs: dict[str, ir.IdentifiedStructType]) -> ir.Type:
         if type_name in _PRIMITIVE_TYPE_MAP:
@@ -149,6 +210,14 @@ class _FunctionLowerer:
         if key in self.locals:
             return self.builder.load(self.locals[key], name=f"{key}_val")
         raise ValueError(f"unknown variable '{name}'")
+        parts = name.split(".")
+        base_key = _sanitize_symbol(parts[0])
+        if base_key in self.locals:
+            base_value = self.builder.load(self.locals[base_key], name=f"{base_key}_val")
+            if len(parts) == 1:
+                return base_value
+            return self._extract_field_path(base_value, parts[1:])
+        return ir.Constant(ir.FloatType(), 0.0)
 
     def _parse_expr(self, expr: str):
         parser = _ExprParser(_tokenize_expr(expr))
@@ -254,22 +323,31 @@ class _FunctionLowerer:
             rhs = rhs.strip()
             lhs_parts = lhs.split()
             name = lhs_parts[-1]
-            key = _sanitize_symbol(name.replace(".", "_"))
+            base_name, *field_path = name.split(".")
+            key = _sanitize_symbol(base_name)
             value = self._lower_expr(self._parse_expr(rhs))
             if key not in self.locals:
                 slot = self.builder.alloca(value.type, name=key)
                 self.locals[key] = slot
-            self.builder.store(value, self.locals[key])
+            if not field_path:
+                self.builder.store(value, self.locals[key])
+                return
+
+            current = self.builder.load(self.locals[key], name=f"{key}_val")
+            updated = self._insert_field_path(current, field_path, value)
+            self.builder.store(updated, self.locals[key])
             return
 
         if statement.endswith(";"):
             maybe_decl = statement[:-1].split()
             if maybe_decl:
+                declared_type = maybe_decl[0] if len(maybe_decl) > 1 else "float"
                 key = _sanitize_symbol(maybe_decl[-1].replace(".", "_"))
                 if key not in self.locals:
-                    slot = self.builder.alloca(ir.FloatType(), name=key)
+                    llvm_type = self._llvm_type(declared_type, self.known_structs)
+                    slot = self.builder.alloca(llvm_type, name=key)
                     self.locals[key] = slot
-                    self.builder.store(ir.Constant(ir.FloatType(), 0.0), slot)
+                    self.builder.store(ir.Constant(llvm_type, None), slot)
 
     def lower_function(self, fn: ir.Function, statements: list[str], return_type: ir.Type):
         block = fn.append_basic_block("entry")
@@ -294,8 +372,16 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def emit_llvm_ir(entities: dict[str, Any]) -> str:
+def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(program_or_entities, AstProgram):
+        return ast_to_entities(program_or_entities)
+    return program_or_entities
+
+
+def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
+
+    entities = _normalize_codegen_input(program_or_entities)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
@@ -310,14 +396,48 @@ def emit_llvm_ir(entities: dict[str, Any]) -> str:
     module = ir.Module(name="lockstep")
     module.source_filename = "lockstep"
     known_structs: dict[str, ir.IdentifiedStructType] = {}
+    struct_fields: dict[str, list[dict[str, str]]] = {}
 
-    for struct_name in structs:
+    normalized_structs: list[dict[str, Any]] = []
+    for struct_decl in structs:
+        if isinstance(struct_decl, str):
+            normalized_structs.append({"name": struct_decl, "fields": []})
+        elif isinstance(struct_decl, dict) and struct_decl.get("name"):
+            fields = struct_decl.get("fields") if isinstance(struct_decl.get("fields"), list) else []
+            normalized_structs.append({"name": struct_decl["name"], "fields": fields})
+
+    for struct_decl in normalized_structs:
+        struct_name = struct_decl["name"]
         safe_name = _sanitize_symbol(struct_name)
         struct_ty = module.context.get_identified_type(f"struct.{safe_name}")
-        struct_ty.set_body(ir.IntType(8))
         known_structs[struct_name] = struct_ty
+        struct_fields[struct_name] = struct_decl["fields"]
 
-    lowerer = _FunctionLowerer(module, {})
+    lowerer = _FunctionLowerer(module, {}, known_structs, struct_fields)
+
+    unresolved = set(known_structs.keys())
+    while unresolved:
+        progress = False
+        for struct_name in list(unresolved):
+            field_types: list[ir.Type] = []
+            can_lower = True
+            for field in struct_fields.get(struct_name, []):
+                field_type_name = field.get("type", "float")
+                if field_type_name in known_structs and field_type_name in unresolved:
+                    can_lower = False
+                    break
+                field_types.append(lowerer._llvm_type(field_type_name, known_structs))
+            if not can_lower:
+                continue
+            if known_structs[struct_name].is_opaque:
+                known_structs[struct_name].set_body(*field_types)
+            unresolved.remove(struct_name)
+            progress = True
+        if not progress:
+            for struct_name in unresolved:
+                if known_structs[struct_name].is_opaque:
+                    known_structs[struct_name].set_body(ir.IntType(8))
+            break
 
     function_map: dict[str, ir.Function] = {}
     for pure in pure_functions:

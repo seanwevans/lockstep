@@ -111,7 +111,7 @@ def _compile_lockstep_with_dependencies(
         parse_tree=tree,
         entities=entities,
         ast=typed_ast,
-        llvm_ir=emit_llvm_ir(entities),
+        llvm_ir=emit_llvm_ir(typed_ast or entities),
         diagnostics=all_diagnostics,
     )
 
