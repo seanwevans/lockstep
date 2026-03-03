@@ -74,19 +74,17 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     )
 
     assert result.parse_tree == "TREE"
-    assert result.entities == {
-        "structs": [],
-        "shaders": [],
-        "filters": [],
-        "pure_functions": [],
-        "streams": [],
-        "accumulators": [],
-        "uniforms": [],
-        "bind_routes": [],
-        "bind_routes_ir": [],
-        "optimized_bind_routes": [],
-        "fused_bind_groups": [],
-    }
+    assert result.entities["structs"] == []
+    assert result.entities["shaders"] == []
+    assert result.entities["filters"] == []
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp"}
+    assert result.entities["streams"] == []
+    assert result.entities["accumulators"] == []
+    assert result.entities["uniforms"] == []
+    assert result.entities["bind_routes"] == []
+    assert result.entities["bind_routes_ir"] == []
+    assert result.entities["optimized_bind_routes"] == []
+    assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
     assert "define void @\"Lockstep_Tick\"()" in result.llvm_ir

@@ -45,3 +45,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = ["debug_compiler"]
 packages = ["lockstep_compiler"]
+
+[tool.setuptools.package-data]
+lockstep_compiler = ["prelude.lock"]
