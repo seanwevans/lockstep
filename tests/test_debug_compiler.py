@@ -1981,14 +1981,73 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_infers_arithmetic_and_relational_expression_types(debug_compiler_module):
+def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     add_ctx = _ctx(mulExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="float")], getChild=lambda i: _token("+"))
-    rel_ctx = _ctx(addExpr=lambda: [add_ctx, _ctx(declared_type="float")], getChild=lambda i: _token(">"))
 
-    assert validator._resolve_expr_type(add_ctx) == "float"
-    assert validator._resolve_expr_type(rel_ctx) == "bool"
+    assert validator._resolve_expr_type(add_ctx) is None
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK424",
+            message="Operator '+' mixes int and float operands without an explicit cast.",
+            line=0,
+            column=0,
+            hint="Use explicit casts so numeric widening is intentional and target-compatible.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_use_before_definition(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    validator.visitVarDecl(
+        _ctx(
+            start_line=90,
+            start_col=2,
+            ID=lambda: _token("count"),
+            typeName=lambda: _token("int"),
+            expr=lambda: None,
+        )
+    )
+
+    validator.visitPrimaryExpr(_ctx(start_line=91, start_col=4, ID=lambda: _token("count"), exprList=lambda: None))
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK425",
+            message="Local variable 'count' is used before it is assigned.",
+            line=91,
+            column=4,
+            hint="Assign a value to the variable before reading it.",
+        )
+    ]
+
+
+def test_semantic_validator_assignment_defines_local(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+
+    validator.visitVarDecl(
+        _ctx(
+            ID=lambda: _token("count"),
+            typeName=lambda: _token("int"),
+            expr=lambda: None,
+        )
+    )
+
+    validator.visitAssignStmt(
+        _ctx(
+            lvalue=lambda: _ctx(ID=lambda: [_token("count")]),
+            expr=lambda: _ctx(declared_type="int"),
+        )
+    )
+
+    validator.visitPrimaryExpr(_ctx(ID=lambda: _token("count"), exprList=lambda: None))
+
     assert validator.diagnostics == []
 
 
