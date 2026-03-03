@@ -153,3 +153,44 @@ def test_load_default_parser_classes_is_cached(monkeypatch):
 
     assert first == second
     assert import_count == first_import_count
+
+
+def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "shaders": [
+                {
+                    "name": "ApplyGravity",
+                    "params": [
+                        {"modifier": "in", "type": "float", "name": "inp"},
+                        {"modifier": "out", "type": "float", "name": "out"},
+                        {"modifier": "uniform", "type": "float", "name": "dt"},
+                    ],
+                    "body": [],
+                }
+            ],
+            "filters": [],
+            "pure_functions": [],
+            "streams": [
+                {"name": "inp", "type": "float", "capacity": 4},
+                {"name": "out", "type": "float", "capacity": 4},
+            ],
+            "accumulators": [],
+            "uniforms": [{"name": "dt", "type": "float"}],
+            "bind_routes": ["out = ApplyGravity(inp, out, dt);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "kernel",
+                    "target": "out",
+                    "kernel": "ApplyGravity",
+                    "args": ["inp", "out", "dt"],
+                    "route": "out = ApplyGravity(inp, out, dt);",
+                }
+            ],
+        }
+    )
+
+    assert 'route_ApplyGravity_cond' in llvm_ir
+    assert 'icmp slt i32 %"idx", 4' in llvm_ir
+    assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
