@@ -176,6 +176,53 @@ def test_compile_lockstep_accepts_library_sources(monkeypatch):
     assert result == "ok"
     assert captured["source_code"].startswith("struct Vec { float x; };\n\npure float id(float v) { return v; }")
     assert captured["source_code"].endswith("pipeline Main { bind { } }")
+
+
+def test_emit_llvm_ir_accepts_ast_program_input():
+    from lockstep_compiler.ast import (
+        AstKernelBindRoute,
+        AstKernelDecl,
+        AstKernelParam,
+        AstPipelineDecl,
+        AstProgram,
+        AstStreamDecl,
+    )
+
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            shaders=(
+                AstKernelDecl(
+                    name="ApplyGravity",
+                    params=(
+                        AstKernelParam(modifier="in", declared_type="float", name="inp"),
+                        AstKernelParam(modifier="out", declared_type="float", name="out"),
+                    ),
+                ),
+            ),
+            pipelines=(
+                AstPipelineDecl(
+                    name="Main",
+                    streams=(
+                        AstStreamDecl(name="inp", declared_type="float", capacity="2"),
+                        AstStreamDecl(name="out", declared_type="float", capacity="2"),
+                    ),
+                    bind_routes=(
+                        AstKernelBindRoute(
+                            target="out",
+                            kernel="ApplyGravity",
+                            args=("inp", "out"),
+                            route="out = ApplyGravity(inp, out);",
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert 'route_ApplyGravity_cond' in llvm_ir
+    assert 'icmp slt i32 %"idx", 2' in llvm_ir
+
+
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     llvm_ir = emit_llvm_ir(
         {

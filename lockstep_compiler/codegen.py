@@ -6,6 +6,8 @@ from typing import Any
 
 from llvmlite import ir
 
+from .ast import AstProgram, ast_to_entities
+
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "bool": ir.IntType(1),
@@ -261,8 +263,16 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def emit_llvm_ir(entities: dict[str, Any]) -> str:
+def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(program_or_entities, AstProgram):
+        return ast_to_entities(program_or_entities)
+    return program_or_entities
+
+
+def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
+
+    entities = _normalize_codegen_input(program_or_entities)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
