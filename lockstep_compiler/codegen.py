@@ -469,23 +469,23 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
         lowerer.lower_function(fn, flt.get("body", []), ir.VoidType())
 
-    stream_globals: dict[str, ir.GlobalVariable] = {}
+    arena_fields: list[tuple[str, str, ir.Type]] = []
+    stream_slots: dict[str, int] = {}
     stream_capacities: dict[str, int] = {}
     for stream in streams:
-        gv = ir.GlobalVariable(module, lowerer._llvm_type(stream["type"], known_structs), name=f"stream_{_sanitize_symbol(stream['name'])}")
-        gv.linkage = "external"
-        stream_globals[stream["name"]] = gv
+        stream_slots[stream["name"]] = len(arena_fields)
+        arena_fields.append(("stream", stream["name"], lowerer._llvm_type(stream["type"], known_structs)))
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_globals: dict[str, ir.GlobalVariable] = {}
+    accum_slots: dict[str, int] = {}
     for accum in accumulators:
-        gv = ir.GlobalVariable(module, lowerer._llvm_type(accum["type"], known_structs), name=f"accum_{_sanitize_symbol(accum['name'])}")
-        gv.linkage = "external"
-        accum_globals[accum["name"]] = gv
-    uniform_globals: dict[str, ir.GlobalVariable] = {}
+        accum_slots[accum["name"]] = len(arena_fields)
+        arena_fields.append(("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs)))
+    uniform_slots: dict[str, int] = {}
     for uniform in uniforms:
-        gv = ir.GlobalVariable(module, lowerer._llvm_type(uniform["type"], known_structs), name=f"uniform_{_sanitize_symbol(uniform['name'])}")
-        gv.linkage = "external"
-        uniform_globals[uniform["name"]] = gv
+        uniform_slots[uniform["name"]] = len(arena_fields)
+        arena_fields.append(("uniform", uniform["name"], lowerer._llvm_type(uniform["type"], known_structs)))
+
+    arena_type = ir.LiteralStructType([field_type for _, _, field_type in arena_fields], packed=True)
 
     kernel_signatures = {
         shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
@@ -498,7 +498,9 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         }
     )
 
-    tick = ir.Function(module, ir.FunctionType(ir.VoidType(), []), name="Lockstep_Tick")
+    tick = ir.Function(module, ir.FunctionType(ir.VoidType(), [arena_type.as_pointer()]), name="Lockstep_Tick")
+    arena_ptr = tick.args[0]
+    arena_ptr.name = "arena"
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
 
@@ -506,6 +508,14 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         if isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
         return ir.Constant(llvm_type, None)
+
+    def _load_arena_slot(field_index: int, field_type: ir.Type) -> ir.Value:
+        slot_ptr = tick_builder.gep(
+            arena_ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
+            name=f"arena_slot_{field_index}",
+        )
+        return tick_builder.load(slot_ptr, name=f"arena_val_{field_index}")
 
     def _lower_kernel_route(route: dict[str, Any]):
         kernel_name = str(route.get("kernel", ""))
@@ -551,12 +561,12 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             arg_name = arg_names[index] if index < len(arg_names) else ""
             modifier = params[index].get("modifier") if index < len(params) else None
             value = None
-            if modifier in {"in", "out"} and arg_name in stream_globals:
-                value = tick_builder.load(stream_globals[arg_name])
-            elif modifier == "accum" and arg_name in accum_globals:
-                value = tick_builder.load(accum_globals[arg_name])
-            elif modifier == "uniform" and arg_name in uniform_globals:
-                value = tick_builder.load(uniform_globals[arg_name])
+            if modifier in {"in", "out"} and arg_name in stream_slots:
+                value = _load_arena_slot(stream_slots[arg_name], param.type)
+            elif modifier == "accum" and arg_name in accum_slots:
+                value = _load_arena_slot(accum_slots[arg_name], param.type)
+            elif modifier == "uniform" and arg_name in uniform_slots:
+                value = _load_arena_slot(uniform_slots[arg_name], param.type)
             if value is None:
                 value = _zero_value(param.type)
             call_args.append(value)
