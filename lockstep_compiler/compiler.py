@@ -3,6 +3,8 @@ from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
 
+from .ast_builder import build_ast
+from .ast_pipeline import extract_entities, validate_program
 from .codegen import emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
@@ -36,42 +38,26 @@ def _compile_lockstep_with_dependencies(
     if error_listener.errors:
         raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
 
-    semantic_validator = semantic_validator or (
-        lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
-    )
-    semantic_diagnostics = normalize_diagnostics(semantic_validator(tree))
-    semantic_errors = [d for d in semantic_diagnostics if d.severity == "error"]
-    if semantic_errors:
-        raise LockstepCompileError(
-            semantic_errors,
-            diagnostics=semantic_diagnostics,
-            phase="semantic",
+    # If the provided parser returns a non-standard parse tree (e.g. unit test
+    # stubs), keep the previous parse-tree visitor flow for compatibility.
+    if not hasattr(tree, "declaration"):
+        semantic_validator = semantic_validator or (
+            lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
         )
+        semantic_diagnostics = normalize_diagnostics(semantic_validator(tree))
+        semantic_errors = [d for d in semantic_diagnostics if d.severity == "error"]
+        if semantic_errors:
+            raise LockstepCompileError(
+                semantic_errors,
+                diagnostics=semantic_diagnostics,
+                phase="semantic",
+            )
 
-    debug_visitor_cls = debug_visitor_cls or build_debug_visitor(visitor_cls)
-    visitor = debug_visitor_cls(verbose=verbose)
-    visitor.visit(tree)
-    all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *visitor.diagnostics])
-    bind_optimization = optimize_bind_routes(
-        visitor.bind_routes,
-        shader_names={shader["name"] for shader in visitor.shaders},
-        filter_names={flt["name"] for flt in visitor.filters},
-    )
-
-    entities = {
-        "structs": visitor.structs,
-        "shaders": visitor.shaders,
-        "filters": visitor.filters,
-        "pure_functions": visitor.pure_functions,
-        "streams": visitor.streams,
-        "accumulators": visitor.accumulators,
-        "uniforms": visitor.uniforms,
-        "bind_routes": visitor.bind_routes,
-    }
-
-    return LockstepCompileResult(
-        parse_tree=tree,
-        entities={
+        debug_visitor_cls = debug_visitor_cls or build_debug_visitor(visitor_cls)
+        visitor = debug_visitor_cls(verbose=verbose)
+        visitor.visit(tree)
+        all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *visitor.diagnostics])
+        entities = {
             "structs": visitor.structs,
             "shaders": visitor.shaders,
             "filters": visitor.filters,
@@ -80,6 +66,40 @@ def _compile_lockstep_with_dependencies(
             "accumulators": visitor.accumulators,
             "uniforms": visitor.uniforms,
             "bind_routes": visitor.bind_routes,
+        }
+    else:
+        program_ast = build_ast(tree)
+        semantic_diagnostics = normalize_diagnostics(
+            (semantic_validator or validate_program)(program_ast)
+        )
+        semantic_errors = [d for d in semantic_diagnostics if d.severity == "error"]
+        if semantic_errors:
+            raise LockstepCompileError(
+                semantic_errors,
+                diagnostics=semantic_diagnostics,
+                phase="semantic",
+            )
+
+        all_diagnostics = semantic_diagnostics
+        entities = extract_entities(program_ast)
+
+    bind_optimization = optimize_bind_routes(
+        entities["bind_routes"],
+        shader_names={shader["name"] for shader in entities["shaders"]},
+        filter_names={flt["name"] for flt in entities["filters"]},
+    )
+
+    return LockstepCompileResult(
+        parse_tree=tree,
+        entities={
+            "structs": entities["structs"],
+            "shaders": entities["shaders"],
+            "filters": entities["filters"],
+            "pure_functions": entities["pure_functions"],
+            "streams": entities["streams"],
+            "accumulators": entities["accumulators"],
+            "uniforms": entities["uniforms"],
+            "bind_routes": entities["bind_routes"],
             "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
             "fused_bind_groups": bind_optimization["fused_groups"],
         },        
