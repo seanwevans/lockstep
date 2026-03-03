@@ -1,12 +1,51 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from typing import Any
+
+import functools
 
 from llvmlite import ir
 
-from .ast import AstProgram, ast_to_entities
+from .ast import (
+    AstAssignStmt,
+    AstBinaryExpr,
+    AstBoolExpr,
+    AstCallExpr,
+    AstFloatExpr,
+    AstIntExpr,
+    AstKernelDecl,
+    AstLValueExpr,
+    AstProgram,
+    AstPureDecl,
+    AstReturnStmt,
+    AstStatement,
+    AstUnaryExpr,
+    AstVarDeclStmt,
+    ast_to_entities,
+)
+
+
+@functools.lru_cache(maxsize=256)
+def _parse_statement_text(statement: str) -> AstStatement | None:
+    statement = statement.strip()
+    if not statement:
+        return None
+    if statement.startswith("return") and not statement.startswith("return "):
+        statement = f"return {statement[len("return") :]}"
+    from antlr4 import CommonTokenStream, InputStream
+    from generated.parser.LockstepLexer import LockstepLexer
+    from generated.parser.LockstepParser import LockstepParser
+    from generated.parser.LockstepVisitor import LockstepVisitor
+    from .ast import build_program_ast
+
+    source = f"pure float __tmp() {{ {statement} }}"
+    parser = LockstepParser(CommonTokenStream(LockstepLexer(InputStream(source))))
+    tree = parser.program()
+    program = build_program_ast(tree, LockstepVisitor)
+    if not program.pure_functions:
+        return None
+    body = program.pure_functions[0].body
+    return body[0] if body else None
 
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
@@ -20,107 +59,6 @@ _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
 
 def _sanitize_symbol(name: str) -> str:
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
-
-
-def _tokenize_expr(expr: str) -> list[str]:
-    token_pattern = r"\s*(==|!=|<=|>=|&&|\|\||[()+\-*/%,<>!]|[A-Za-z_][A-Za-z0-9_\.]*|\d+\.\d+|\d+|true|false)"
-    return [token for token in re.findall(token_pattern, expr) if token.strip()]
-
-
-@dataclass
-class _ExprParser:
-    tokens: list[str]
-    index: int = 0
-
-    def _peek(self) -> str | None:
-        return self.tokens[self.index] if self.index < len(self.tokens) else None
-
-    def _take(self, token: str | None = None) -> str:
-        current = self._peek()
-        if current is None:
-            raise ValueError("unexpected end of expression")
-        if token is not None and current != token:
-            raise ValueError(f"expected '{token}' but got '{current}'")
-        self.index += 1
-        return current
-
-    def parse(self):
-        return self._parse_or()
-
-    def _parse_or(self):
-        node = self._parse_and()
-        while self._peek() == "||":
-            op = self._take()
-            node = ("bin", op, node, self._parse_and())
-        return node
-
-    def _parse_and(self):
-        node = self._parse_equality()
-        while self._peek() == "&&":
-            op = self._take()
-            node = ("bin", op, node, self._parse_equality())
-        return node
-
-    def _parse_equality(self):
-        node = self._parse_rel()
-        while self._peek() in {"==", "!="}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_rel())
-        return node
-
-    def _parse_rel(self):
-        node = self._parse_add()
-        while self._peek() in {"<", "<=", ">", ">="}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_add())
-        return node
-
-    def _parse_add(self):
-        node = self._parse_mul()
-        while self._peek() in {"+", "-"}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_mul())
-        return node
-
-    def _parse_mul(self):
-        node = self._parse_unary()
-        while self._peek() in {"*", "/", "%"}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_unary())
-        return node
-
-    def _parse_unary(self):
-        if self._peek() in {"-", "!"}:
-            op = self._take()
-            return ("un", op, self._parse_unary())
-        return self._parse_primary()
-
-    def _parse_primary(self):
-        token = self._peek()
-        if token == "(":
-            self._take("(")
-            node = self._parse_or()
-            self._take(")")
-            return node
-        token = self._take()
-        if re.match(r"\d+\.\d+", token):
-            return ("float", float(token))
-        if re.match(r"\d+", token):
-            return ("int", int(token))
-        if token in {"true", "false"}:
-            return ("bool", token == "true")
-        if self._peek() == "(":
-            self._take("(")
-            args = []
-            if self._peek() != ")":
-                while True:
-                    args.append(self._parse_or())
-                    if self._peek() != ",":
-                        break
-                    self._take(",")
-            self._take(")")
-            return ("call", token, args)
-        return ("var", token)
 
 
 class _FunctionLowerer:
@@ -236,8 +174,8 @@ class _FunctionLowerer:
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         raise TypeError(f"operator '{op}' requires comparable operands, got {lhs.type}")
 
-    def _load_var(self, name: str) -> ir.Value:
-        parts = name.split(".")
+    def _load_var(self, name_or_parts: str | tuple[str, ...]) -> ir.Value:
+        parts = name_or_parts.split(".") if isinstance(name_or_parts, str) else list(name_or_parts)
         base_key = _sanitize_symbol(parts[0])
         if base_key in self.locals:
             base_value = self.builder.load(self.locals[base_key], name=f"{base_key}_val")
@@ -246,28 +184,25 @@ class _FunctionLowerer:
             return self._extract_field_path(base_value, parts[1:])
         return ir.Constant(ir.FloatType(), 0.0)
 
-    def _parse_expr(self, expr: str):
-        parser = _ExprParser(_tokenize_expr(expr))
-        return parser.parse()
-
-    def _lower_expr(self, node):
-        kind = node[0]
-        if kind == "float":
-            return ir.Constant(ir.FloatType(), node[1])
-        if kind == "int":
-            return ir.Constant(ir.IntType(32), node[1])
-        if kind == "bool":
-            return ir.Constant(ir.IntType(1), int(node[1]))
-        if kind == "var":
-            return self._load_var(node[1])
-        if kind == "un":
-            op, operand = node[1], self._lower_expr(node[2])
+    def _lower_expr(self, expr):
+        if isinstance(expr, str):
+            raise TypeError("string expressions are not supported in typed lowering")
+        if isinstance(expr, AstFloatExpr):
+            return ir.Constant(ir.FloatType(), expr.value)
+        if isinstance(expr, AstIntExpr):
+            return ir.Constant(ir.IntType(32), expr.value)
+        if isinstance(expr, AstBoolExpr):
+            return ir.Constant(ir.IntType(1), int(expr.value))
+        if isinstance(expr, AstLValueExpr):
+            return self._load_var(expr.lvalue.parts)
+        if isinstance(expr, AstUnaryExpr):
+            op, operand = expr.operator, self._lower_expr(expr.operand)
             if op == "-":
                 return self._emit_numeric_unary_minus(operand)
             return self.builder.not_(operand)
-        if kind == "call":
-            name = node[1]
-            args = [self._lower_expr(arg) for arg in node[2]]
+        if isinstance(expr, AstCallExpr):
+            name = expr.name
+            args = [self._lower_expr(arg) for arg in expr.args]
             if name == "mix" and len(args) == 3:
                 if not all(isinstance(arg.type, ir.FloatType) for arg in args):
                     raise TypeError("mix expects float arguments")
@@ -287,7 +222,9 @@ class _FunctionLowerer:
                 return self.builder.call(callee, coerced, name=f"call_{name}")
             return ir.Constant(ir.FloatType(), 0.0)
 
-        op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
+        if not isinstance(expr, AstBinaryExpr):
+            return ir.Constant(ir.FloatType(), 0.0)
+        op, lhs, rhs = expr.operator, self._lower_expr(expr.left), self._lower_expr(expr.right)
         if op in {"+", "-", "*", "/", "%"}:
             return self._emit_numeric_binary(op, lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
@@ -298,26 +235,24 @@ class _FunctionLowerer:
             return self.builder.or_(lhs, rhs)
         return ir.Constant(ir.FloatType(), 0.0)
 
-    def _lower_statement(self, statement: str, return_type: ir.Type):
-        statement = statement.strip()
-        if statement.startswith("return"):
-            expr = statement[len("return") :].strip().rstrip(";")
-            value = self._lower_expr(self._parse_expr(expr))
+    def _lower_statement(self, statement: AstStatement | str, return_type: ir.Type):
+        if isinstance(statement, str):
+            parsed_statement = _parse_statement_text(statement)
+            if parsed_statement is None:
+                return
+            statement = parsed_statement
+        if isinstance(statement, AstReturnStmt):
+            value = self._lower_expr(statement.value)
             if isinstance(return_type, ir.VoidType):
                 self.builder.ret_void()
             else:
                 self.builder.ret(self._coerce_value_to_type(value, return_type))
             return
 
-        if "=" in statement:
-            lhs, rhs = statement.rstrip(";").split("=", 1)
-            lhs = lhs.strip()
-            rhs = rhs.strip()
-            lhs_parts = lhs.split()
-            name = lhs_parts[-1]
-            base_name, *field_path = name.split(".")
+        if isinstance(statement, AstAssignStmt):
+            base_name, *field_path = statement.target.parts
             key = _sanitize_symbol(base_name)
-            value = self._lower_expr(self._parse_expr(rhs))
+            value = self._lower_expr(statement.value)
             if key not in self.locals:
                 slot = self.builder.alloca(value.type, name=key)
                 self.locals[key] = slot
@@ -331,18 +266,25 @@ class _FunctionLowerer:
             self.builder.store(updated, self.locals[key])
             return
 
-        if statement.endswith(";"):
-            maybe_decl = statement[:-1].split()
-            if maybe_decl:
-                declared_type = maybe_decl[0] if len(maybe_decl) > 1 else "float"
-                key = _sanitize_symbol(maybe_decl[-1].replace(".", "_"))
-                if key not in self.locals:
-                    llvm_type = self._llvm_type(declared_type, self.known_structs)
-                    slot = self.builder.alloca(llvm_type, name=key)
-                    self.locals[key] = slot
-                    self.builder.store(ir.Constant(llvm_type, None), slot)
+        if isinstance(statement, AstVarDeclStmt):
+            key = _sanitize_symbol(statement.name.replace(".", "_"))
+            initializer = self._lower_expr(statement.initializer) if statement.initializer is not None else None
+            if key not in self.locals:
+                if statement.declared_type is not None:
+                    llvm_type = self._llvm_type(statement.declared_type, self.known_structs)
+                elif initializer is not None:
+                    llvm_type = initializer.type
+                else:
+                    llvm_type = ir.FloatType()
+                slot = self.builder.alloca(llvm_type, name=key)
+                self.locals[key] = slot
+            if initializer is None:
+                self.builder.store(ir.Constant(self.locals[key].type.pointee, None), self.locals[key])
+            else:
+                coerced = self._coerce_value_to_type(initializer, self.locals[key].type.pointee)
+                self.builder.store(coerced, self.locals[key])
 
-    def lower_function(self, fn: ir.Function, statements: list[str], return_type: ir.Type):
+    def lower_function(self, fn: ir.Function, statements: list[AstStatement | str], return_type: ir.Type):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
@@ -365,16 +307,16 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -> dict[str, Any]:
+def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -> tuple[AstProgram | None, dict[str, Any]]:
     if isinstance(program_or_entities, AstProgram):
-        return ast_to_entities(program_or_entities)
-    return program_or_entities
+        return program_or_entities, ast_to_entities(program_or_entities)
+    return None, program_or_entities
 
 
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
-    entities = _normalize_codegen_input(program_or_entities)
+    typed_program, entities = _normalize_codegen_input(program_or_entities)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
@@ -457,17 +399,28 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     lowerer.function_map = function_map
 
+    typed_pure_by_name: dict[str, AstPureDecl] = {}
+    typed_shaders_by_name: dict[str, AstKernelDecl] = {}
+    typed_filters_by_name: dict[str, AstKernelDecl] = {}
+    if typed_program is not None:
+        typed_pure_by_name = {decl.name: decl for decl in typed_program.pure_functions}
+        typed_shaders_by_name = {decl.name: decl for decl in typed_program.shaders}
+        typed_filters_by_name = {decl.name: decl for decl in typed_program.filters}
+
     for pure in pure_functions:
         fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
-        lowerer.lower_function(fn, pure.get("body", []), fn.function_type.return_type)
+        typed_decl = typed_pure_by_name.get(pure["name"])
+        lowerer.lower_function(fn, list(typed_decl.body) if typed_decl else pure.get("body", []), fn.function_type.return_type)
 
     for shader in shaders:
         fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
-        lowerer.lower_function(fn, shader.get("body", []), ir.VoidType())
+        typed_decl = typed_shaders_by_name.get(shader["name"])
+        lowerer.lower_function(fn, list(typed_decl.body) if typed_decl else shader.get("body", []), ir.VoidType())
 
     for flt in filters:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
-        lowerer.lower_function(fn, flt.get("body", []), ir.VoidType())
+        typed_decl = typed_filters_by_name.get(flt["name"])
+        lowerer.lower_function(fn, list(typed_decl.body) if typed_decl else flt.get("body", []), ir.VoidType())
 
     stream_globals: dict[str, ir.GlobalVariable] = {}
     stream_capacities: dict[str, int] = {}
