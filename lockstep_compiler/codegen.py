@@ -272,6 +272,7 @@ def emit_llvm_ir(entities: dict[str, Any]) -> str:
     accumulators = entities.get("accumulators", [])
     uniforms = entities.get("uniforms", [])
     bind_routes = entities.get("bind_routes", [])
+    bind_routes_ir = entities.get("bind_routes_ir", [])
 
     module = ir.Module(name="lockstep")
     module.source_filename = "lockstep"
@@ -322,24 +323,120 @@ def emit_llvm_ir(entities: dict[str, Any]) -> str:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
         lowerer.lower_function(fn, flt.get("body", []), ir.VoidType())
 
+    stream_globals: dict[str, ir.GlobalVariable] = {}
+    stream_capacities: dict[str, int] = {}
     for stream in streams:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(stream["type"], known_structs), name=f"stream_{_sanitize_symbol(stream['name'])}")
         gv.linkage = "external"
+        stream_globals[stream["name"]] = gv
+        stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
+    accum_globals: dict[str, ir.GlobalVariable] = {}
     for accum in accumulators:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(accum["type"], known_structs), name=f"accum_{_sanitize_symbol(accum['name'])}")
         gv.linkage = "external"
+        accum_globals[accum["name"]] = gv
+    uniform_globals: dict[str, ir.GlobalVariable] = {}
     for uniform in uniforms:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(uniform["type"], known_structs), name=f"uniform_{_sanitize_symbol(uniform['name'])}")
         gv.linkage = "external"
+        uniform_globals[uniform["name"]] = gv
+
+    kernel_signatures = {
+        shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
+        for shader in shaders
+    }
+    kernel_signatures.update(
+        {
+            flt["name"]: {"kind": "filter", "params": flt.get("params", [])}
+            for flt in filters
+        }
+    )
 
     tick = ir.Function(module, ir.FunctionType(ir.VoidType(), []), name="Lockstep_Tick")
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    for route in bind_routes:
-        asm_ty = ir.FunctionType(ir.VoidType(), [])
-        escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
-        asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
-        tick_builder.call(asm, [])
+
+    def _zero_value(llvm_type: ir.Type) -> ir.Value:
+        if isinstance(llvm_type, ir.VoidType):
+            return ir.Constant(ir.IntType(32), 0)
+        return ir.Constant(llvm_type, None)
+
+    def _lower_kernel_route(route: dict[str, Any]):
+        kernel_name = str(route.get("kernel", ""))
+        callee = function_map.get(f"shader_{_sanitize_symbol(kernel_name)}") or function_map.get(
+            f"filter_{_sanitize_symbol(kernel_name)}"
+        )
+        if callee is None:
+            return
+
+        signature = kernel_signatures.get(kernel_name, {})
+        params = signature.get("params", []) if isinstance(signature, dict) else []
+        arg_names = route.get("args") if isinstance(route.get("args"), list) else []
+
+        trip_count = 0
+        for index, arg_name in enumerate(arg_names):
+            if index >= len(params):
+                break
+            modifier = params[index].get("modifier")
+            if modifier == "in" and arg_name in stream_capacities:
+                trip_count = max(trip_count, stream_capacities[arg_name])
+        target = route.get("target")
+        if isinstance(target, str) and target in stream_capacities:
+            trip_count = max(trip_count, stream_capacities[target])
+        if trip_count <= 0:
+            trip_count = 1
+
+        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx")
+        tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+
+        loop_cond = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_cond")
+        loop_body = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_body")
+        loop_exit = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_exit")
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_cond)
+        current = tick_builder.load(index_ptr, name="idx")
+        cond = tick_builder.icmp_signed("<", current, ir.Constant(ir.IntType(32), trip_count), name="route_active")
+        tick_builder.cbranch(cond, loop_body, loop_exit)
+
+        tick_builder.position_at_end(loop_body)
+        call_args = []
+        for index, param in enumerate(callee.args):
+            arg_name = arg_names[index] if index < len(arg_names) else ""
+            modifier = params[index].get("modifier") if index < len(params) else None
+            value = None
+            if modifier in {"in", "out"} and arg_name in stream_globals:
+                value = tick_builder.load(stream_globals[arg_name])
+            elif modifier == "accum" and arg_name in accum_globals:
+                value = tick_builder.load(accum_globals[arg_name])
+            elif modifier == "uniform" and arg_name in uniform_globals:
+                value = tick_builder.load(uniform_globals[arg_name])
+            if value is None:
+                value = _zero_value(param.type)
+            call_args.append(value)
+
+        tick_builder.call(callee, call_args)
+        next_index = tick_builder.add(current, ir.Constant(ir.IntType(32), 1), name="idx_next")
+        tick_builder.store(next_index, index_ptr)
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_exit)
+
+    if bind_routes_ir:
+        for route in bind_routes_ir:
+            if route.get("kind") == "kernel":
+                _lower_kernel_route(route)
+                continue
+            asm_ty = ir.FunctionType(ir.VoidType(), [])
+            escaped = str(route.get("route", route)).replace("\\", "\\\\").replace('"', '\\"')
+            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
+            tick_builder.call(asm, [])
+    else:
+        for route in bind_routes:
+            asm_ty = ir.FunctionType(ir.VoidType(), [])
+            escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
+            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
+            tick_builder.call(asm, [])
     tick_builder.ret_void()
 
     return str(module)

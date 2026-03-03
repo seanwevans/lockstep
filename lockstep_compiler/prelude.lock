@@ -1,0 +1,6 @@
+// Standard prelude intrinsics available in every Lockstep compilation unit.
+// These declarations are semantic/runtime built-ins and do not require user definitions.
+
+intrinsic float step(float edge, float x);
+intrinsic float mix(float a, float b, float t);
+intrinsic float clamp(float x, float min_value, float max_value);

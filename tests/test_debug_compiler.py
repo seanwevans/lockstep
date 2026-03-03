@@ -1142,14 +1142,18 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
 
     validator.visitPureDecl(pure_decl_ctx)
 
-    assert validator.pure_functions == {
-        "blend": {
-            "return_type": "float",
-            "params": [
-                SemanticKernelParam(name="left", declared_type="float", modifier="value"),
-                SemanticKernelParam(name="right", declared_type="int", modifier="value"),
-            ],
-        }
+    assert "blend" in validator.pure_functions
+    assert validator.pure_functions["blend"] == {
+        "return_type": "float",
+        "params": [
+            SemanticKernelParam(name="left", declared_type="float", modifier="value"),
+            SemanticKernelParam(name="right", declared_type="int", modifier="value"),
+        ],
+    }
+    assert {name for name, signature in validator.pure_functions.items() if signature.get("intrinsic")} == {
+        "step",
+        "mix",
+        "clamp",
     }
 
 
@@ -1407,6 +1411,21 @@ def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
         start_line=39,
         start_col=3,
         ID=lambda: _token("dot"),
+        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_accepts_intrinsic_pure_call(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    call_ctx = _ctx(
+        start_line=40,
+        start_col=3,
+        ID=lambda: _token("step"),
         exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]),
     )
 
