@@ -54,3 +54,46 @@ def test_optimize_bind_routes_keeps_route_when_intermediate_has_multiple_uses():
         "echo = Keep(tmp, echo);",
     ]
     assert result["fused_groups"] == []
+
+
+def test_optimize_bind_routes_uses_structured_bind_route_ir_when_available():
+    result = optimize_bind_routes(
+        [
+            "tmp = Shade(inp, tmp);",
+            "uniform float u0 = fold sum(tmp);",
+            "out = Blur(tmp, out);",
+        ],
+        shader_names={"Shade"},
+        filter_names={"Blur"},
+        bind_routes_ir=[
+            {
+                "kind": "kernel",
+                "target": "tmp",
+                "kernel": "Shade",
+                "args": ["inp", "tmp"],
+                "route": "tmp = Shade(inp, tmp);",
+            },
+            {
+                "kind": "fold",
+                "uniform_type": "float",
+                "uniform_name": "u0",
+                "operator": "sum",
+                "source": "tmp",
+                "route": "uniform float u0 = fold sum(tmp);",
+            },
+            {
+                "kind": "kernel",
+                "target": "out",
+                "kernel": "Blur",
+                "args": ["tmp", "out"],
+                "route": "out = Blur(tmp, out);",
+            },
+        ],
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "tmp = Shade(inp, tmp);",
+        "uniform float u0 = fold sum(tmp);",
+        "out = Blur(tmp, out);",
+    ]
+    assert result["fused_groups"] == []
