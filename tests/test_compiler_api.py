@@ -74,19 +74,17 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     )
 
     assert result.parse_tree == "TREE"
-    assert result.entities == {
-        "structs": [],
-        "shaders": [],
-        "filters": [],
-        "pure_functions": [],
-        "streams": [],
-        "accumulators": [],
-        "uniforms": [],
-        "bind_routes": [],
-        "bind_routes_ir": [],
-        "optimized_bind_routes": [],
-        "fused_bind_groups": [],
-    }
+    assert result.entities["structs"] == []
+    assert result.entities["shaders"] == []
+    assert result.entities["filters"] == []
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp"}
+    assert result.entities["streams"] == []
+    assert result.entities["accumulators"] == []
+    assert result.entities["uniforms"] == []
+    assert result.entities["bind_routes"] == []
+    assert result.entities["bind_routes_ir"] == []
+    assert result.entities["optimized_bind_routes"] == []
+    assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
     assert "define void @\"Lockstep_Tick\"()" in result.llvm_ir
@@ -153,3 +151,67 @@ def test_load_default_parser_classes_is_cached(monkeypatch):
 
     assert first == second
     assert import_count == first_import_count
+
+
+def test_compile_lockstep_accepts_library_sources(monkeypatch):
+    captured = {}
+
+    def fake_compile(source_code, **kwargs):
+        captured["source_code"] = source_code
+        captured["kwargs"] = kwargs
+        return "ok"
+
+    monkeypatch.setattr(compiler_module, "_compile_lockstep_with_dependencies", fake_compile)
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: ("Lexer", "Parser", "Visitor"),
+    )
+
+    result = compiler_module.compile_lockstep(
+        "pipeline Main { bind { } }",
+        library_sources=["struct Vec { float x; };", "pure float id(float v) { return v; }"],
+    )
+
+    assert result == "ok"
+    assert captured["source_code"].startswith("struct Vec { float x; };\n\npure float id(float v) { return v; }")
+    assert captured["source_code"].endswith("pipeline Main { bind { } }")
+def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "shaders": [
+                {
+                    "name": "ApplyGravity",
+                    "params": [
+                        {"modifier": "in", "type": "float", "name": "inp"},
+                        {"modifier": "out", "type": "float", "name": "out"},
+                        {"modifier": "uniform", "type": "float", "name": "dt"},
+                    ],
+                    "body": [],
+                }
+            ],
+            "filters": [],
+            "pure_functions": [],
+            "streams": [
+                {"name": "inp", "type": "float", "capacity": 4},
+                {"name": "out", "type": "float", "capacity": 4},
+            ],
+            "accumulators": [],
+            "uniforms": [{"name": "dt", "type": "float"}],
+            "bind_routes": ["out = ApplyGravity(inp, out, dt);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "kernel",
+                    "target": "out",
+                    "kernel": "ApplyGravity",
+                    "args": ["inp", "out", "dt"],
+                    "route": "out = ApplyGravity(inp, out, dt);",
+                }
+            ],
+        }
+    )
+
+    assert 'route_ApplyGravity_cond' in llvm_ir
+    assert 'icmp slt i32 %"idx", 4' in llvm_ir
+    assert 'call void @"shader_ApplyGravity"(float' in llvm_ir

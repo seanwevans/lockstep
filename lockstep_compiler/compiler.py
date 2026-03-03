@@ -8,7 +8,16 @@ from .codegen import emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
 from .optimizer import optimize_bind_routes
+from .prelude import load_intrinsics
 from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
+
+
+def _merge_intrinsic_pure_functions(pure_functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = {fn.get("name"): fn for fn in pure_functions if isinstance(fn, dict) and fn.get("name")}
+    for name, intrinsic in load_intrinsics().items():
+        if name not in merged:
+            merged[name] = intrinsic
+    return list(merged.values())
 
 
 def _compile_lockstep_with_dependencies(
@@ -83,6 +92,8 @@ def _compile_lockstep_with_dependencies(
             "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
         }
 
+    entities["pure_functions"] = _merge_intrinsic_pure_functions(entities.get("pure_functions", []))
+
     all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *debug_diagnostics])
     bind_optimization = optimize_bind_routes(
         entities["bind_routes"],
@@ -129,6 +140,7 @@ def compile_lockstep(
     source_code: str,
     *,
     verbose: bool = True,
+    library_sources: list[str] | None = None,
     lexer_cls=None,
     parser_cls=None,
     visitor_cls=None,
@@ -136,6 +148,9 @@ def compile_lockstep(
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
 ) -> LockstepCompileResult:
+    if library_sources:
+        source_code = "\n\n".join([*library_sources, source_code])
+
     if lexer_cls is None or parser_cls is None or visitor_cls is None:
         default_lexer_cls, default_parser_cls, default_visitor_cls = (
             _load_default_parser_classes()

@@ -10,6 +10,22 @@ from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
 
 
+def _read_source_file(path: Path, *, stderr) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"Unable to read '{path}': file not found.", file=stderr)
+    except PermissionError as err:
+        reason = err.strerror or "permission denied"
+        print(f"Unable to read '{path}': {reason}.", file=stderr)
+    except UnicodeDecodeError as err:
+        print(
+            f"Unable to read '{path}': invalid UTF-8 ({err.reason}).",
+            file=stderr,
+        )
+    return None
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Debug parser for Lockstep source files."
@@ -36,6 +52,13 @@ def build_arg_parser():
         help="Print detailed exception diagnostics and traceback on failures.",
     )
     parser.add_argument(
+        "--lib",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Path to a Lockstep source library file containing shared structs/pure functions.",
+    )
+    parser.add_argument(
         "--simulate",
         action="store_true",
         help="Simulate bind-route execution on small in-memory datasets.",
@@ -57,23 +80,18 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
 
     if args.path:
         source_path = Path(args.path)
-        try:
-            source = source_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            print(f"Unable to read '{source_path}': file not found.", file=stderr)
-            return 1
-        except PermissionError as err:
-            reason = err.strerror or "permission denied"
-            print(f"Unable to read '{source_path}': {reason}.", file=stderr)
-            return 1
-        except UnicodeDecodeError as err:
-            print(
-                f"Unable to read '{source_path}': invalid UTF-8 ({err.reason}).",
-                file=stderr,
-            )
+        source = _read_source_file(source_path, stderr=stderr)
+        if source is None:
             return 1
     else:
         source = stdin.read()
+
+    library_sources = []
+    for library_path in args.lib:
+        library_source = _read_source_file(Path(library_path), stderr=stderr)
+        if library_source is None:
+            return 1
+        library_sources.append(library_source)
 
     if args.format:
         print(format_lockstep_source(source), end="", file=stdout)
@@ -92,6 +110,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         return 1
 
     supports_verbose = False
+    supports_library_sources = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -103,10 +122,21 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             or parameter.name == "verbose"
             for parameter in signature.parameters.values()
         )
+        supports_library_sources = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "library_sources"
+            for parameter in signature.parameters.values()
+        )
+
+    compile_kwargs = {}
+    if supports_verbose:
+        compile_kwargs["verbose"] = False
+    if supports_library_sources:
+        compile_kwargs["library_sources"] = library_sources
 
     try:
-        if supports_verbose:
-            result = compiler(source, verbose=False)
+        if compile_kwargs:
+            result = compiler(source, **compile_kwargs)
         else:
             result = compiler(source)
     except LockstepCompileError as err:

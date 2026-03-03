@@ -97,3 +97,41 @@ def test_optimize_bind_routes_uses_structured_bind_route_ir_when_available():
         "out = Blur(tmp, out);",
     ]
     assert result["fused_groups"] == []
+def test_optimize_bind_routes_uses_liveness_not_global_use_count():
+    result = optimize_bind_routes(
+        [
+            "tmp = Shade(inp, tmp);",
+            "out = Blur(tmp, out);",
+            "tmp = Reset(seed, scratch);",
+            "final = Keep(tmp, final);",
+        ],
+        shader_names={"Shade", "Keep", "Reset"},
+        filter_names={"Blur"},
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "out = FUSED[Shade -> Blur];",
+        "final = FUSED[Reset -> Keep];",
+    ]
+    assert result["fused_groups"] == [
+        {
+            "nodes": ["Shade", "Blur"],
+            "entry_args": ["inp", "tmp"],
+            "output": "out",
+            "eliminated_intermediates": ["tmp"],
+            "source_routes": [
+                "tmp = Shade(inp, tmp);",
+                "out = Blur(tmp, out);",
+            ],
+        },
+        {
+            "nodes": ["Reset", "Keep"],
+            "entry_args": ["seed", "scratch"],
+            "output": "final",
+            "eliminated_intermediates": ["tmp"],
+            "source_routes": [
+                "tmp = Reset(seed, scratch);",
+                "final = Keep(tmp, final);",
+            ],
+        },
+    ]
