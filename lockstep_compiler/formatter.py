@@ -1,21 +1,25 @@
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
 from antlr4 import CommonTokenStream, InputStream
 
-from generated.parser.LockstepLexer import LockstepLexer
-from generated.parser.LockstepParser import LockstepParser
-from generated.parser.LockstepVisitor import LockstepVisitor
+try:
+    from generated.parser.LockstepLexer import LockstepLexer
+    from generated.parser.LockstepParser import LockstepParser
+    from generated.parser.LockstepVisitor import LockstepVisitor
+except ModuleNotFoundError:
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from generated.parser.LockstepLexer import LockstepLexer
+    from generated.parser.LockstepParser import LockstepParser
+    from generated.parser.LockstepVisitor import LockstepVisitor
 
 from .errors import ParseErrorCollector
 
-def _tokenize(source):
-    tokens = []
-    current = []
-
-from antlr4 import CommonTokenStream, InputStream
-
-
 def _lex_tokens(source: str) -> list[str]:
-    from generated.parser.LockstepLexer import LockstepLexer
 
     lexer = LockstepLexer(InputStream(source))
     stream = CommonTokenStream(lexer)
@@ -37,7 +41,7 @@ def _needs_space(previous: str, current: str) -> bool:
     )
 
 
-def format_lockstep_source(source, *, indent="    "):
+def _format_token_stream(source, *, indent="    "):
     tokens = _lex_tokens(source)
     lines = []
     current = ""
