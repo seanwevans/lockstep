@@ -157,14 +157,12 @@ class _FunctionLowerer:
     def _coerce_value_to_type(self, value: ir.Value, target_type: ir.Type) -> ir.Value:
         if value.type == target_type:
             return value
-        if isinstance(target_type, ir.FloatType):
-            return self._coerce_float(value)
         if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.IntType):
             if value.type.width < target_type.width:
                 return self.builder.sext(value, target_type)
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
-        return value
+        raise TypeError(f"cannot coerce {value.type} to {target_type}")
 
     def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
         current = value
@@ -196,12 +194,47 @@ class _FunctionLowerer:
             return known_structs[type_name]
         return ir.IntType(8).as_pointer()
 
-    def _coerce_float(self, value: ir.Value) -> ir.Value:
-        if isinstance(value.type, ir.IntType) and value.type.width == 1:
-            return self.builder.uitofp(value, ir.FloatType())
+    def _emit_numeric_unary_minus(self, value: ir.Value) -> ir.Value:
+        if isinstance(value.type, ir.FloatType):
+            return self.builder.fsub(ir.Constant(value.type, 0.0), value)
         if isinstance(value.type, ir.IntType):
-            return self.builder.sitofp(value, ir.FloatType())
-        return value
+            return self.builder.sub(ir.Constant(value.type, 0), value)
+        raise TypeError(f"unary '-' requires numeric operand, got {value.type}")
+
+    def _emit_numeric_binary(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
+        if lhs.type != rhs.type:
+            raise TypeError(f"type mismatch for '{op}': {lhs.type} vs {rhs.type}")
+
+        if isinstance(lhs.type, ir.FloatType):
+            return {
+                "+": self.builder.fadd,
+                "-": self.builder.fsub,
+                "*": self.builder.fmul,
+                "/": self.builder.fdiv,
+                "%": self.builder.frem,
+            }[op](lhs, rhs)
+
+        if isinstance(lhs.type, ir.IntType):
+            return {
+                "+": self.builder.add,
+                "-": self.builder.sub,
+                "*": self.builder.mul,
+                "/": self.builder.sdiv,
+                "%": self.builder.srem,
+            }[op](lhs, rhs)
+
+        raise TypeError(f"operator '{op}' requires numeric operands, got {lhs.type}")
+
+    def _emit_relational_compare(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
+        if lhs.type != rhs.type:
+            raise TypeError(f"type mismatch for '{op}': {lhs.type} vs {rhs.type}")
+
+        rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
+        if isinstance(lhs.type, ir.FloatType):
+            return self.builder.fcmp_ordered(rel_map[op], lhs, rhs)
+        if isinstance(lhs.type, ir.IntType):
+            return self.builder.icmp_signed(rel_map[op], lhs, rhs)
+        raise TypeError(f"operator '{op}' requires comparable operands, got {lhs.type}")
 
     def _load_var(self, name: str) -> ir.Value:
         parts = name.split(".")
@@ -230,39 +263,35 @@ class _FunctionLowerer:
         if kind == "un":
             op, operand = node[1], self._lower_expr(node[2])
             if op == "-":
-                return self.builder.fsub(ir.Constant(ir.FloatType(), 0.0), self._coerce_float(operand))
+                return self._emit_numeric_unary_minus(operand)
             return self.builder.not_(operand)
         if kind == "call":
             name = node[1]
             args = [self._lower_expr(arg) for arg in node[2]]
             if name == "mix" and len(args) == 3:
-                a, b, t = (self._coerce_float(arg) for arg in args)
+                if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                    raise TypeError("mix expects float arguments")
+                a, b, t = args
                 one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
                 return self.builder.fadd(self.builder.fmul(a, one_minus_t), self.builder.fmul(b, t), name="mix")
             if name == "step" and len(args) == 2:
-                edge = self._coerce_float(args[0])
-                x_val = self._coerce_float(args[1])
+                if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                    raise TypeError("step expects float arguments")
+                edge = args[0]
+                x_val = args[1]
                 cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
                 return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
             callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
             if callee is not None:
-                coerced = [self._coerce_float(arg) if isinstance(param.type, ir.FloatType) else arg for arg, param in zip(args, callee.args)]
+                coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
                 return self.builder.call(callee, coerced, name=f"call_{name}")
             return ir.Constant(ir.FloatType(), 0.0)
 
         op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
         if op in {"+", "-", "*", "/", "%"}:
-            lval, rval = self._coerce_float(lhs), self._coerce_float(rhs)
-            return {
-                "+": self.builder.fadd,
-                "-": self.builder.fsub,
-                "*": self.builder.fmul,
-                "/": self.builder.fdiv,
-                "%": self.builder.frem,
-            }[op](lval, rval)
+            return self._emit_numeric_binary(op, lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
-            rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
-            return self.builder.fcmp_ordered(rel_map[op], self._coerce_float(lhs), self._coerce_float(rhs))
+            return self._emit_relational_compare(op, lhs, rhs)
         if op == "&&":
             return self.builder.and_(lhs, rhs)
         if op == "||":
@@ -277,7 +306,7 @@ class _FunctionLowerer:
             if isinstance(return_type, ir.VoidType):
                 self.builder.ret_void()
             else:
-                self.builder.ret(value)
+                self.builder.ret(self._coerce_value_to_type(value, return_type))
             return
 
         if "=" in statement:
@@ -293,7 +322,8 @@ class _FunctionLowerer:
                 slot = self.builder.alloca(value.type, name=key)
                 self.locals[key] = slot
             if not field_path:
-                self.builder.store(value, self.locals[key])
+                slot_type = self.locals[key].type.pointee
+                self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
                 return
 
             current = self.builder.load(self.locals[key], name=f"{key}_val")

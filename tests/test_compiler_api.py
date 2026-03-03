@@ -9,6 +9,7 @@ if str(REPO_ROOT) not in sys.path:
 import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.codegen import emit_llvm_ir
+import pytest
 
 
 def test_package_exports_user_friendly_compile_function():
@@ -305,3 +306,51 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     assert 'route_ApplyGravity_cond' in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
+
+
+def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "sum_ints",
+                    "return_type": "int",
+                    "params": [{"type": "int", "name": "v"}],
+                    "body": ["return v + 1;"],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "add i32" in llvm_ir
+    assert "fadd float" not in llvm_ir
+
+
+def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
+    with pytest.raises(TypeError, match="type mismatch"):
+        emit_llvm_ir(
+            {
+                "structs": [],
+                "pure_functions": [
+                    {
+                        "name": "bad_mix",
+                        "return_type": "float",
+                        "params": [],
+                        "body": ["return 1 + 1.0;"],
+                    }
+                ],
+                "shaders": [],
+                "filters": [],
+                "streams": [],
+                "accumulators": [],
+                "uniforms": [],
+                "bind_routes": [],
+            }
+        )
