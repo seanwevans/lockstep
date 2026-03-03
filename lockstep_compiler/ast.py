@@ -363,7 +363,16 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 )
 
     return {
-        "structs": [decl.name for decl in program.structs],
+        "structs": [
+            {
+                "name": decl.name,
+                "fields": [
+                    {"type": field.declared_type, "name": field.name}
+                    for field in decl.fields
+                ],
+            }
+            for decl in program.structs
+        ],
         "shaders": [
             {
                 "name": shader.name,

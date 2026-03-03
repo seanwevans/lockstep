@@ -93,7 +93,16 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
 def test_emit_llvm_ir_generates_expected_declarations():
     llvm_ir = emit_llvm_ir(
         {
-            "structs": ["Vec3"],
+            "structs": [
+                {
+                    "name": "Vec3",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                        {"type": "float", "name": "z"},
+                    ],
+                }
+            ],
             "shaders": [{"name": "ApplyGravity"}],
             "filters": [{"name": "Cull"}],
             "pure_functions": [{"name": "mix", "return_type": "float", "params": [], "body": ["returnmix(0.0,1.0,step(0.5,1.0));"]}],
@@ -104,7 +113,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
         }
     )
 
-    assert "%\"struct.Vec3\" = type {i8}" in llvm_ir
+    assert "%\"struct.Vec3\" = type {float, float, float}" in llvm_ir
     assert "define float @\"pure_mix\"()" in llvm_ir
     assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
     assert "define void @\"filter_Cull\"()" in llvm_ir
@@ -114,6 +123,40 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
     assert "fmul float" in llvm_ir
     assert "uitofp i1" in llvm_ir
+
+
+def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [
+                {
+                    "name": "Vec3",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                        {"type": "float", "name": "z"},
+                    ],
+                }
+            ],
+            "pure_functions": [
+                {
+                    "name": "set_and_get_x",
+                    "return_type": "float",
+                    "params": [],
+                    "body": ["Vec3 v;", "v.x = 1.0;", "return v.x;"],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "insertvalue %\"struct.Vec3\"" in llvm_ir
+    assert "extractvalue %\"struct.Vec3\"" in llvm_ir
 
 
 def test_cli_main_wires_default_compiler(monkeypatch):
