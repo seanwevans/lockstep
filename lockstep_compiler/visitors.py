@@ -119,7 +119,16 @@ def build_debug_visitor(base_visitor_cls):
                     )
                 )
             self._seen_pure_functions.add(name)
-            self.pure_functions.append({"name": name, "return_type": ret_type})
+            params = []
+            if hasattr(ctx, "pureParamList") and callable(ctx.pureParamList) and ctx.pureParamList():
+                ids = ctx.pureParamList().ID()
+                types = ctx.pureParamList().typeName()
+                for param_type, param_name in zip(types, ids):
+                    params.append({"type": param_type.getText(), "name": param_name.getText()})
+            statements = []
+            if hasattr(ctx, "statement") and callable(ctx.statement):
+                statements = [statement.getText() for statement in ctx.statement()]
+            self.pure_functions.append({"name": name, "return_type": ret_type, "params": params, "body": statements})
             self._print(f"[Pure Function] {name} -> {ret_type}")
             return self.visitChildren(ctx)
 
@@ -148,7 +157,10 @@ def build_debug_visitor(base_visitor_cls):
                     p_name = param.ID().getText()
                     params.append({"modifier": modifier, "type": p_type, "name": p_name})
                     self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
-            self.filters.append({"name": name, "params": params})
+            statements = []
+            if hasattr(ctx, "statement") and callable(ctx.statement):
+                statements = [statement.getText() for statement in ctx.statement()]
+            self.filters.append({"name": name, "params": params, "body": statements})
             return self.visitChildren(ctx)
 
         def visitShaderDecl(self, ctx):
@@ -175,7 +187,10 @@ def build_debug_visitor(base_visitor_cls):
                     p_name = param.ID().getText()
                     params.append({"modifier": modifier, "type": p_type, "name": p_name})
                     self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
-            self.shaders.append({"name": name, "params": params})
+            statements = []
+            if hasattr(ctx, "statement") and callable(ctx.statement):
+                statements = [statement.getText() for statement in ctx.statement()]
+            self.shaders.append({"name": name, "params": params, "body": statements})
             return self.visitChildren(ctx)
 
         def visitPipelineDecl(self, ctx):

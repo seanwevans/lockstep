@@ -214,15 +214,17 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
         {
             "name": "ApplyGravity",
             "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
+            "body": [],
         }
     ]
     assert visitor.filters == [
         {
             "name": "OnlyActive",
             "params": [{"modifier": "in", "type": "Vec3", "name": "pos"}],
+            "body": [],
         }
     ]
-    assert visitor.pure_functions == [{"name": "add", "return_type": "Vec3"}]
+    assert visitor.pure_functions == [{"name": "add", "return_type": "Vec3", "params": [], "body": []}]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
     assert visitor.uniforms == [{"name": "dt", "type": "float", "initializer": "0.016"}]
@@ -326,7 +328,7 @@ def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
     visitor = debug_compiler_module.LockstepDebugVisitor()
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
-    assert visitor.shaders == [{"name": "Kernel", "params": []}]
+    assert visitor.shaders == [{"name": "Kernel", "params": [], "body": []}]
 
 
 def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
