@@ -272,6 +272,7 @@ def emit_llvm_ir(entities: dict[str, Any]) -> str:
     accumulators = entities.get("accumulators", [])
     uniforms = entities.get("uniforms", [])
     bind_routes = entities.get("bind_routes", [])
+    bind_routes_ir = entities.get("bind_routes_ir", [])
 
     module = ir.Module(name="lockstep")
     module.source_filename = "lockstep"
@@ -322,24 +323,73 @@ def emit_llvm_ir(entities: dict[str, Any]) -> str:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
         lowerer.lower_function(fn, flt.get("body", []), ir.VoidType())
 
+    globals_by_name: dict[str, ir.GlobalVariable] = {}
+
     for stream in streams:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(stream["type"], known_structs), name=f"stream_{_sanitize_symbol(stream['name'])}")
         gv.linkage = "external"
+        globals_by_name[stream["name"]] = gv
     for accum in accumulators:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(accum["type"], known_structs), name=f"accum_{_sanitize_symbol(accum['name'])}")
         gv.linkage = "external"
+        globals_by_name[accum["name"]] = gv
     for uniform in uniforms:
         gv = ir.GlobalVariable(module, lowerer._llvm_type(uniform["type"], known_structs), name=f"uniform_{_sanitize_symbol(uniform['name'])}")
         gv.linkage = "external"
+        globals_by_name[uniform["name"]] = gv
+
+    kernel_params = {
+        shader["name"]: shader.get("params", [])
+        for shader in shaders
+    }
+    kernel_params.update({flt["name"]: flt.get("params", []) for flt in filters})
 
     tick = ir.Function(module, ir.FunctionType(ir.VoidType(), []), name="Lockstep_Tick")
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    for route in bind_routes:
-        asm_ty = ir.FunctionType(ir.VoidType(), [])
-        escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
-        asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
-        tick_builder.call(asm, [])
+    if bind_routes_ir:
+        for route in bind_routes_ir:
+            if route.get("kind") == "kernel":
+                kernel_name = str(route.get("kernel", ""))
+                callee = function_map.get(f"shader_{_sanitize_symbol(kernel_name)}") or function_map.get(
+                    f"filter_{_sanitize_symbol(kernel_name)}"
+                )
+                if callee is None:
+                    continue
+
+                args = route.get("args", []) if isinstance(route.get("args", []), list) else []
+                params = kernel_params.get(kernel_name, [])
+                target_name = str(route.get("target", ""))
+                call_args: list[ir.Value] = []
+                for idx, param in enumerate(callee.args):
+                    arg_name = args[idx] if idx < len(args) else None
+                    source_name = arg_name if isinstance(arg_name, str) and arg_name else None
+                    if source_name is None and idx < len(params) and params[idx].get("modifier") == "out":
+                        source_name = target_name
+
+                    global_var = globals_by_name.get(source_name) if source_name else None
+                    if global_var is not None and global_var.type.pointee == param.type:
+                        call_args.append(tick_builder.load(global_var, name=f"load_{_sanitize_symbol(source_name)}"))
+                    else:
+                        call_args.append(ir.Constant(param.type, None))
+                tick_builder.call(callee, call_args)
+                continue
+
+            if route.get("kind") == "fold":
+                source_name = route.get("source")
+                uniform_name = route.get("uniform_name")
+                source_var = globals_by_name.get(source_name) if isinstance(source_name, str) else None
+                target_var = globals_by_name.get(uniform_name) if isinstance(uniform_name, str) else None
+                if source_var is None or target_var is None or source_var.type != target_var.type:
+                    continue
+                folded_value = tick_builder.load(source_var, name=f"fold_{_sanitize_symbol(source_name)}")
+                tick_builder.store(folded_value, target_var)
+    else:
+        for route in bind_routes:
+            asm_ty = ir.FunctionType(ir.VoidType(), [])
+            escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
+            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
+            tick_builder.call(asm, [])
     tick_builder.ret_void()
 
     return str(module)

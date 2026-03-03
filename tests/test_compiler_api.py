@@ -96,26 +96,64 @@ def test_emit_llvm_ir_generates_expected_declarations():
     llvm_ir = emit_llvm_ir(
         {
             "structs": ["Vec3"],
-            "shaders": [{"name": "ApplyGravity"}],
+            "shaders": [{"name": "ApplyGravity", "params": [{"modifier": "in", "type": "Vec3", "name": "src"}, {"modifier": "out", "type": "Vec3", "name": "dst"}, {"modifier": "accum", "type": "float", "name": "energy"}, {"modifier": "uniform", "type": "float", "name": "dt"}]}],
             "filters": [{"name": "Cull"}],
             "pure_functions": [{"name": "mix", "return_type": "float", "params": [], "body": ["returnmix(0.0,1.0,step(0.5,1.0));"]}],
             "streams": [{"name": "raw_positions", "type": "Vec3"}],
             "accumulators": [{"name": "energy", "type": "float"}],
             "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
             "bind_routes": ["out = ApplyGravity(inp, out, energy, dt);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "kernel",
+                    "target": "raw_positions",
+                    "kernel": "ApplyGravity",
+                    "args": ["raw_positions", "raw_positions", "energy", "dt"],
+                    "route": "raw_positions = ApplyGravity(raw_positions, raw_positions, energy, dt);",
+                }
+            ],
         }
     )
 
     assert "%\"struct.Vec3\" = type {i8}" in llvm_ir
     assert "define float @\"pure_mix\"()" in llvm_ir
-    assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
+    assert 'define void @"shader_ApplyGravity"(%"struct.Vec3"' in llvm_ir
     assert "define void @\"filter_Cull\"()" in llvm_ir
     assert '@"stream_raw_positions" = external global %"struct.Vec3"' in llvm_ir
     assert '@"accum_energy" = external global float' in llvm_ir
     assert '@"uniform_dt" = external global float' in llvm_ir
-    assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
+    assert 'call void @"shader_ApplyGravity"' in llvm_ir
+    assert 'load %"struct.Vec3", %"struct.Vec3"* @"stream_raw_positions"' in llvm_ir
     assert "fmul float" in llvm_ir
     assert "uitofp i1" in llvm_ir
+
+
+def test_emit_llvm_ir_lowers_fold_routes_in_tick():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "shaders": [],
+            "filters": [],
+            "pure_functions": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float", "initializer": None}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'load float, float* @"accum_energy"' in llvm_ir
+    assert 'store float %"fold_energy", float* @"uniform_total"' in llvm_ir
 
 
 def test_cli_main_wires_default_compiler(monkeypatch):
