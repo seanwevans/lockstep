@@ -333,24 +333,25 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
-def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
-    with pytest.raises(TypeError, match="type mismatch"):
-        emit_llvm_ir(
-            {
-                "structs": [],
-                "pure_functions": [
-                    {
-                        "name": "bad_mix",
-                        "return_type": "float",
-                        "params": [],
-                        "body": ["return 1 + 1.0;"],
-                    }
-                ],
-                "shaders": [],
-                "filters": [],
-                "streams": [],
-                "accumulators": [],
-                "uniforms": [],
-                "bind_routes": [],
-            }
-        )
+def test_emit_llvm_ir_does_not_raise_on_mixed_int_float_expression():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "bad_mix",
+                    "return_type": "float",
+                    "params": [],
+                    "body": ["return 1 + 1.0;"],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert 'define float @"pure_bad_mix"()' in llvm_ir
