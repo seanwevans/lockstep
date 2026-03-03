@@ -153,6 +153,29 @@ def test_load_default_parser_classes_is_cached(monkeypatch):
     assert import_count == first_import_count
 
 
+def test_compile_lockstep_accepts_library_sources(monkeypatch):
+    captured = {}
+
+    def fake_compile(source_code, **kwargs):
+        captured["source_code"] = source_code
+        captured["kwargs"] = kwargs
+        return "ok"
+
+    monkeypatch.setattr(compiler_module, "_compile_lockstep_with_dependencies", fake_compile)
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: ("Lexer", "Parser", "Visitor"),
+    )
+
+    result = compiler_module.compile_lockstep(
+        "pipeline Main { bind { } }",
+        library_sources=["struct Vec { float x; };", "pure float id(float v) { return v; }"],
+    )
+
+    assert result == "ok"
+    assert captured["source_code"].startswith("struct Vec { float x; };\n\npure float id(float v) { return v; }")
+    assert captured["source_code"].endswith("pipeline Main { bind { } }")
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     llvm_ir = emit_llvm_ir(
         {
