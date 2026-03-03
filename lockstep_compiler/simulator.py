@@ -1,20 +1,8 @@
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from .compiler import compile_lockstep
-
-
-_BIND_ROUTE_PATTERN = re.compile(
-    r"^\s*(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-    r"(?P<kernel>[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*(?P<args>[^)]*)\s*\)\s*;\s*$"
-)
-_FOLD_ROUTE_PATTERN = re.compile(
-    r"^\s*uniform\s+(?P<type>[A-Za-z_][A-Za-z0-9_]*)\s+"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*fold\s+"
-    r"(?P<operator>sum|avg|min|max)\s*\(\s*(?P<source>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;\s*$"
-)
 
 
 @dataclass
@@ -24,33 +12,6 @@ class RouteSimulation:
     input_count: int
     output_count: int
     notes: str | None = None
-
-
-def _parse_bind_route(route: str) -> dict[str, Any] | None:
-    match = _BIND_ROUTE_PATTERN.match(route)
-    if match is None:
-        return None
-
-    args = [arg.strip() for arg in match.group("args").split(",") if arg.strip()]
-    return {
-        "kind": "kernel",
-        "target": match.group("target"),
-        "kernel": match.group("kernel"),
-        "args": args,
-    }
-
-
-def _parse_fold_route(route: str) -> dict[str, Any] | None:
-    match = _FOLD_ROUTE_PATTERN.match(route)
-    if match is None:
-        return None
-    return {
-        "kind": "fold",
-        "uniform_type": match.group("type"),
-        "uniform_name": match.group("name"),
-        "operator": match.group("operator"),
-        "source": match.group("source"),
-    }
 
 
 def _fold_values(operator: str, values: list[Any]) -> Any:
@@ -66,6 +27,10 @@ def _fold_values(operator: str, values: list[Any]) -> Any:
     if operator == "max":
         return max(numeric)
     return None
+
+
+def _route_text(route_ir: dict[str, Any]) -> str:
+    return str(route_ir.get("route", ""))
 
 
 def simulate_pipeline_entities(
@@ -92,24 +57,30 @@ def simulate_pipeline_entities(
     kernels.update({flt["name"]: {"kind": "filter", "params": flt.get("params", [])} for flt in entities.get("filters", [])})
 
     routes: list[RouteSimulation] = []
-    for route_text in entities.get("bind_routes", []):
-        fold_route = _parse_fold_route(route_text)
-        if fold_route is not None:
-            source_values = accumulators.get(fold_route["source"], [])
-            uniforms[fold_route["uniform_name"]] = _fold_values(fold_route["operator"], source_values)
+    bind_routes_ir = entities.get("bind_routes_ir", [])
+
+    for route_ir in bind_routes_ir:
+        route_kind = route_ir.get("kind")
+        route_text = _route_text(route_ir)
+
+        if route_kind == "fold":
+            source_values = accumulators.get(str(route_ir.get("source", "")), [])
+            uniform_name = route_ir.get("uniform_name")
+            if isinstance(uniform_name, str) and uniform_name:
+                uniforms[uniform_name] = _fold_values(str(route_ir.get("operator", "")), source_values)
             routes.append(RouteSimulation(route=route_text, kind="fold", input_count=len(source_values), output_count=1))
             continue
 
-        kernel_route = _parse_bind_route(route_text)
-        if kernel_route is not None:
-            kernel = kernels.get(kernel_route["kernel"])
+        if route_kind == "kernel":
+            kernel = kernels.get(str(route_ir.get("kernel", "")))
             if kernel is None:
                 routes.append(RouteSimulation(route=route_text, kind="kernel", input_count=0, output_count=0, notes="Unknown kernel"))
                 continue
 
             source_count = 0
             rows: list[Any] = []
-            for index, arg_name in enumerate(kernel_route["args"]):
+            args = route_ir.get("args") if isinstance(route_ir.get("args"), list) else []
+            for index, arg_name in enumerate(args):
                 params = kernel["params"]
                 if index >= len(params):
                     break
@@ -121,13 +92,14 @@ def simulate_pipeline_entities(
             if kernel["kind"] == "filter":
                 output_rows = [row for row in rows if not isinstance(row, dict) or row.get("_keep", True)]
             else:
-                output_rows = [{"_source": row, "_kernel": kernel_route["kernel"]} for row in rows]
+                output_rows = [{"_source": row, "_kernel": route_ir.get("kernel")} for row in rows]
 
-            if kernel_route["target"] in streams:
-                cap = streams[kernel_route["target"]]["capacity"]
-                streams[kernel_route["target"]]["rows"] = output_rows[:cap]
+            target = route_ir.get("target")
+            if isinstance(target, str) and target in streams:
+                cap = streams[target]["capacity"]
+                streams[target]["rows"] = output_rows[:cap]
 
-            for index, arg_name in enumerate(kernel_route["args"]):
+            for index, arg_name in enumerate(args):
                 params = kernel["params"]
                 if index >= len(params):
                     break
@@ -137,7 +109,18 @@ def simulate_pipeline_entities(
             routes.append(RouteSimulation(route=route_text, kind=kernel["kind"], input_count=source_count, output_count=len(output_rows)))
             continue
 
-        routes.append(RouteSimulation(route=route_text, kind="unknown", input_count=0, output_count=0, notes="Unable to parse bind route"))
+        routes.append(RouteSimulation(route=route_text, kind="unknown", input_count=0, output_count=0, notes="Unknown bind route IR kind"))
+
+    if entities.get("bind_routes") and not bind_routes_ir:
+        routes.append(
+            RouteSimulation(
+                route="",
+                kind="unknown",
+                input_count=0,
+                output_count=0,
+                notes="Missing bind_routes_ir; simulator requires semantic bind route IR",
+            )
+        )
 
     return {
         "streams": {name: spec["rows"] for name, spec in streams.items()},

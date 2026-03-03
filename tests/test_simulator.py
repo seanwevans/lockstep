@@ -34,6 +34,23 @@ def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():
             "out_stream = Apply(in_stream, out_stream, energy);",
             "uniform float total = fold sum(energy);",
         ],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "Apply",
+                "args": ["in_stream", "out_stream", "energy"],
+                "route": "out_stream = Apply(in_stream, out_stream, energy);",
+            },
+            {
+                "kind": "fold",
+                "uniform_type": "float",
+                "uniform_name": "total",
+                "operator": "sum",
+                "source": "energy",
+                "route": "uniform float total = fold sum(energy);",
+            },
+        ],
     }
 
     simulation = simulate_pipeline_entities(

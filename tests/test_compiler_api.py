@@ -83,6 +83,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
         "accumulators": [],
         "uniforms": [],
         "bind_routes": [],
+        "bind_routes_ir": [],
         "optimized_bind_routes": [],
         "fused_bind_groups": [],
     }

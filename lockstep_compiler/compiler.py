@@ -67,6 +67,7 @@ def _compile_lockstep_with_dependencies(
         "accumulators": visitor.accumulators,
         "uniforms": visitor.uniforms,
         "bind_routes": visitor.bind_routes,
+        "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
     }
 
     return LockstepCompileResult(
@@ -80,6 +81,7 @@ def _compile_lockstep_with_dependencies(
             "accumulators": visitor.accumulators,
             "uniforms": visitor.uniforms,
             "bind_routes": visitor.bind_routes,
+            "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
             "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
             "fused_bind_groups": bind_optimization["fused_groups"],
         },        

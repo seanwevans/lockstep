@@ -59,6 +59,7 @@ def build_debug_visitor(base_visitor_cls):
             self.accumulators = []
             self.uniforms = []
             self.bind_routes = []
+            self.bind_routes_ir = []
             self.diagnostics: list[LockstepDiagnostic] = []
             self._seen_structs = set()
             self._seen_shaders = set()
@@ -271,8 +272,36 @@ def build_debug_visitor(base_visitor_cls):
                 if self.normalize_bind_routes:
                     route = " ".join(route.split())
                 self.bind_routes.append(route)
+                self.bind_routes_ir.append(self._build_bind_route_ir(stmt, route))
                 self._print(f"       {route}")
             return self.visitChildren(ctx)
+
+        def _build_bind_route_ir(self, stmt_ctx, route_text: str) -> dict[str, Any]:
+            id_tokens_getter = getattr(stmt_ctx, "ID", None)
+            id_tokens = id_tokens_getter() if callable(id_tokens_getter) else []
+            fold_operator_getter = getattr(stmt_ctx, "foldOperator", None)
+            fold_operator = fold_operator_getter() if callable(fold_operator_getter) else None
+            if fold_operator is not None and len(id_tokens) >= 2:
+                return {
+                    "kind": "fold",
+                    "uniform_type": stmt_ctx.typeName().getText() if getattr(stmt_ctx, "typeName", None) else "",
+                    "uniform_name": id_tokens[0].getText(),
+                    "operator": fold_operator.getText(),
+                    "source": id_tokens[1].getText(),
+                    "route": route_text,
+                }
+
+            if len(id_tokens) >= 2:
+                args = [token.getText() for token in id_tokens[2:]]
+                return {
+                    "kind": "kernel",
+                    "target": id_tokens[0].getText(),
+                    "kernel": id_tokens[1].getText(),
+                    "args": args,
+                    "route": route_text,
+                }
+
+            return {"kind": "unknown", "route": route_text}
 
     return LockstepDebugVisitor
 
