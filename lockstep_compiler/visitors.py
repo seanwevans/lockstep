@@ -1,6 +1,8 @@
 from difflib import get_close_matches
 from typing import Any
 
+from .prelude import load_intrinsics
+
 from .models import (
     LockstepDiagnostic,
     SemanticKernelParam,
@@ -335,7 +337,17 @@ def build_semantic_validator(base_visitor_cls):
             self.scope_assignments: list[dict[str, bool]] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
-            self.pure_functions: dict[str, dict[str, Any]] = {}
+            self.pure_functions: dict[str, dict[str, Any]] = {
+                name: {
+                    "return_type": signature["return_type"],
+                    "params": [
+                        SemanticKernelParam(name=param["name"], declared_type=param["type"], modifier="value")
+                        for param in signature["params"]
+                    ],
+                    "intrinsic": True,
+                }
+                for name, signature in load_intrinsics().items()
+            }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
             self._primitive_types = {"int", "float", "bool"}
             self._current_pure_function: dict[str, str] | None = None
