@@ -41,6 +41,8 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "unused_symbol": "LCK421",
     "unbound_pipeline_resource": "LCK422",
     "cannot_infer_type": "LCK423",
+    "implicit_numeric_widening": "LCK424",
+    "use_before_definition": "LCK425",
 }
 
 
@@ -286,6 +288,7 @@ def build_semantic_validator(base_visitor_cls):
             self.scopes: list[dict[str, SemanticSymbol]] = []
             self.scope_usages: list[dict[str, int]] = []
             self.scope_declaration_ctxs: list[dict[str, Any]] = []
+            self.scope_assignments: list[dict[str, bool]] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
             self.pure_functions: dict[str, dict[str, Any]] = {}
@@ -307,6 +310,7 @@ def build_semantic_validator(base_visitor_cls):
             self.scopes.append({})
             self.scope_usages.append({})
             self.scope_declaration_ctxs.append({})
+            self.scope_assignments.append({})
 
         def _pop_scope(self):
             if self.scopes:
@@ -328,8 +332,18 @@ def build_semantic_validator(base_visitor_cls):
                 self.scopes.pop()
                 self.scope_usages.pop()
                 self.scope_declaration_ctxs.pop()
+                self.scope_assignments.pop()
 
-        def _declare(self, name: str, declared_type: str, ctx, *, duplicate_code: str, kind: str = "symbol"):
+        def _declare(
+            self,
+            name: str,
+            declared_type: str,
+            ctx,
+            *,
+            duplicate_code: str,
+            kind: str = "symbol",
+            assigned: bool = True,
+        ):
             if not self.scopes:
                 self._push_scope()
             current_scope = self.scopes[-1]
@@ -345,7 +359,20 @@ def build_semantic_validator(base_visitor_cls):
             current_scope[name] = SemanticSymbol(name=name, declared_type=declared_type, kind=kind)
             self.scope_usages[-1][name] = 0
             self.scope_declaration_ctxs[-1][name] = ctx
+            self.scope_assignments[-1][name] = assigned
             return True
+
+        def _set_symbol_assigned(self, name: str):
+            for scope, assignments in zip(reversed(self.scopes), reversed(self.scope_assignments)):
+                if name in scope:
+                    assignments[name] = True
+                    return
+
+        def _is_symbol_assigned(self, name: str) -> bool:
+            for scope, assignments in zip(reversed(self.scopes), reversed(self.scope_assignments)):
+                if name in scope:
+                    return assignments.get(name, False)
+            return False
 
         def _mark_symbol_used(self, name: str):
             for scope, usage in zip(reversed(self.scopes), reversed(self.scope_usages)):
@@ -418,7 +445,7 @@ def build_semantic_validator(base_visitor_cls):
             target[name] = params
             return name, params
 
-        def _check_expression_identifier(self, name: str, ctx):
+        def _check_expression_identifier(self, name: str, ctx, *, require_assigned: bool = True):
             symbol = self._lookup(name)
             if symbol is None:
                 self._add_diagnostic(
@@ -427,6 +454,15 @@ def build_semantic_validator(base_visitor_cls):
                     message=f"Undefined identifier '{name}'.",
                     ctx=ctx,
                     hint="Declare the identifier in scope before using it.",
+                )
+                return None
+            if require_assigned and symbol.kind == "local" and not self._is_symbol_assigned(name):
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["use_before_definition"],
+                    message=f"Local variable '{name}' is used before it is assigned.",
+                    ctx=ctx,
+                    hint="Assign a value to the variable before reading it.",
                 )
                 return None
             self._mark_symbol_used(name)
@@ -450,13 +486,17 @@ def build_semantic_validator(base_visitor_cls):
                 index += 1
             return tokens or [id_tokens]
 
-        def _resolve_lvalue_type(self, ctx):
+        def _resolve_lvalue_type(self, ctx, *, for_write: bool = False):
             id_tokens = self._collect_id_tokens(ctx)
             if not id_tokens:
                 return None
 
             root_identifier = id_tokens[0].getText()
-            current_type = self._check_expression_identifier(root_identifier, ctx)
+            current_type = self._check_expression_identifier(
+                root_identifier,
+                ctx,
+                require_assigned=not for_write,
+            )
             if current_type is None:
                 return None
 
@@ -870,7 +910,18 @@ def build_semantic_validator(base_visitor_cls):
                     return None
                 if len(known) != len(operand_contexts):
                     return None
-                return "float" if "float" in known else "int"
+                if "int" in known and "float" in known:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
+                        message=(
+                            f"Operator '{operator}' mixes int and float operands without an explicit cast."
+                        ),
+                        ctx=ctx,
+                        hint="Use explicit casts so numeric widening is intentional and target-compatible.",
+                    )
+                    return None
+                return known[0] if known else None
 
             def _resolve_boolean_sequence(operator: str, operand_contexts: list[Any]):
                 operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
@@ -1076,7 +1127,14 @@ def build_semantic_validator(base_visitor_cls):
                     return self.visitChildren(ctx)
                 declared_type = initializer_type
 
-            self._declare(symbol_name, declared_type, ctx, duplicate_code="LCK306", kind="local")
+            self._declare(
+                symbol_name,
+                declared_type,
+                ctx,
+                duplicate_code="LCK306",
+                kind="local",
+                assigned=has_initializer,
+            )
 
             if has_initializer:
                 if initializer_type is not None and initializer_type != declared_type:
@@ -1096,7 +1154,7 @@ def build_semantic_validator(base_visitor_cls):
             lvalue_ctx = ctx.lvalue() if hasattr(ctx, "lvalue") and callable(ctx.lvalue) else None
             expr_ctx = ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
 
-            lvalue_type = self._resolve_lvalue_type(lvalue_ctx) if lvalue_ctx is not None else None
+            lvalue_type = self._resolve_lvalue_type(lvalue_ctx, for_write=True) if lvalue_ctx is not None else None
             expr_type = self._resolve_expr_type(expr_ctx)
 
             if lvalue_type is not None and expr_type is not None and lvalue_type != expr_type:
@@ -1110,6 +1168,11 @@ def build_semantic_validator(base_visitor_cls):
                     ctx=ctx,
                     hint="Assign expressions whose type matches the lvalue declaration.",
                 )
+
+            if lvalue_ctx is not None:
+                id_tokens = self._collect_id_tokens(lvalue_ctx)
+                if id_tokens:
+                    self._set_symbol_assigned(id_tokens[0].getText())
 
             return self.visitChildren(ctx)
 
