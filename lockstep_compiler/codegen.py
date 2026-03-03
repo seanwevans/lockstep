@@ -135,18 +135,20 @@ class _FunctionLowerer:
             return known_structs[type_name]
         return ir.IntType(8).as_pointer()
 
-    def _coerce_float(self, value: ir.Value) -> ir.Value:
-        if isinstance(value.type, ir.IntType) and value.type.width == 1:
-            return self.builder.uitofp(value, ir.FloatType())
-        if isinstance(value.type, ir.IntType):
-            return self.builder.sitofp(value, ir.FloatType())
-        return value
+    def _is_float(self, value: ir.Value) -> bool:
+        return isinstance(value.type, (ir.FloatType, ir.DoubleType))
+
+    def _is_integer(self, value: ir.Value) -> bool:
+        return isinstance(value.type, ir.IntType)
+
+    def _is_bool(self, value: ir.Value) -> bool:
+        return isinstance(value.type, ir.IntType) and value.type.width == 1
 
     def _load_var(self, name: str) -> ir.Value:
         key = _sanitize_symbol(name.replace(".", "_"))
         if key in self.locals:
             return self.builder.load(self.locals[key], name=f"{key}_val")
-        return ir.Constant(ir.FloatType(), 0.0)
+        raise ValueError(f"unknown variable '{name}'")
 
     def _parse_expr(self, expr: str):
         parser = _ExprParser(_tokenize_expr(expr))
@@ -165,44 +167,75 @@ class _FunctionLowerer:
         if kind == "un":
             op, operand = node[1], self._lower_expr(node[2])
             if op == "-":
-                return self.builder.fsub(ir.Constant(ir.FloatType(), 0.0), self._coerce_float(operand))
+                if self._is_float(operand):
+                    return self.builder.fsub(ir.Constant(operand.type, 0.0), operand)
+                if self._is_integer(operand) and not self._is_bool(operand):
+                    return self.builder.sub(ir.Constant(operand.type, 0), operand)
+                raise ValueError("unary '-' requires integer or floating-point operand")
             return self.builder.not_(operand)
         if kind == "call":
             name = node[1]
             args = [self._lower_expr(arg) for arg in node[2]]
             if name == "mix" and len(args) == 3:
-                a, b, t = (self._coerce_float(arg) for arg in args)
-                one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
+                if not all(self._is_float(arg) for arg in args):
+                    raise ValueError("mix requires floating-point arguments")
+                a, b, t = args
+                one_minus_t = self.builder.fsub(ir.Constant(t.type, 1.0), t, name="mix_one_minus_t")
                 return self.builder.fadd(self.builder.fmul(a, one_minus_t), self.builder.fmul(b, t), name="mix")
             if name == "step" and len(args) == 2:
-                edge = self._coerce_float(args[0])
-                x_val = self._coerce_float(args[1])
+                edge = args[0]
+                x_val = args[1]
+                if not self._is_float(edge) or not self._is_float(x_val):
+                    raise ValueError("step requires floating-point arguments")
                 cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
                 return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
             callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
             if callee is not None:
-                coerced = [self._coerce_float(arg) if isinstance(param.type, ir.FloatType) else arg for arg, param in zip(args, callee.args)]
-                return self.builder.call(callee, coerced, name=f"call_{name}")
-            return ir.Constant(ir.FloatType(), 0.0)
+                if len(args) != len(callee.args):
+                    raise ValueError(f"call '{name}' expects {len(callee.args)} args, got {len(args)}")
+                for idx, (arg, param) in enumerate(zip(args, callee.args)):
+                    if arg.type != param.type:
+                        raise ValueError(
+                            f"call '{name}' argument {idx + 1} type mismatch: expected {param.type}, got {arg.type}"
+                        )
+                return self.builder.call(callee, args, name=f"call_{name}")
+            raise ValueError(f"unknown function '{name}'")
 
         op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
         if op in {"+", "-", "*", "/", "%"}:
-            lval, rval = self._coerce_float(lhs), self._coerce_float(rhs)
-            return {
-                "+": self.builder.fadd,
-                "-": self.builder.fsub,
-                "*": self.builder.fmul,
-                "/": self.builder.fdiv,
-                "%": self.builder.frem,
-            }[op](lval, rval)
+            if lhs.type != rhs.type:
+                raise ValueError(f"arithmetic operator '{op}' requires matching operand types")
+            if self._is_float(lhs):
+                return {
+                    "+": self.builder.fadd,
+                    "-": self.builder.fsub,
+                    "*": self.builder.fmul,
+                    "/": self.builder.fdiv,
+                    "%": self.builder.frem,
+                }[op](lhs, rhs)
+            if self._is_integer(lhs) and not self._is_bool(lhs):
+                return {
+                    "+": self.builder.add,
+                    "-": self.builder.sub,
+                    "*": self.builder.mul,
+                    "/": self.builder.sdiv,
+                    "%": self.builder.srem,
+                }[op](lhs, rhs)
+            raise ValueError(f"arithmetic operator '{op}' requires integer or floating-point operands")
         if op in {"<", "<=", ">", ">=", "==", "!="}:
+            if lhs.type != rhs.type:
+                raise ValueError(f"comparison operator '{op}' requires matching operand types")
             rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
-            return self.builder.fcmp_ordered(rel_map[op], self._coerce_float(lhs), self._coerce_float(rhs))
+            if self._is_float(lhs):
+                return self.builder.fcmp_ordered(rel_map[op], lhs, rhs)
+            if self._is_integer(lhs):
+                return self.builder.icmp_signed(rel_map[op], lhs, rhs)
+            raise ValueError(f"comparison operator '{op}' requires numeric or boolean operands")
         if op == "&&":
             return self.builder.and_(lhs, rhs)
         if op == "||":
             return self.builder.or_(lhs, rhs)
-        return ir.Constant(ir.FloatType(), 0.0)
+        raise ValueError(f"unsupported expression node: {node}")
 
     def _lower_statement(self, statement: str, return_type: ir.Type):
         statement = statement.strip()

@@ -215,3 +215,34 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     assert 'route_ApplyGravity_cond' in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
+
+
+def test_emit_llvm_ir_keeps_integer_math_in_integer_domain():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "shaders": [],
+            "filters": [],
+            "pure_functions": [
+                {
+                    "name": "sum_and_scale",
+                    "return_type": "int",
+                    "params": [
+                        {"name": "a", "type": "int"},
+                        {"name": "b", "type": "int"},
+                    ],
+                    "body": ["return (a + b) * 2;"],
+                }
+            ],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert 'define i32 @"pure_sum_and_scale"(i32 %"a", i32 %"b")' in llvm_ir
+    assert 'add i32' in llvm_ir
+    assert 'mul i32' in llvm_ir
+    assert 'fadd float' not in llvm_ir
+    assert 'fmul float' not in llvm_ir
