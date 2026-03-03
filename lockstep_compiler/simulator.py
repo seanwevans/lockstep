@@ -33,6 +33,19 @@ def _route_text(route_ir: dict[str, Any]) -> str:
     return str(route_ir.get("route", ""))
 
 
+def _apply_saturated_writes(rows: list[Any], capacity: int) -> list[Any]:
+    if capacity <= 0:
+        return []
+
+    saturated_rows: list[Any] = []
+    for value in rows:
+        if len(saturated_rows) < capacity:
+            saturated_rows.append(value)
+            continue
+        saturated_rows[capacity - 1] = value
+    return saturated_rows
+
+
 def simulate_pipeline_entities(
     entities: dict[str, Any],
     *,
@@ -97,7 +110,7 @@ def simulate_pipeline_entities(
             target = route_ir.get("target")
             if isinstance(target, str) and target in streams:
                 cap = streams[target]["capacity"]
-                streams[target]["rows"] = output_rows[:cap]
+                streams[target]["rows"] = _apply_saturated_writes(output_rows, cap)
 
             for index, arg_name in enumerate(args):
                 params = kernel["params"]

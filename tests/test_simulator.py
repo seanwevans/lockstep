@@ -113,3 +113,41 @@ def test_run_cli_simulate_reads_input_file(tmp_path):
     assert exit_code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["streams"]["s"] == [1, 2, 3]
+
+
+def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "int", "capacity": "5"},
+            {"name": "out_stream", "type": "int", "capacity": "2"},
+        ],
+        "accumulators": [],
+        "uniforms": [],
+        "shaders": [
+            {
+                "name": "Project",
+                "params": [
+                    {"modifier": "in", "type": "int", "name": "src"},
+                    {"modifier": "out", "type": "int", "name": "dst"},
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = Project(in_stream, out_stream);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "Project",
+                "args": ["in_stream", "out_stream"],
+                "route": "out_stream = Project(in_stream, out_stream);",
+            }
+        ],
+    }
+
+    simulation = simulate_pipeline_entities(entities, stream_inputs={"in_stream": [1, 2, 3, 4]})
+
+    assert simulation["streams"]["out_stream"] == [
+        {"_source": 1, "_kernel": "Project"},
+        {"_source": 4, "_kernel": "Project"},
+    ]
