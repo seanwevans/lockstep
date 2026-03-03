@@ -16,6 +16,7 @@ class LockstepDiagnostic:
 class LockstepCompileResult:
     parse_tree: Any
     entities: dict[str, Any]
+    ast: Any | None = None
     llvm_ir: str = ""
     diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
 
