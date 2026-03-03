@@ -11,6 +11,60 @@ class AstLocation:
 
 
 @dataclass(frozen=True)
+class AstExprLiteral:
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class AstExprVar:
+    path: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AstExprUnary:
+    op: str
+    operand: "AstExpr"
+
+
+@dataclass(frozen=True)
+class AstExprBinary:
+    op: str
+    left: "AstExpr"
+    right: "AstExpr"
+
+
+@dataclass(frozen=True)
+class AstExprCall:
+    name: str
+    args: tuple["AstExpr", ...]
+
+
+AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall
+
+
+@dataclass(frozen=True)
+class AstVarDeclStmt:
+    declared_type: str | None
+    name: str
+    initializer: AstExpr | None
+
+
+@dataclass(frozen=True)
+class AstAssignStmt:
+    target: tuple[str, ...]
+    value: AstExpr
+
+
+@dataclass(frozen=True)
+class AstReturnStmt:
+    value: AstExpr
+
+
+AstStatement = AstVarDeclStmt | AstAssignStmt | AstReturnStmt
+
+
+@dataclass(frozen=True)
 class AstKernelParam:
     modifier: str
     declared_type: str
@@ -35,7 +89,7 @@ class AstPureDecl:
     name: str
     return_type: str
     params: tuple[AstKernelParam, ...] = ()
-    body: tuple[str, ...] = ()
+    body: tuple[AstStatement, ...] = ()
     location: AstLocation = AstLocation()
 
 
@@ -43,7 +97,7 @@ class AstPureDecl:
 class AstKernelDecl:
     name: str
     params: tuple[AstKernelParam, ...] = ()
-    body: tuple[str, ...] = ()
+    body: tuple[AstStatement, ...] = ()
     location: AstLocation = AstLocation()
 
 
@@ -155,9 +209,96 @@ class AstBuilder(_AstBuilderMixin):
             params.append(AstKernelParam(modifier=modifier, declared_type=declared_type, name=name))
         return tuple(params)
 
-    def _parse_statement_text(self, ctx: Any) -> tuple[str, ...]:
+    def _parse_lvalue(self, lvalue_ctx: Any) -> tuple[str, ...]:
+        return tuple(token.getText() for token in self._call(lvalue_ctx, "ID", []) or [])
+
+    def _parse_left_associative(self, ctx: Any, sub_expr_getter: str):
+        parts = self._call(ctx, sub_expr_getter, []) or []
+        if not parts:
+            raise ValueError("malformed expression tree")
+        node = self._parse_expr(parts[0])
+        for index, part in enumerate(parts[1:], start=1):
+            op = ctx.getChild(index * 2 - 1).getText()
+            node = AstExprBinary(op=op, left=node, right=self._parse_expr(part))
+        return node
+
+    def _parse_expr(self, expr_ctx: Any):
+        class_name = expr_ctx.__class__.__name__
+
+        if class_name == "ExprContext":
+            return self._parse_expr(self._call(expr_ctx, "logicalExpr"))
+        if class_name == "LogicalExprContext":
+            return self._parse_expr(self._call(expr_ctx, "logicalOrExpr"))
+        if class_name == "LogicalOrExprContext":
+            return self._parse_left_associative(expr_ctx, "logicalAndExpr")
+        if class_name == "LogicalAndExprContext":
+            return self._parse_left_associative(expr_ctx, "equalityExpr")
+        if class_name == "EqualityExprContext":
+            return self._parse_left_associative(expr_ctx, "relExpr")
+        if class_name == "RelExprContext":
+            return self._parse_left_associative(expr_ctx, "addExpr")
+        if class_name == "AddExprContext":
+            return self._parse_left_associative(expr_ctx, "mulExpr")
+        if class_name == "MulExprContext":
+            return self._parse_left_associative(expr_ctx, "unaryExpr")
+        if class_name == "UnaryExprContext":
+            nested = self._call(expr_ctx, "unaryExpr")
+            if nested is not None:
+                return AstExprUnary(op=expr_ctx.getChild(0).getText(), operand=self._parse_expr(nested))
+            return self._parse_expr(self._call(expr_ctx, "primaryExpr"))
+        if class_name == "PrimaryExprContext":
+            inner = self._call(expr_ctx, "expr")
+            if inner is not None:
+                return self._parse_expr(inner)
+            expr_list = self._call(expr_ctx, "exprList")
+            id_token = self._call(expr_ctx, "ID")
+            if id_token is not None and expr_ctx.getChildCount() >= 3 and expr_ctx.getChild(1).getText() == "(":
+                args = ()
+                if expr_list is not None:
+                    args = tuple(self._parse_expr(child) for child in self._call(expr_list, "expr", []) or [])
+                return AstExprCall(name=id_token.getText(), args=args)
+            lvalue = self._call(expr_ctx, "lvalue")
+            if lvalue is not None:
+                return AstExprVar(path=self._parse_lvalue(lvalue))
+            if self._call(expr_ctx, "INT") is not None:
+                return AstExprLiteral(kind="int", value=self._call(expr_ctx, "INT").getText())
+            if self._call(expr_ctx, "FLOAT") is not None:
+                return AstExprLiteral(kind="float", value=self._call(expr_ctx, "FLOAT").getText())
+            if self._call(expr_ctx, "BOOL") is not None:
+                return AstExprLiteral(kind="bool", value=self._call(expr_ctx, "BOOL").getText())
+        raise ValueError(f"unsupported expression node: {class_name}")
+
+    def _parse_statement_text(self, ctx: Any) -> tuple[AstStatement, ...]:
         statements = self._call(ctx, "statement", []) or []
-        return tuple(statement.getText() for statement in statements)
+        parsed: list[AstStatement] = []
+        for statement in statements:
+            var_decl = self._call(statement, "varDecl")
+            if var_decl is not None:
+                declared_type = self._call(var_decl, "typeName")
+                initializer_ctx = self._call(var_decl, "expr")
+                parsed.append(
+                    AstVarDeclStmt(
+                        declared_type=declared_type.getText() if declared_type else None,
+                        name=self._call(var_decl, "ID").getText(),
+                        initializer=self._parse_expr(initializer_ctx) if initializer_ctx else None,
+                    )
+                )
+                continue
+
+            assign_stmt = self._call(statement, "assignStmt")
+            if assign_stmt is not None:
+                parsed.append(
+                    AstAssignStmt(
+                        target=self._parse_lvalue(self._call(assign_stmt, "lvalue")),
+                        value=self._parse_expr(self._call(assign_stmt, "expr")),
+                    )
+                )
+                continue
+
+            return_stmt = self._call(statement, "returnStmt")
+            if return_stmt is not None:
+                parsed.append(AstReturnStmt(value=self._parse_expr(self._call(return_stmt, "expr"))))
+        return tuple(parsed)
 
     def visitProgram(self, ctx: Any):
         return self.visitChildren(ctx)
@@ -306,7 +447,7 @@ class AstBuilder(_AstBuilderMixin):
 def build_program_ast(parse_tree: Any, visitor_cls: type) -> AstProgram:
     """Build a typed AST using the parser's generated visitor base class."""
 
-    class _AstBuilderVisitor(visitor_cls, AstBuilder):
+    class _AstBuilderVisitor(AstBuilder, visitor_cls):
         def __init__(self):
             AstBuilder.__init__(self)
 
@@ -316,6 +457,27 @@ def build_program_ast(parse_tree: Any, visitor_cls: type) -> AstProgram:
 
 
 def ast_to_entities(program: AstProgram) -> dict[str, Any]:
+    def _expr_to_text(expr: AstExpr) -> str:
+        if isinstance(expr, AstExprLiteral):
+            return expr.value
+        if isinstance(expr, AstExprVar):
+            return ".".join(expr.path)
+        if isinstance(expr, AstExprUnary):
+            return f"{expr.op}{_expr_to_text(expr.operand)}"
+        if isinstance(expr, AstExprBinary):
+            return f"({_expr_to_text(expr.left)} {expr.op} {_expr_to_text(expr.right)})"
+        return f"{expr.name}({', '.join(_expr_to_text(arg) for arg in expr.args)})"
+
+    def _statement_to_text(statement: AstStatement) -> str:
+        if isinstance(statement, AstVarDeclStmt):
+            prefix = f"{statement.declared_type} " if statement.declared_type else ""
+            if statement.initializer is None:
+                return f"{prefix}{statement.name};"
+            return f"{prefix}{statement.name} = {_expr_to_text(statement.initializer)};"
+        if isinstance(statement, AstAssignStmt):
+            return f"{'.'.join(statement.target)} = {_expr_to_text(statement.value)};"
+        return f"return {_expr_to_text(statement.value)};"
+
     streams = []
     accumulators = []
     uniforms = []
@@ -380,7 +542,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                     {"modifier": param.modifier, "type": param.declared_type, "name": param.name}
                     for param in shader.params
                 ],
-                "body": list(shader.body),
+                "body": [_statement_to_text(statement) for statement in shader.body],
+                "body_ast": list(shader.body),
             }
             for shader in program.shaders
         ],
@@ -391,7 +554,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                     {"modifier": param.modifier, "type": param.declared_type, "name": param.name}
                     for param in flt.params
                 ],
-                "body": list(flt.body),
+                "body": [_statement_to_text(statement) for statement in flt.body],
+                "body_ast": list(flt.body),
             }
             for flt in program.filters
         ],
@@ -403,7 +567,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                     {"type": param.declared_type, "name": param.name}
                     for param in pure.params
                 ],
-                "body": list(pure.body),
+                "body": [_statement_to_text(statement) for statement in pure.body],
+                "body_ast": list(pure.body),
             }
             for pure in program.pure_functions
         ],

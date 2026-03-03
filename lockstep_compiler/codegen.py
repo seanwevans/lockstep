@@ -6,7 +6,19 @@ from typing import Any
 
 from llvmlite import ir
 
-from .ast import AstProgram, ast_to_entities
+from .ast import (
+    AstAssignStmt,
+    AstExprBinary,
+    AstExprCall,
+    AstExprLiteral,
+    AstExprUnary,
+    AstExprVar,
+    AstProgram,
+    AstReturnStmt,
+    AstStatement,
+    AstVarDeclStmt,
+    ast_to_entities,
+)
 
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
@@ -250,7 +262,54 @@ class _FunctionLowerer:
         parser = _ExprParser(_tokenize_expr(expr))
         return parser.parse()
 
+    def _lower_call(self, name: str, args: list[ir.Value]) -> ir.Value:
+        if name == "mix" and len(args) == 3:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            a, b, t = args
+            one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
+            return self.builder.fadd(self.builder.fmul(a, one_minus_t), self.builder.fmul(b, t), name="mix")
+        if name == "step" and len(args) == 2:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            edge = args[0]
+            x_val = args[1]
+            cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
+            return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
+        callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
+        if callee is not None:
+            coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
+            return self.builder.call(callee, coerced, name=f"call_{name}")
+        return ir.Constant(ir.FloatType(), 0.0)
+
     def _lower_expr(self, node):
+        if isinstance(node, AstExprLiteral):
+            if node.kind == "float":
+                return ir.Constant(ir.FloatType(), float(node.value))
+            if node.kind == "int":
+                return ir.Constant(ir.IntType(32), int(node.value))
+            return ir.Constant(ir.IntType(1), int(node.value == "true"))
+        if isinstance(node, AstExprVar):
+            return self._load_var(".".join(node.path))
+        if isinstance(node, AstExprUnary):
+            operand = self._lower_expr(node.operand)
+            if node.op == "-":
+                return self._emit_numeric_unary_minus(operand)
+            return self.builder.not_(operand)
+        if isinstance(node, AstExprCall):
+            return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
+        if isinstance(node, AstExprBinary):
+            op, lhs, rhs = node.op, self._lower_expr(node.left), self._lower_expr(node.right)
+            if op in {"+", "-", "*", "/", "%"}:
+                return self._emit_numeric_binary(op, lhs, rhs)
+            if op in {"<", "<=", ">", ">=", "==", "!="}:
+                return self._emit_relational_compare(op, lhs, rhs)
+            if op == "&&":
+                return self.builder.and_(lhs, rhs)
+            if op == "||":
+                return self.builder.or_(lhs, rhs)
+            return ir.Constant(ir.FloatType(), 0.0)
+
         kind = node[0]
         if kind == "float":
             return ir.Constant(ir.FloatType(), node[1])
@@ -266,26 +325,7 @@ class _FunctionLowerer:
                 return self._emit_numeric_unary_minus(operand)
             return self.builder.not_(operand)
         if kind == "call":
-            name = node[1]
-            args = [self._lower_expr(arg) for arg in node[2]]
-            if name == "mix" and len(args) == 3:
-                if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                    return ir.Constant(ir.FloatType(), 0.0)
-                a, b, t = args
-                one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
-                return self.builder.fadd(self.builder.fmul(a, one_minus_t), self.builder.fmul(b, t), name="mix")
-            if name == "step" and len(args) == 2:
-                if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                    return ir.Constant(ir.FloatType(), 0.0)
-                edge = args[0]
-                x_val = args[1]
-                cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
-                return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
-            callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
-            if callee is not None:
-                coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
-                return self.builder.call(callee, coerced, name=f"call_{name}")
-            return ir.Constant(ir.FloatType(), 0.0)
+            return self._lower_call(node[1], [self._lower_expr(arg) for arg in node[2]])
 
         op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
         if op in {"+", "-", "*", "/", "%"}:
@@ -298,7 +338,48 @@ class _FunctionLowerer:
             return self.builder.or_(lhs, rhs)
         return ir.Constant(ir.FloatType(), 0.0)
 
-    def _lower_statement(self, statement: str, return_type: ir.Type):
+    def _lower_assignment(self, target_name: str, value: ir.Value):
+        base_name, *field_path = target_name.split(".")
+        key = _sanitize_symbol(base_name)
+        if key not in self.locals:
+            slot = self.builder.alloca(value.type, name=key)
+            self.locals[key] = slot
+        if not field_path:
+            slot_type = self.locals[key].type.pointee
+            self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
+            return
+
+        current = self.builder.load(self.locals[key], name=f"{key}_val")
+        updated = self._insert_field_path(current, field_path, value)
+        self.builder.store(updated, self.locals[key])
+
+    def _lower_statement(self, statement: str | AstStatement, return_type: ir.Type):
+        if isinstance(statement, AstReturnStmt):
+            value = self._lower_expr(statement.value)
+            if isinstance(return_type, ir.VoidType):
+                self.builder.ret_void()
+            else:
+                self.builder.ret(self._coerce_value_to_type(value, return_type))
+            return
+
+        if isinstance(statement, AstAssignStmt):
+            self._lower_assignment(".".join(statement.target), self._lower_expr(statement.value))
+            return
+
+        if isinstance(statement, AstVarDeclStmt):
+            key = _sanitize_symbol(statement.name)
+            declared_type = statement.declared_type or "float"
+            llvm_type = self._llvm_type(declared_type, self.known_structs)
+            if key not in self.locals:
+                slot = self.builder.alloca(llvm_type, name=key)
+                self.locals[key] = slot
+                self.builder.store(ir.Constant(llvm_type, None), slot)
+            if statement.initializer is not None:
+                value = self._lower_expr(statement.initializer)
+                slot_type = self.locals[key].type.pointee
+                self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
+            return
+
         statement = statement.strip()
         if statement.startswith("return"):
             expr = statement[len("return") :].strip().rstrip(";")
@@ -315,20 +396,7 @@ class _FunctionLowerer:
             rhs = rhs.strip()
             lhs_parts = lhs.split()
             name = lhs_parts[-1]
-            base_name, *field_path = name.split(".")
-            key = _sanitize_symbol(base_name)
-            value = self._lower_expr(self._parse_expr(rhs))
-            if key not in self.locals:
-                slot = self.builder.alloca(value.type, name=key)
-                self.locals[key] = slot
-            if not field_path:
-                slot_type = self.locals[key].type.pointee
-                self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
-                return
-
-            current = self.builder.load(self.locals[key], name=f"{key}_val")
-            updated = self._insert_field_path(current, field_path, value)
-            self.builder.store(updated, self.locals[key])
+            self._lower_assignment(name, self._lower_expr(self._parse_expr(rhs)))
             return
 
         if statement.endswith(";"):
@@ -342,7 +410,7 @@ class _FunctionLowerer:
                     self.locals[key] = slot
                     self.builder.store(ir.Constant(llvm_type, None), slot)
 
-    def lower_function(self, fn: ir.Function, statements: list[str], return_type: ir.Type):
+    def lower_function(self, fn: ir.Function, statements: list[str | AstStatement], return_type: ir.Type):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
@@ -459,15 +527,15 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     for pure in pure_functions:
         fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
-        lowerer.lower_function(fn, pure.get("body", []), fn.function_type.return_type)
+        lowerer.lower_function(fn, pure.get("body_ast", pure.get("body", [])), fn.function_type.return_type)
 
     for shader in shaders:
         fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
-        lowerer.lower_function(fn, shader.get("body", []), ir.VoidType())
+        lowerer.lower_function(fn, shader.get("body_ast", shader.get("body", [])), ir.VoidType())
 
     for flt in filters:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
-        lowerer.lower_function(fn, flt.get("body", []), ir.VoidType())
+        lowerer.lower_function(fn, flt.get("body_ast", flt.get("body", [])), ir.VoidType())
 
     arena_fields: list[tuple[str, str, ir.Type]] = []
     stream_slots: dict[str, int] = {}

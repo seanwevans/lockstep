@@ -353,3 +353,26 @@ def test_emit_llvm_ir_does_not_raise_on_mixed_int_float_expression():
     )
 
     assert 'define float @"pure_bad_mix"()' in llvm_ir
+
+
+def test_compile_lockstep_builds_structured_statement_ast():
+    from lockstep_compiler.ast import AstExprBinary, AstExprVar, AstReturnStmt
+
+    result = compiler_module.compile_lockstep(
+        """
+        pure float f(float x, float y) {
+            return x + y * x;
+        }
+        pipeline Main {
+            bind { }
+        }
+        """,
+        verbose=False,
+    )
+
+    body = result.ast.pure_functions[0].body
+    assert isinstance(body[0], AstReturnStmt)
+    assert isinstance(body[0].value, AstExprBinary)
+    assert body[0].value.op == "+"
+    assert isinstance(body[0].value.left, AstExprVar)
+    assert isinstance(body[0].value.right, AstExprBinary)
