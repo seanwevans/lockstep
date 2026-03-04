@@ -189,5 +189,10 @@ class LockstepVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by LockstepParser#typeSuffix.
+    def visitTypeSuffix(self, ctx:LockstepParser.TypeSuffixContext):
+        return self.visitChildren(ctx)
+
+
 
 del LockstepParser

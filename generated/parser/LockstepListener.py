@@ -332,5 +332,14 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#typeSuffix.
+    def enterTypeSuffix(self, ctx:LockstepParser.TypeSuffixContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#typeSuffix.
+    def exitTypeSuffix(self, ctx:LockstepParser.TypeSuffixContext):
+        pass
+
+
 
 del LockstepParser

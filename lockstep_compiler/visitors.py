@@ -448,14 +448,95 @@ def build_semantic_validator(base_visitor_cls):
         def _known_types(self) -> set[str]:
             return self._primitive_types | set(self.structs.keys())
 
+        def _consume_identifier(self, text: str, index: int) -> tuple[str | None, int]:
+            if index >= len(text) or not (text[index].isalpha() or text[index] == "_"):
+                return None, index
+            start = index
+            index += 1
+            while index < len(text) and (text[index].isalnum() or text[index] == "_"):
+                index += 1
+            return text[start:index], index
+
+        def _consume_digits(self, text: str, index: int) -> tuple[str | None, int]:
+            if index >= len(text) or not text[index].isdigit():
+                return None, index
+            start = index
+            index += 1
+            while index < len(text) and text[index].isdigit():
+                index += 1
+            return text[start:index], index
+
+        def _parse_type_name(self, text: str, index: int = 0) -> tuple[bool, int, bool, str | None, set[str]]:
+            base_name, index = self._consume_identifier(text, index)
+            if base_name is None:
+                return False, index, False, None, set()
+
+            requires_known_base = True
+            referenced_type_names = {base_name}
+
+            while index < len(text):
+                if text[index] == "[":
+                    index += 1
+                    size_literal, index = self._consume_digits(text, index)
+                    if size_literal is None or index >= len(text) or text[index] != "]":
+                        return False, index, requires_known_base, base_name, referenced_type_names
+                    index += 1
+                    continue
+
+                if text[index] == "<":
+                    requires_known_base = False
+                    index += 1
+                    valid, index, nested_requires_known, nested_base_name, nested_names = self._parse_type_name(text, index)
+                    if not valid:
+                        return False, index, requires_known_base, base_name, referenced_type_names
+                    referenced_type_names |= nested_names
+
+                    if index < len(text) and text[index] == ",":
+                        index += 1
+                        width_literal, index = self._consume_digits(text, index)
+                        if width_literal is None:
+                            return False, index, requires_known_base, base_name, referenced_type_names
+
+                    if index >= len(text) or text[index] != ">":
+                        return False, index, requires_known_base, base_name, referenced_type_names
+                    index += 1
+                    continue
+
+                break
+
+            return True, index, requires_known_base, base_name, referenced_type_names
+
         def _validate_declared_type(self, type_name: str, ctx, code: str) -> bool:
             known_types = self._known_types()
-            if type_name in known_types:
+            is_valid_syntax, parsed_upto, requires_known_base, base_name, referenced_type_names = self._parse_type_name(type_name)
+
+            if not is_valid_syntax or parsed_upto != len(type_name):
+                self._add_diagnostic(
+                    severity="error",
+                    code=code,
+                    message=f"Malformed declared type '{type_name}'.",
+                    ctx=ctx,
+                    hint=(
+                        "Use a valid type shape such as T, T[4], or vector<T, 4> "
+                        "(including nested combinations)."
+                    ),
+                )
+                return False
+
+            if requires_known_base and type_name in known_types:
                 return True
 
-            suggestions = get_close_matches(type_name, sorted(known_types), n=2, cutoff=0.6)
+            names_to_check = set(referenced_type_names)
+            if not requires_known_base and base_name is not None:
+                names_to_check.discard(base_name)
+            unknown_referenced = sorted(name for name in names_to_check if name not in known_types)
+            if not unknown_referenced:
+                return True
+
+            unknown_primary = unknown_referenced[0]
+            suggestions = get_close_matches(unknown_primary, sorted(known_types), n=2, cutoff=0.6)
             hint = (
-                f"Unknown type '{type_name}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
+                f"Unknown type '{unknown_primary}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
                 "or declare a struct with this name before using it."
             )
             if suggestions:
