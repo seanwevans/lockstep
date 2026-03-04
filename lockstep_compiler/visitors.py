@@ -989,6 +989,16 @@ def build_semantic_validator(base_visitor_cls):
                     return None
                 return "bool"
 
+            def _resolve_int_sequence(operator: str, operand_contexts: list[Any]):
+                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
+                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                if any(operand_type != "int" for operand_type in known):
+                    _report_operand_error(operator, "int", operand_types)
+                    return None
+                if len(known) != len(operand_contexts):
+                    return None
+                return "int"
+
             if hasattr(ctx, "logicalAndExpr") and callable(ctx.logicalAndExpr):
                 operands = _as_list(ctx.logicalAndExpr())
                 if len(operands) > 1:
@@ -996,10 +1006,31 @@ def build_semantic_validator(base_visitor_cls):
                 if len(operands) == 1:
                     return self._resolve_expr_type(operands[0])
 
+            if hasattr(ctx, "bitwiseOrExpr") and callable(ctx.bitwiseOrExpr):
+                operands = _as_list(ctx.bitwiseOrExpr())
+                if len(operands) > 1:
+                    return _resolve_boolean_sequence("&&", operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "bitwiseXorExpr") and callable(ctx.bitwiseXorExpr):
+                operands = _as_list(ctx.bitwiseXorExpr())
+                if len(operands) > 1:
+                    return _resolve_int_sequence("|", operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
+            if hasattr(ctx, "bitwiseAndExpr") and callable(ctx.bitwiseAndExpr):
+                operands = _as_list(ctx.bitwiseAndExpr())
+                if len(operands) > 1:
+                    return _resolve_int_sequence("^", operands)
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
             if hasattr(ctx, "equalityExpr") and callable(ctx.equalityExpr):
                 operands = _as_list(ctx.equalityExpr())
                 if len(operands) > 1:
-                    return _resolve_boolean_sequence("&&", operands)
+                    return _resolve_int_sequence("&", operands)
                 if len(operands) == 1:
                     return self._resolve_expr_type(operands[0])
 
@@ -1022,12 +1053,28 @@ def build_semantic_validator(base_visitor_cls):
                 if len(operands) == 1:
                     return self._resolve_expr_type(operands[0])
 
+            if hasattr(ctx, "shiftExpr") and callable(ctx.shiftExpr):
+                operands = _as_list(ctx.shiftExpr())
+                if len(operands) > 1:
+                    operator = _child_text(1) or "<"
+                    operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operands]
+                    known = [operand_type for operand_type in operand_types if operand_type is not None]
+                    if any(operand_type not in {"int", "float", "bool"} for operand_type in known):
+                        _report_operand_error(operator, "comparable", operand_types)
+                        return None
+                    if len(set(known)) > 1:
+                        _report_operand_error(operator, "matching", operand_types)
+                        return None
+                    if len(known) != len(operands):
+                        return None
+                    return "bool"
+                if len(operands) == 1:
+                    return self._resolve_expr_type(operands[0])
+
             if hasattr(ctx, "addExpr") and callable(ctx.addExpr):
                 operands = _as_list(ctx.addExpr())
                 if len(operands) > 1:
-                    operator = _child_text(1) or ">"
-                    numeric_type = _resolve_numeric_sequence(operator, operands)
-                    return "bool" if numeric_type is not None else None
+                    return _resolve_int_sequence(_child_text(1) or "<<", operands)
                 if len(operands) == 1:
                     return self._resolve_expr_type(operands[0])
 

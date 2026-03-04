@@ -144,6 +144,21 @@ class LockstepVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by LockstepParser#bitwiseOrExpr.
+    def visitBitwiseOrExpr(self, ctx:LockstepParser.BitwiseOrExprContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by LockstepParser#bitwiseXorExpr.
+    def visitBitwiseXorExpr(self, ctx:LockstepParser.BitwiseXorExprContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by LockstepParser#bitwiseAndExpr.
+    def visitBitwiseAndExpr(self, ctx:LockstepParser.BitwiseAndExprContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by LockstepParser#equalityExpr.
     def visitEqualityExpr(self, ctx:LockstepParser.EqualityExprContext):
         return self.visitChildren(ctx)
@@ -151,6 +166,11 @@ class LockstepVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by LockstepParser#relExpr.
     def visitRelExpr(self, ctx:LockstepParser.RelExprContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by LockstepParser#shiftExpr.
+    def visitShiftExpr(self, ctx:LockstepParser.ShiftExprContext):
         return self.visitChildren(ctx)
 
 

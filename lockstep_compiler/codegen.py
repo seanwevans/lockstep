@@ -35,7 +35,7 @@ def _sanitize_symbol(name: str) -> str:
 
 
 def _tokenize_expr(expr: str) -> list[str]:
-    token_pattern = r"\s*(==|!=|<=|>=|&&|\|\||[()+\-*/%,<>!]|[A-Za-z_][A-Za-z0-9_\.]*|\d+\.\d+|\d+|true|false)"
+    token_pattern = r"\s*(<<|>>|==|!=|<=|>=|&&|\|\||[()\-+*/%,<>!&|^]|[A-Za-z_][A-Za-z0-9_\.]*|\d+\.\d+|\d+|true|false)"
     return [token for token in re.findall(token_pattern, expr) if token.strip()]
 
 
@@ -67,8 +67,29 @@ class _ExprParser:
         return node
 
     def _parse_and(self):
-        node = self._parse_equality()
+        node = self._parse_bitor()
         while self._peek() == "&&":
+            op = self._take()
+            node = ("bin", op, node, self._parse_bitor())
+        return node
+
+    def _parse_bitor(self):
+        node = self._parse_bitxor()
+        while self._peek() == "|":
+            op = self._take()
+            node = ("bin", op, node, self._parse_bitxor())
+        return node
+
+    def _parse_bitxor(self):
+        node = self._parse_bitand()
+        while self._peek() == "^":
+            op = self._take()
+            node = ("bin", op, node, self._parse_bitand())
+        return node
+
+    def _parse_bitand(self):
+        node = self._parse_equality()
+        while self._peek() == "&":
             op = self._take()
             node = ("bin", op, node, self._parse_equality())
         return node
@@ -81,8 +102,15 @@ class _ExprParser:
         return node
 
     def _parse_rel(self):
-        node = self._parse_add()
+        node = self._parse_shift()
         while self._peek() in {"<", "<=", ">", ">="}:
+            op = self._take()
+            node = ("bin", op, node, self._parse_shift())
+        return node
+
+    def _parse_shift(self):
+        node = self._parse_add()
+        while self._peek() in {"<<", ">>"}:
             op = self._take()
             node = ("bin", op, node, self._parse_add())
         return node
@@ -302,6 +330,16 @@ class _FunctionLowerer:
             op, lhs, rhs = node.op, self._lower_expr(node.left), self._lower_expr(node.right)
             if op in {"+", "-", "*", "/", "%"}:
                 return self._emit_numeric_binary(op, lhs, rhs)
+            if op in {"&", "|", "^", "<<", ">>"} and isinstance(lhs.type, ir.IntType) and lhs.type == rhs.type:
+                if op == "&":
+                    return self.builder.and_(lhs, rhs)
+                if op == "|":
+                    return self.builder.or_(lhs, rhs)
+                if op == "^":
+                    return self.builder.xor(lhs, rhs)
+                if op == "<<":
+                    return self.builder.shl(lhs, rhs)
+                return self.builder.ashr(lhs, rhs)
             if op in {"<", "<=", ">", ">=", "==", "!="}:
                 return self._emit_relational_compare(op, lhs, rhs)
             if op == "&&":
@@ -330,6 +368,16 @@ class _FunctionLowerer:
         op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
         if op in {"+", "-", "*", "/", "%"}:
             return self._emit_numeric_binary(op, lhs, rhs)
+        if op in {"&", "|", "^", "<<", ">>"} and isinstance(lhs.type, ir.IntType) and lhs.type == rhs.type:
+            if op == "&":
+                return self.builder.and_(lhs, rhs)
+            if op == "|":
+                return self.builder.or_(lhs, rhs)
+            if op == "^":
+                return self.builder.xor(lhs, rhs)
+            if op == "<<":
+                return self.builder.shl(lhs, rhs)
+            return self.builder.ashr(lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._emit_relational_compare(op, lhs, rhs)
         if op == "&&":

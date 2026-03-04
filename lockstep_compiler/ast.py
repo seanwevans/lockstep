@@ -232,10 +232,18 @@ class AstBuilder(_AstBuilderMixin):
         if class_name == "LogicalOrExprContext":
             return self._parse_left_associative(expr_ctx, "logicalAndExpr")
         if class_name == "LogicalAndExprContext":
+            return self._parse_left_associative(expr_ctx, "bitwiseOrExpr")
+        if class_name == "BitwiseOrExprContext":
+            return self._parse_left_associative(expr_ctx, "bitwiseXorExpr")
+        if class_name == "BitwiseXorExprContext":
+            return self._parse_left_associative(expr_ctx, "bitwiseAndExpr")
+        if class_name == "BitwiseAndExprContext":
             return self._parse_left_associative(expr_ctx, "equalityExpr")
         if class_name == "EqualityExprContext":
             return self._parse_left_associative(expr_ctx, "relExpr")
         if class_name == "RelExprContext":
+            return self._parse_left_associative(expr_ctx, "shiftExpr")
+        if class_name == "ShiftExprContext":
             return self._parse_left_associative(expr_ctx, "addExpr")
         if class_name == "AddExprContext":
             return self._parse_left_associative(expr_ctx, "mulExpr")

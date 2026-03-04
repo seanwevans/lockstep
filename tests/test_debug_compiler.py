@@ -2075,7 +2075,7 @@ def test_semantic_validator_assignment_defines_local(debug_compiler_module):
 def test_semantic_validator_reports_invalid_logical_operand_types(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    logical_and_ctx = _ctx(equalityExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")])
+    logical_and_ctx = _ctx(bitwiseOrExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")])
 
     resolved_type = validator._resolve_expr_type(logical_and_ctx)
 
@@ -2091,6 +2091,36 @@ def test_semantic_validator_reports_invalid_logical_operand_types(debug_compiler
         )
     ]
 
+
+
+
+def test_semantic_validator_reports_invalid_bitwise_operand_types(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    bitwise_or_ctx = _ctx(bitwiseXorExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="bool")])
+
+    resolved_type = validator._resolve_expr_type(bitwise_or_ctx)
+
+    assert resolved_type is None
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK420",
+            message="Operator '|' expects int operand type(s), but got [int, bool].",
+            line=0,
+            column=0,
+            hint="Adjust operand types so they match the operator semantics.",
+        )
+    ]
+
+
+def test_semantic_validator_accepts_bitwise_int_operands(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    bitwise_and_ctx = _ctx(equalityExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="int")])
+
+    assert validator._resolve_expr_type(bitwise_and_ctx) == "int"
+    assert validator.diagnostics == []
 
 def test_semantic_validator_reports_invalid_unary_operand_types(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()

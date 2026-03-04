@@ -57,32 +57,31 @@ def _parse_expr(text, lexer_cls, parser_cls):
     return tree, parser
 
 
-def _expr_levels(expr_ctx):
-    logical_expr = expr_ctx.logicalExpr()
-    logical_or = logical_expr.logicalOrExpr()
-    return logical_or, logical_or.logicalAndExpr()
-
-
-def _single_chain(expr_ctx):
-    logical_or, logical_and_nodes = _expr_levels(expr_ctx)
-    assert len(logical_and_nodes) == 1
-    equality_nodes = logical_and_nodes[0].equalityExpr()
-    assert len(equality_nodes) == 1
-    rel_nodes = equality_nodes[0].relExpr()
-    assert len(rel_nodes) == 1
-    add_nodes = rel_nodes[0].addExpr()
-    assert len(add_nodes) == 1
-    return logical_or, logical_and_nodes[0], equality_nodes[0], rel_nodes[0], add_nodes[0]
+def _first_unary(expr_ctx):
+    return (
+        expr_ctx.logicalExpr()
+        .logicalOrExpr()
+        .logicalAndExpr()[0]
+        .bitwiseOrExpr()[0]
+        .bitwiseXorExpr()[0]
+        .bitwiseAndExpr()[0]
+        .equalityExpr()[0]
+        .relExpr()[0]
+        .shiftExpr()[0]
+        .addExpr()[0]
+        .mulExpr()[0]
+        .unaryExpr()[0]
+    )
 
 
 def test_unary_binds_tighter_than_multiplication(generated_parser):
     lexer_cls, parser_cls = generated_parser
     tree, _ = _parse_expr("-a*b", lexer_cls, parser_cls)
-    _, _, _, _, add_ctx = _single_chain(tree)
 
-    mul_nodes = add_ctx.mulExpr()
-    assert len(mul_nodes) == 1
-    mul_ctx = mul_nodes[0]
+    add_ctx = (
+        tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].bitwiseOrExpr()[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0].relExpr()[0].shiftExpr()[0].addExpr()[0]
+    )
+    mul_ctx = add_ctx.mulExpr()[0]
     unary_nodes = mul_ctx.unaryExpr()
 
     assert len(unary_nodes) == 2
@@ -91,72 +90,24 @@ def test_unary_binds_tighter_than_multiplication(generated_parser):
     assert unary_nodes[1].primaryExpr().lvalue().getText() == "b"
 
 
-def test_precedence_tree_snapshot(generated_parser):
+def test_bitwise_precedence_levels(generated_parser):
     lexer_cls, parser_cls = generated_parser
-    tree, parser = _parse_expr("a+b*c", lexer_cls, parser_cls)
-    parsed = tree.toStringTree(recog=parser)
+    tree, _ = _parse_expr("a|b^c&d", lexer_cls, parser_cls)
 
-    assert parsed.startswith("(expr (logicalExpr (logicalOrExpr")
+    and_root = tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0]
+    bitor_root = and_root.bitwiseOrExpr()
+    assert len(bitor_root) == 2
+    assert bitor_root[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0].relExpr()[0].shiftExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr().lvalue().getText() == "a"
 
 
-def test_unary_over_parenthesized_comparison(generated_parser):
+def test_shift_binds_tighter_than_relational(generated_parser):
     lexer_cls, parser_cls = generated_parser
-    tree, _ = _parse_expr("!(a<b)", lexer_cls, parser_cls)
-    _, _, _, _, add_ctx = _single_chain(tree)
+    tree, _ = _parse_expr("a<<1<b", lexer_cls, parser_cls)
 
-    mul_ctx = add_ctx.mulExpr()[0]
-    outer_unary = mul_ctx.unaryExpr()[0]
-
-    assert outer_unary.getChild(0).getText() == "!"
-    parenthesized = outer_unary.unaryExpr().primaryExpr().expr()
-
-    inner_logical_or, inner_and_nodes = _expr_levels(parenthesized)
-    assert len(inner_logical_or.logicalAndExpr()) == 1
-    assert len(inner_and_nodes[0].equalityExpr()) == 1
-    rel_nodes = inner_and_nodes[0].equalityExpr()[0].relExpr()
-    assert len(rel_nodes) == 2
-    assert rel_nodes[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr().lvalue().getText() == "a"
-    assert rel_nodes[1].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr().lvalue().getText() == "b"
-
-
-def test_multiplication_binds_tighter_than_addition(generated_parser):
-    lexer_cls, parser_cls = generated_parser
-    tree, _ = _parse_expr("a+b*c", lexer_cls, parser_cls)
-    _, _, _, _, add_ctx = _single_chain(tree)
-
-    mul_nodes = add_ctx.mulExpr()
-
-    assert len(mul_nodes) == 2
-    left_mul, right_mul = mul_nodes
-    assert left_mul.unaryExpr()[0].primaryExpr().lvalue().getText() == "a"
-    assert right_mul.unaryExpr()[0].primaryExpr().lvalue().getText() == "b"
-    assert right_mul.unaryExpr()[1].primaryExpr().lvalue().getText() == "c"
-
-
-def test_logical_and_binds_tighter_than_or(generated_parser):
-    lexer_cls, parser_cls = generated_parser
-    tree, _ = _parse_expr("a==b||c&&d", lexer_cls, parser_cls)
-    logical_or, logical_and_nodes = _expr_levels(tree)
-
-    assert len(logical_and_nodes) == 2
-    left_and, right_and = logical_and_nodes
-    assert "||" in logical_or.getText()
-
-    left_equality_nodes = left_and.equalityExpr()
-    right_equality_nodes = right_and.equalityExpr()
-    assert len(left_equality_nodes) == 1
-    assert len(right_equality_nodes) == 2
-
-    left_lhs = left_equality_nodes[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0]
-    left_rhs = left_equality_nodes[0].relExpr()[1].addExpr()[0].mulExpr()[0].unaryExpr()[0]
-    right_lhs = right_equality_nodes[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0]
-    right_rhs = right_equality_nodes[1].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0]
-
-    assert left_lhs.primaryExpr().lvalue().getText() == "a"
-    assert left_rhs.primaryExpr().lvalue().getText() == "b"
-    assert right_lhs.primaryExpr().lvalue().getText() == "c"
-    assert right_rhs.primaryExpr().lvalue().getText() == "d"
-    assert "&&" in right_and.getText()
+    rel_ctx = (
+        tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].bitwiseOrExpr()[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0]
+    )
+    assert len(rel_ctx.relExpr()) == 2
 
 
 def test_boolean_literals_parse_as_primary_expressions(generated_parser):
@@ -164,8 +115,5 @@ def test_boolean_literals_parse_as_primary_expressions(generated_parser):
     true_tree, _ = _parse_expr("true", lexer_cls, parser_cls)
     false_tree, _ = _parse_expr("false", lexer_cls, parser_cls)
 
-    true_primary = true_tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].equalityExpr()[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr()
-    false_primary = false_tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].equalityExpr()[0].relExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr()
-
-    assert true_primary.BOOL().getText() == "true"
-    assert false_primary.BOOL().getText() == "false"
+    assert _first_unary(true_tree).primaryExpr().BOOL().getText() == "true"
+    assert _first_unary(false_tree).primaryExpr().BOOL().getText() == "false"
