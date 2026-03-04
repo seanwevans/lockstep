@@ -16,6 +16,7 @@ from .ast import (
     AstProgram,
     AstReturnStmt,
     AstStatement,
+    AstType,
     AstVarDeclStmt,
     ast_to_entities,
 )
@@ -32,6 +33,10 @@ _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
 
 def _sanitize_symbol(name: str) -> str:
     return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
+
+
+def _type_name(value: AstType | str) -> str:
+    return value.name if isinstance(value, AstType) else value
 
 
 def _tokenize_expr(expr: str) -> list[str]:
@@ -416,7 +421,7 @@ class _FunctionLowerer:
 
         if isinstance(statement, AstVarDeclStmt):
             key = _sanitize_symbol(statement.name)
-            declared_type = statement.declared_type or "float"
+            declared_type = _type_name(statement.declared_type) if statement.declared_type else "float"
             llvm_type = self._llvm_type(declared_type, self.known_structs)
             if key not in self.locals:
                 slot = self.builder.alloca(llvm_type, name=key)
