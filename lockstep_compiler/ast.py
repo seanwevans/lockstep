@@ -265,69 +265,90 @@ class AstBuilder(_AstBuilderMixin):
     def _parse_lvalue(self, lvalue_ctx: Any) -> tuple[str, ...]:
         return tuple(token.getText() for token in self._call(lvalue_ctx, "ID", []) or [])
 
-    def _parse_left_associative(self, ctx: Any, sub_expr_getter: str):
-        parts = self._call(ctx, sub_expr_getter, []) or []
+    def _parse_left_associative(self, ctx: Any, parts: list[Any]):
         if not parts:
             raise ValueError("malformed expression tree")
-        node = self._parse_expr(parts[0])
+        node = self.visit(parts[0])
         for index, part in enumerate(parts[1:], start=1):
             op = ctx.getChild(index * 2 - 1).getText()
-            node = AstExprBinary(op=op, left=node, right=self._parse_expr(part))
+            node = AstExprBinary(op=op, left=node, right=self.visit(part))
         return node
 
     def _parse_expr(self, expr_ctx: Any):
-        class_name = expr_ctx.__class__.__name__
+        return self.visit(expr_ctx)
 
-        if class_name == "ExprContext":
-            return self._parse_expr(self._call(expr_ctx, "logicalExpr"))
-        if class_name == "LogicalExprContext":
-            return self._parse_expr(self._call(expr_ctx, "logicalOrExpr"))
-        if class_name == "LogicalOrExprContext":
-            return self._parse_left_associative(expr_ctx, "logicalAndExpr")
-        if class_name == "LogicalAndExprContext":
-            return self._parse_left_associative(expr_ctx, "bitwiseOrExpr")
-        if class_name == "BitwiseOrExprContext":
-            return self._parse_left_associative(expr_ctx, "bitwiseXorExpr")
-        if class_name == "BitwiseXorExprContext":
-            return self._parse_left_associative(expr_ctx, "bitwiseAndExpr")
-        if class_name == "BitwiseAndExprContext":
-            return self._parse_left_associative(expr_ctx, "equalityExpr")
-        if class_name == "EqualityExprContext":
-            return self._parse_left_associative(expr_ctx, "relExpr")
-        if class_name == "RelExprContext":
-            return self._parse_left_associative(expr_ctx, "shiftExpr")
-        if class_name == "ShiftExprContext":
-            return self._parse_left_associative(expr_ctx, "addExpr")
-        if class_name == "AddExprContext":
-            return self._parse_left_associative(expr_ctx, "mulExpr")
-        if class_name == "MulExprContext":
-            return self._parse_left_associative(expr_ctx, "unaryExpr")
-        if class_name == "UnaryExprContext":
-            nested = self._call(expr_ctx, "unaryExpr")
-            if nested is not None:
-                return AstExprUnary(op=expr_ctx.getChild(0).getText(), operand=self._parse_expr(nested))
-            return self._parse_expr(self._call(expr_ctx, "primaryExpr"))
-        if class_name == "PrimaryExprContext":
-            inner = self._call(expr_ctx, "expr")
-            if inner is not None:
-                return self._parse_expr(inner)
-            expr_list = self._call(expr_ctx, "exprList")
-            id_token = self._call(expr_ctx, "ID")
-            if id_token is not None and expr_ctx.getChildCount() >= 3 and expr_ctx.getChild(1).getText() == "(":
-                args = ()
-                if expr_list is not None:
-                    args = tuple(self._parse_expr(child) for child in self._call(expr_list, "expr", []) or [])
-                return AstExprCall(name=id_token.getText(), args=args)
-            lvalue = self._call(expr_ctx, "lvalue")
-            if lvalue is not None:
-                return AstExprVar(path=self._parse_lvalue(lvalue))
-            if self._call(expr_ctx, "INT") is not None:
-                return AstExprLiteral(kind="int", value=self._call(expr_ctx, "INT").getText())
-            if self._call(expr_ctx, "FLOAT") is not None:
-                return AstExprLiteral(kind="float", value=self._call(expr_ctx, "FLOAT").getText())
-            if self._call(expr_ctx, "BOOL") is not None:
-                return AstExprLiteral(kind="bool", value=self._call(expr_ctx, "BOOL").getText())
-        raise ValueError(f"unsupported expression node: {class_name}")
+    def visitExpr(self, ctx: Any):
+        return self.visit(self._call(ctx, "logicalExpr"))
+
+    def visitLogicalExpr(self, ctx: Any):
+        return self.visit(self._call(ctx, "logicalOrExpr"))
+
+    def visitLogicalOrExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "logicalAndExpr", []) or [])
+
+    def visitLogicalAndExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseOrExpr", []) or [])
+
+    def visitBitwiseOrExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseXorExpr", []) or [])
+
+    def visitBitwiseXorExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseAndExpr", []) or [])
+
+    def visitBitwiseAndExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "equalityExpr", []) or [])
+
+    def visitEqualityExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "relExpr", []) or [])
+
+    def visitRelExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "shiftExpr", []) or [])
+
+    def visitShiftExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "addExpr", []) or [])
+
+    def visitAddExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "mulExpr", []) or [])
+
+    def visitMulExpr(self, ctx: Any):
+        return self._parse_left_associative(ctx, self._call(ctx, "unaryExpr", []) or [])
+
+    def visitUnaryExpr(self, ctx: Any):
+        nested = self._call(ctx, "unaryExpr")
+        if nested is not None:
+            return AstExprUnary(op=ctx.getChild(0).getText(), operand=self.visit(nested))
+        return self.visit(self._call(ctx, "primaryExpr"))
+
+    def visitPrimaryExpr(self, ctx: Any):
+        inner = self._call(ctx, "expr")
+        if inner is not None:
+            return self.visit(inner)
+
+        expr_list = self._call(ctx, "exprList")
+        id_token = self._call(ctx, "ID")
+        if id_token is not None and ctx.getChildCount() >= 3 and ctx.getChild(1).getText() == "(":
+            args = ()
+            if expr_list is not None:
+                args = tuple(self.visit(child) for child in self._call(expr_list, "expr", []) or [])
+            return AstExprCall(name=id_token.getText(), args=args)
+
+        lvalue = self._call(ctx, "lvalue")
+        if lvalue is not None:
+            return AstExprVar(path=self._parse_lvalue(lvalue))
+
+        int_token = self._call(ctx, "INT")
+        if int_token is not None:
+            return AstExprLiteral(kind="int", value=int_token.getText())
+
+        float_token = self._call(ctx, "FLOAT")
+        if float_token is not None:
+            return AstExprLiteral(kind="float", value=float_token.getText())
+
+        bool_token = self._call(ctx, "BOOL")
+        if bool_token is not None:
+            return AstExprLiteral(kind="bool", value=bool_token.getText())
+
+        raise ValueError(f"unsupported expression node: {ctx.__class__.__name__}")
 
     def _parse_statement_text(self, ctx: Any) -> tuple[AstStatement, ...]:
         statements = self._call(ctx, "statement", []) or []
