@@ -1561,7 +1561,7 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
     fold_target_errors = [diag for diag in validator.diagnostics if diag.code == "LCK404"]
     assert len(type_errors) == 7
     assert len(fold_target_errors) == 0
-    assert all(diag.message == "Unknown declared type 'flaot'." for diag in type_errors)
+    assert all(diag.message == "Unknown declared type 'flaot' in 'flaot'." for diag in type_errors)
     assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
 
 
