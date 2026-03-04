@@ -85,7 +85,11 @@ primaryExpr
 
 exprList: expr (',' expr)*;
 lvalue: ID ('.' ID)*;
-typeName: ID;
+typeName: ID typeSuffix*;
+typeSuffix
+    : '[' INT ']'
+    | '<' typeName (',' INT)? '>'
+    ;
 
 BOOL: 'true' | 'false';
 ID: [a-zA-Z_][a-zA-Z0-9_]*;

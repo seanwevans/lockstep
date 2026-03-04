@@ -448,27 +448,112 @@ def build_semantic_validator(base_visitor_cls):
         def _known_types(self) -> set[str]:
             return self._primitive_types | set(self.structs.keys())
 
+        def _consume_identifier(self, type_name: str, index: int) -> tuple[str | None, int]:
+            if index >= len(type_name) or not (type_name[index].isalpha() or type_name[index] == "_"):
+                return None, index
+
+            start = index
+            index += 1
+            while index < len(type_name) and (type_name[index].isalnum() or type_name[index] == "_"):
+                index += 1
+            return type_name[start:index], index
+
+        def _consume_digits(self, type_name: str, index: int) -> tuple[str | None, int]:
+            if index >= len(type_name) or not type_name[index].isdigit():
+                return None, index
+
+            start = index
+            index += 1
+            while index < len(type_name) and type_name[index].isdigit():
+                index += 1
+            return type_name[start:index], index
+
+        def _parse_type_name(self, type_name: str, index: int = 0) -> tuple[dict[str, Any] | None, int]:
+            base_name, index = self._consume_identifier(type_name, index)
+            if base_name is None:
+                return None, index
+
+            parsed_type: dict[str, Any] = {"base": base_name, "inner": []}
+            while index < len(type_name):
+                if type_name[index] == "[":
+                    index += 1
+                    length, index = self._consume_digits(type_name, index)
+                    if length is None or index >= len(type_name) or type_name[index] != "]":
+                        return None, index
+                    parsed_type["inner"].append({"kind": "array", "size": int(length)})
+                    index += 1
+                    continue
+
+                if type_name[index] == "<":
+                    index += 1
+                    inner_type, index = self._parse_type_name(type_name, index)
+                    if inner_type is None:
+                        return None, index
+
+                    arity = None
+                    if index < len(type_name) and type_name[index] == ",":
+                        index += 1
+                        digits, index = self._consume_digits(type_name, index)
+                        if digits is None:
+                            return None, index
+                        arity = int(digits)
+
+                    if index >= len(type_name) or type_name[index] != ">":
+                        return None, index
+                    parsed_type["inner"].append(
+                        {"kind": "generic", "type": inner_type, "arity": arity}
+                    )
+                    index += 1
+                    continue
+
+                break
+
+            return parsed_type, index
+
+        def _collect_referenced_type_names(self, parsed_type: dict[str, Any]) -> list[str]:
+            has_generic_suffix = any(suffix["kind"] == "generic" for suffix in parsed_type["inner"])
+            referenced_names = [] if has_generic_suffix else [parsed_type["base"]]
+            for suffix in parsed_type["inner"]:
+                if suffix["kind"] == "generic":
+                    referenced_names.extend(self._collect_referenced_type_names(suffix["type"]))
+            return referenced_names
+
         def _validate_declared_type(self, type_name: str, ctx, code: str) -> bool:
+            parsed_type, index = self._parse_type_name(type_name)
+            if parsed_type is None or index != len(type_name):
+                self._add_diagnostic(
+                    severity="error",
+                    code=code,
+                    message=f"Invalid declared type syntax '{type_name}'.",
+                    ctx=ctx,
+                    hint="Use forms like T, T[4], Ctor<T>, or Ctor<T,4>.",
+                )
+                return False
+
             known_types = self._known_types()
-            if type_name in known_types:
-                return True
+            referenced_types = self._collect_referenced_type_names(parsed_type)
+            all_known = True
+            for referenced_type in referenced_types:
+                if referenced_type in known_types:
+                    continue
 
-            suggestions = get_close_matches(type_name, sorted(known_types), n=2, cutoff=0.6)
-            hint = (
-                f"Unknown type '{type_name}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
-                "or declare a struct with this name before using it."
-            )
-            if suggestions:
-                hint = f"Did you mean {', '.join(suggestions)}? {hint}"
+                suggestions = get_close_matches(referenced_type, sorted(known_types), n=2, cutoff=0.6)
+                hint = (
+                    f"Unknown type '{referenced_type}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
+                    "or declare a struct with this name before using it."
+                )
+                if suggestions:
+                    hint = f"Did you mean {', '.join(suggestions)}? {hint}"
 
-            self._add_diagnostic(
-                severity="error",
-                code=code,
-                message=f"Unknown declared type '{type_name}'.",
-                ctx=ctx,
-                hint=hint,
-            )
-            return False
+                self._add_diagnostic(
+                    severity="error",
+                    code=code,
+                    message=f"Unknown declared type '{referenced_type}' in '{type_name}'.",
+                    ctx=ctx,
+                    hint=hint,
+                )
+                all_known = False
+            return all_known
 
         def _record_kernel_signature(self, ctx, target: dict[str, list[SemanticKernelParam]]):
             name = ctx.ID().getText()
