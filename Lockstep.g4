@@ -64,9 +64,13 @@ expr: logicalExpr;
 
 logicalExpr: logicalOrExpr;
 logicalOrExpr: logicalAndExpr ('||' logicalAndExpr)*;
-logicalAndExpr: equalityExpr ('&&' equalityExpr)*;
+logicalAndExpr: bitwiseOrExpr ('&&' bitwiseOrExpr)*;
+bitwiseOrExpr: bitwiseXorExpr ('|' bitwiseXorExpr)*;
+bitwiseXorExpr: bitwiseAndExpr ('^' bitwiseAndExpr)*;
+bitwiseAndExpr: equalityExpr ('&' equalityExpr)*;
 equalityExpr: relExpr (('==' | '!=') relExpr)*;
-relExpr: addExpr (('<' | '<=' | '>' | '>=') addExpr)*;
+relExpr: shiftExpr (('<' | '<=' | '>' | '>=') shiftExpr)*;
+shiftExpr: addExpr (('<<' | '>>') addExpr)*;
 addExpr: mulExpr (('+' | '-') mulExpr)*;
 mulExpr: unaryExpr (('*' | '/' | '%') unaryExpr)*;
 unaryExpr: ('-' | '!') unaryExpr | primaryExpr;

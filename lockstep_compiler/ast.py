@@ -5,6 +5,28 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class AstType:
+    name: str
+    kind: str = "named"
+
+    def __str__(self) -> str:
+        return self.name
+
+
+def _normalize_type(value: AstType | str) -> AstType:
+    if isinstance(value, AstType):
+        return value
+    kind = "primitive" if value in {"int", "float", "bool", "uint", "double"} else "named"
+    return AstType(name=value, kind=kind)
+
+
+def _type_name(value: AstType | str | None) -> str | None:
+    if value is None:
+        return None
+    return value.name if isinstance(value, AstType) else value
+
+
+@dataclass(frozen=True)
 class AstLocation:
     line: int = 0
     column: int = 0
@@ -45,9 +67,13 @@ AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCa
 
 @dataclass(frozen=True)
 class AstVarDeclStmt:
-    declared_type: str | None
+    declared_type: AstType | None
     name: str
     initializer: AstExpr | None
+
+    def __post_init__(self):
+        if self.declared_type is not None:
+            object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
@@ -67,14 +93,20 @@ AstStatement = AstVarDeclStmt | AstAssignStmt | AstReturnStmt
 @dataclass(frozen=True)
 class AstKernelParam:
     modifier: str
-    declared_type: str
+    declared_type: AstType
     name: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
 class AstStructField:
-    declared_type: str
+    declared_type: AstType
     name: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
@@ -87,10 +119,13 @@ class AstStructDecl:
 @dataclass(frozen=True)
 class AstPureDecl:
     name: str
-    return_type: str
+    return_type: AstType
     params: tuple[AstKernelParam, ...] = ()
     body: tuple[AstStatement, ...] = ()
     location: AstLocation = AstLocation()
+
+    def __post_init__(self):
+        object.__setattr__(self, "return_type", _normalize_type(self.return_type))
 
 
 @dataclass(frozen=True)
@@ -104,24 +139,33 @@ class AstKernelDecl:
 @dataclass(frozen=True)
 class AstStreamDecl:
     name: str
-    declared_type: str
+    declared_type: AstType
     capacity: str
     location: AstLocation = AstLocation()
+
+    def __post_init__(self):
+        object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
 class AstAccumulatorDecl:
     name: str
-    declared_type: str
+    declared_type: AstType
     location: AstLocation = AstLocation()
+
+    def __post_init__(self):
+        object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
 class AstUniformDecl:
     name: str
-    declared_type: str
+    declared_type: AstType
     initializer: str | None = None
     location: AstLocation = AstLocation()
+
+    def __post_init__(self):
+        object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
 
 
 @dataclass(frozen=True)
@@ -134,11 +178,14 @@ class AstKernelBindRoute:
 
 @dataclass(frozen=True)
 class AstFoldBindRoute:
-    uniform_type: str
+    uniform_type: AstType
     uniform_name: str
     operator: str
     source: str
     route: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "uniform_type", _normalize_type(self.uniform_type))
 
 
 AstBindRoute = AstKernelBindRoute | AstFoldBindRoute
@@ -196,6 +243,12 @@ class AstBuilder(_AstBuilderMixin):
         self._active_accumulators: list[AstAccumulatorDecl] = []
         self._active_uniforms: list[AstUniformDecl] = []
         self._active_bind_routes: list[AstBindRoute] = []
+        self._types: dict[str, AstType] = {}
+
+    def _resolve_type(self, type_name: str) -> AstType:
+        if type_name not in self._types:
+            self._types[type_name] = _normalize_type(type_name)
+        return self._types[type_name]
 
     def _parse_params(self, param_list_ctx: Any) -> tuple[AstKernelParam, ...]:
         if param_list_ctx is None:
@@ -204,7 +257,7 @@ class AstBuilder(_AstBuilderMixin):
         params: list[AstKernelParam] = []
         for param in params_ctx:
             modifier = param.getChild(0).getText()
-            declared_type = self._call(param, "typeName").getText()
+            declared_type = self._resolve_type(self._call(param, "typeName").getText())
             name = self._call(param, "ID").getText()
             params.append(AstKernelParam(modifier=modifier, declared_type=declared_type, name=name))
         return tuple(params)
@@ -298,7 +351,7 @@ class AstBuilder(_AstBuilderMixin):
                 initializer_ctx = self._call(var_decl, "expr")
                 parsed.append(
                     AstVarDeclStmt(
-                        declared_type=declared_type.getText() if declared_type else None,
+                        declared_type=self._resolve_type(declared_type.getText()) if declared_type else None,
                         name=self._call(var_decl, "ID").getText(),
                         initializer=self._parse_expr(initializer_ctx) if initializer_ctx else None,
                     )
@@ -326,7 +379,7 @@ class AstBuilder(_AstBuilderMixin):
     def visitStructDecl(self, ctx: Any):
         members = self._call(ctx, "structMember", []) or []
         fields = tuple(
-            AstStructField(declared_type=self._call(member, "typeName").getText(), name=self._call(member, "ID").getText())
+            AstStructField(declared_type=self._resolve_type(self._call(member, "typeName").getText()), name=self._call(member, "ID").getText())
             for member in members
         )
         self._structs.append(
@@ -339,11 +392,11 @@ class AstBuilder(_AstBuilderMixin):
         pure_param_list = self._call(ctx, "pureParamList")
         if pure_param_list:
             for declared_type, name in zip(self._call(pure_param_list, "typeName", []), self._call(pure_param_list, "ID", [])):
-                params.append(AstKernelParam(modifier="in", declared_type=declared_type.getText(), name=name.getText()))
+                params.append(AstKernelParam(modifier="in", declared_type=self._resolve_type(declared_type.getText()), name=name.getText()))
         self._pure_functions.append(
             AstPureDecl(
                 name=self._call(ctx, "ID").getText(),
-                return_type=self._call(ctx, "typeName").getText(),
+                return_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 params=tuple(params),
                 body=self._parse_statement_text(ctx),
                 location=self._location(ctx),
@@ -397,7 +450,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_streams.append(
             AstStreamDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._call(ctx, "typeName").getText(),
+                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 capacity=self._call(ctx, "INT").getText(),
                 location=self._location(ctx),
             )
@@ -408,7 +461,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_accumulators.append(
             AstAccumulatorDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._call(ctx, "typeName").getText(),
+                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 location=self._location(ctx),
             )
         )
@@ -419,7 +472,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_uniforms.append(
             AstUniformDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._call(ctx, "typeName").getText(),
+                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 initializer=expr_ctx.getText() if expr_ctx else None,
                 location=self._location(ctx),
             )
@@ -434,7 +487,7 @@ class AstBuilder(_AstBuilderMixin):
             if fold_operator is not None and len(id_tokens) >= 2:
                 self._active_bind_routes.append(
                     AstFoldBindRoute(
-                        uniform_type=self._call(bind_stmt, "typeName").getText() if self._call(bind_stmt, "typeName") else "",
+                        uniform_type=self._resolve_type(self._call(bind_stmt, "typeName").getText()) if self._call(bind_stmt, "typeName") else self._resolve_type("float"),
                         uniform_name=id_tokens[0].getText(),
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
@@ -490,7 +543,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
 
     def _statement_to_text(statement: AstStatement) -> str:
         if isinstance(statement, AstVarDeclStmt):
-            prefix = f"{statement.declared_type} " if statement.declared_type else ""
+            prefix = f"{_type_name(statement.declared_type)} " if statement.declared_type else ""
             if statement.initializer is None:
                 return f"{prefix}{statement.name};"
             return f"{prefix}{statement.name} = {_expr_to_text(statement.initializer)};"
@@ -505,17 +558,17 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
     bind_routes_ir = []
     for pipeline in program.pipelines:
         streams.extend(
-            {"name": stream.name, "type": stream.declared_type, "capacity": stream.capacity}
+            {"name": stream.name, "type": _type_name(stream.declared_type), "capacity": stream.capacity}
             for stream in pipeline.streams
         )
         accumulators.extend(
-            {"name": accum.name, "type": accum.declared_type}
+            {"name": accum.name, "type": _type_name(accum.declared_type)}
             for accum in pipeline.accumulators
         )
         uniforms.extend(
             {
                 "name": uniform.name,
-                "type": uniform.declared_type,
+                "type": _type_name(uniform.declared_type),
                 "initializer": uniform.initializer,
             }
             for uniform in pipeline.uniforms
@@ -536,7 +589,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 bind_routes_ir.append(
                     {
                         "kind": "fold",
-                        "uniform_type": route.uniform_type,
+                        "uniform_type": _type_name(route.uniform_type),
                         "uniform_name": route.uniform_name,
                         "operator": route.operator,
                         "source": route.source,
@@ -549,7 +602,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": decl.name,
                 "fields": [
-                    {"type": field.declared_type, "name": field.name}
+                    {"type": _type_name(field.declared_type), "name": field.name}
                     for field in decl.fields
                 ],
             }
@@ -559,7 +612,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": shader.name,
                 "params": [
-                    {"modifier": param.modifier, "type": param.declared_type, "name": param.name}
+                    {"modifier": param.modifier, "type": _type_name(param.declared_type), "name": param.name}
                     for param in shader.params
                 ],
                 "body": [_statement_to_text(statement) for statement in shader.body],
@@ -571,7 +624,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": flt.name,
                 "params": [
-                    {"modifier": param.modifier, "type": param.declared_type, "name": param.name}
+                    {"modifier": param.modifier, "type": _type_name(param.declared_type), "name": param.name}
                     for param in flt.params
                 ],
                 "body": [_statement_to_text(statement) for statement in flt.body],
@@ -582,9 +635,9 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         "pure_functions": [
             {
                 "name": pure.name,
-                "return_type": pure.return_type,
+                "return_type": _type_name(pure.return_type),
                 "params": [
-                    {"type": param.declared_type, "name": param.name}
+                    {"type": _type_name(param.declared_type), "name": param.name}
                     for param in pure.params
                 ],
                 "body": [_statement_to_text(statement) for statement in pure.body],
