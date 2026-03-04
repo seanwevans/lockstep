@@ -251,6 +251,33 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#bitwiseOrExpr.
+    def enterBitwiseOrExpr(self, ctx:LockstepParser.BitwiseOrExprContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#bitwiseOrExpr.
+    def exitBitwiseOrExpr(self, ctx:LockstepParser.BitwiseOrExprContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#bitwiseXorExpr.
+    def enterBitwiseXorExpr(self, ctx:LockstepParser.BitwiseXorExprContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#bitwiseXorExpr.
+    def exitBitwiseXorExpr(self, ctx:LockstepParser.BitwiseXorExprContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#bitwiseAndExpr.
+    def enterBitwiseAndExpr(self, ctx:LockstepParser.BitwiseAndExprContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#bitwiseAndExpr.
+    def exitBitwiseAndExpr(self, ctx:LockstepParser.BitwiseAndExprContext):
+        pass
+
+
     # Enter a parse tree produced by LockstepParser#equalityExpr.
     def enterEqualityExpr(self, ctx:LockstepParser.EqualityExprContext):
         pass
@@ -266,6 +293,15 @@ class LockstepListener(ParseTreeListener):
 
     # Exit a parse tree produced by LockstepParser#relExpr.
     def exitRelExpr(self, ctx:LockstepParser.RelExprContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#shiftExpr.
+    def enterShiftExpr(self, ctx:LockstepParser.ShiftExprContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#shiftExpr.
+    def exitShiftExpr(self, ctx:LockstepParser.ShiftExprContext):
         pass
 
 
