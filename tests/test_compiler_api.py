@@ -376,3 +376,13 @@ def test_compile_lockstep_builds_structured_statement_ast():
     assert body[0].value.op == "+"
     assert isinstance(body[0].value.left, AstExprVar)
     assert isinstance(body[0].value.right, AstExprBinary)
+
+
+def test_ast_dataclasses_normalize_declared_types_to_ast_type():
+    from lockstep_compiler.ast import AstKernelParam, AstType
+
+    param = AstKernelParam(modifier="in", declared_type="float", name="value")
+
+    assert isinstance(param.declared_type, AstType)
+    assert param.declared_type.name == "float"
+    assert param.declared_type.kind == "primitive"
