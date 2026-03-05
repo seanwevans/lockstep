@@ -46,3 +46,40 @@ def test_provide_bind_completion_items_includes_routes_and_kernels():
 
     assert "dst=Integrate(src,dst,0.1);" in items
     assert "Integrate(...)" in items
+
+
+def test_build_struct_member_index_ignores_braces_in_comments_and_strings():
+    source = '''
+struct Payload {
+    float x; // this should not close the struct }
+    float y;
+    float z;
+};
+
+shader Use(in Payload p, out Payload out_p) {
+    // string-like text with braces: "{" "}"
+    out_p.z = p.z;
+}
+'''
+
+    index = build_struct_member_index(source)
+
+    assert set(index["Payload"]) == {"x", "y", "z"}
+    assert index["Payload"]["z"].line == 4
+
+
+def test_build_struct_member_index_handles_incomplete_struct_block_with_fallback_scanner():
+    source = """
+struct Good {
+    float ok;
+};
+
+struct Broken {
+    float missing;
+"""
+
+    index = build_struct_member_index(source)
+
+    assert "Good" in index
+    assert index["Good"]["ok"].line == 2
+    assert "Broken" not in index

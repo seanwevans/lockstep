@@ -16,8 +16,6 @@ class MemberDefinition:
     column: int
 
 
-_STRUCT_RE = re.compile(r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", re.MULTILINE)
-_FIELD_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 _TYPED_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 _PARAM_RE = re.compile(
     r"\b(?:in|out|accum|uniform)\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -46,7 +44,9 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             }
             for diagnostic in result.diagnostics
         ]
-        return result.entities, diagnostics
+        entities = dict(result.entities)
+        entities["__ast__"] = result.ast
+        return entities, diagnostics
     except LockstepCompileError as error:
         diagnostics = [
             {
@@ -62,29 +62,153 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         return {}, diagnostics
 
 
+def _offset_to_line_column(source: str, offset: int) -> tuple[int, int]:
+    line = source.count("\n", 0, offset)
+    line_start = source.rfind("\n", 0, offset)
+    column = offset if line_start == -1 else offset - line_start - 1
+    return line, column
+
+
+def _iter_code_tokens(source: str, start: int = 0, end: int | None = None):
+    limit = len(source) if end is None else min(end, len(source))
+    index = max(start, 0)
+    while index < limit:
+        char = source[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "/" and index + 1 < limit:
+            nxt = source[index + 1]
+            if nxt == "/":
+                index += 2
+                while index < limit and source[index] != "\n":
+                    index += 1
+                continue
+            if nxt == "*":
+                index += 2
+                while index + 1 < limit and not (
+                    source[index] == "*" and source[index + 1] == "/"
+                ):
+                    index += 1
+                index = min(index + 2, limit)
+                continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            while index < limit:
+                if source[index] == "\\":
+                    index += 2
+                    continue
+                if source[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char.isalpha() or char == "_":
+            token_start = index
+            index += 1
+            while index < limit and (source[index].isalnum() or source[index] == "_"):
+                index += 1
+            yield "ident", source[token_start:index], token_start
+            continue
+        yield "symbol", char, index
+        index += 1
+
+
+def _find_matching_brace(source: str, opening_brace_offset: int) -> int | None:
+    depth = 1
+    for token_kind, token_value, token_offset in _iter_code_tokens(
+        source, start=opening_brace_offset + 1
+    ):
+        if token_kind != "symbol":
+            continue
+        if token_value == "{":
+            depth += 1
+        elif token_value == "}":
+            depth -= 1
+            if depth == 0:
+                return token_offset
+    return None
+
+
+def _scan_struct_blocks(source: str) -> list[tuple[str, int, int]]:
+    blocks: list[tuple[str, int, int]] = []
+    tokens = list(_iter_code_tokens(source))
+    index = 0
+    while index + 2 < len(tokens):
+        kind, value, _ = tokens[index]
+        if kind == "ident" and value == "struct":
+            next_kind, struct_name, _ = tokens[index + 1]
+            brace_kind, brace_value, brace_offset = tokens[index + 2]
+            if next_kind == "ident" and brace_kind == "symbol" and brace_value == "{":
+                body_end = _find_matching_brace(source, brace_offset)
+                if body_end is not None:
+                    blocks.append((struct_name, brace_offset + 1, body_end))
+                index += 3
+                continue
+        index += 1
+    return blocks
+
+
+def _scan_struct_fields(
+    source: str,
+    body_start: int,
+    body_end: int,
+    allowed_fields: set[str] | None,
+) -> list[tuple[str, int]]:
+    fields: list[tuple[str, int]] = []
+    body_tokens = list(_iter_code_tokens(source, start=body_start, end=body_end))
+    index = 0
+    while index + 2 < len(body_tokens):
+        type_kind, _, _ = body_tokens[index]
+        field_kind, field_name, field_offset = body_tokens[index + 1]
+        semi_kind, semi_value, _ = body_tokens[index + 2]
+        if (
+            type_kind == "ident"
+            and field_kind == "ident"
+            and semi_kind == "symbol"
+            and semi_value == ";"
+        ):
+            if allowed_fields is None or field_name in allowed_fields:
+                fields.append((field_name, field_offset))
+            index += 3
+            continue
+        index += 1
+    return fields
+
+
 def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
     """Index struct field declarations with source locations (0-based)."""
 
+    entities, _ = compile_for_lsp(source)
+    ast_program = entities.get("__ast__")
+
+    expected_fields: dict[str, set[str]] = {}
+    if ast_program is not None:
+        for struct_decl in ast_program.structs:
+            expected_fields[struct_decl.name] = {field.name for field in struct_decl.fields}
+    else:
+        for struct_decl in entities.get("structs", []):
+            if isinstance(struct_decl, dict) and struct_decl.get("name"):
+                expected_fields[struct_decl["name"]] = {
+                    field.get("name")
+                    for field in struct_decl.get("fields", [])
+                    if isinstance(field, dict) and field.get("name")
+                }
+
     index: dict[str, dict[str, MemberDefinition]] = {}
-
-    for struct_match in _STRUCT_RE.finditer(source):
-        struct_name = struct_match.group(1)
-        body_start = struct_match.end()
-        body_end = source.find("}", body_start)
-        if body_end == -1:
+    for struct_name, body_start, body_end in _scan_struct_blocks(source):
+        if expected_fields and struct_name not in expected_fields:
             continue
-        body = source[body_start:body_end]
-        index[struct_name] = {}
-
-        for field_match in _FIELD_RE.finditer(body):
-            field_name = field_match.group(2)
-            absolute_offset = body_start + field_match.start(2)
-            line = source.count("\n", 0, absolute_offset)
-            line_start = source.rfind("\n", 0, absolute_offset)
-            if line_start == -1:
-                column = absolute_offset
-            else:
-                column = absolute_offset - line_start - 1
+        allowed_fields = expected_fields.get(struct_name) if expected_fields else None
+        if allowed_fields == set():
+            allowed_fields = None
+        struct_fields = _scan_struct_fields(source, body_start, body_end, allowed_fields)
+        if not struct_fields:
+            continue
+        index.setdefault(struct_name, {})
+        for field_name, absolute_offset in struct_fields:
+            line, column = _offset_to_line_column(source, absolute_offset)
             index[struct_name][field_name] = MemberDefinition(
                 struct_name=struct_name,
                 field_name=field_name,
