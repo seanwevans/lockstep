@@ -624,6 +624,7 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     arena_ptr.name = "arena"
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
+    simd_width = 8
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
@@ -637,6 +638,78 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             name=f"arena_slot_{field_index}",
         )
         return tick_builder.load(slot_ptr, name=f"arena_val_{field_index}")
+
+    def _store_arena_slot(field_index: int, value: ir.Value):
+        slot_ptr = tick_builder.gep(
+            arena_ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
+            name=f"arena_slot_{field_index}",
+        )
+        tick_builder.store(value, slot_ptr)
+
+    def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
+        vec_ty = ir.VectorType(value.type, width)
+        seed = tick_builder.insert_element(ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0))
+        mask_ty = ir.VectorType(ir.IntType(32), width)
+        mask = ir.Constant(mask_ty, [0] * width)
+        return tick_builder.shuffle_vector(seed, ir.Constant(vec_ty, ir.Undefined), mask, name="fold_splat")
+
+    def _get_vector_reduce_intrinsic(name: str, ret_ty: ir.Type, arg_tys: list[ir.Type]) -> ir.Function:
+        fn_ty = ir.FunctionType(ret_ty, arg_tys)
+        intrinsic = module.globals.get(name)
+        if intrinsic is None:
+            intrinsic = ir.Function(module, fn_ty, name=name)
+        return intrinsic
+
+    def _reduce_fold(operator: str, accum_value: ir.Value, uniform_type: ir.Type) -> ir.Value:
+        if accum_value.type != uniform_type:
+            return _zero_value(uniform_type)
+
+        vector_value = _build_vector_splat(accum_value, simd_width)
+        vector_ty = vector_value.type
+
+        if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
+            if operator in {"sum", "avg"}:
+                intrinsic_name = f"llvm.vector.reduce.fadd.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [uniform_type, vector_ty])
+                reduced = tick_builder.call(intrinsic, [ir.Constant(uniform_type, 0.0), vector_value], name="fold_reduce")
+                reduced.fastmath.add("fast")
+                if operator == "avg":
+                    divisor = ir.Constant(uniform_type, float(simd_width))
+                    reduced = tick_builder.fdiv(reduced, divisor, name="fold_avg")
+                return reduced
+            if operator == "min":
+                intrinsic_name = f"llvm.vector.reduce.fmin.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+                reduced.fastmath.add("fast")
+                return reduced
+            if operator == "max":
+                intrinsic_name = f"llvm.vector.reduce.fmax.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+                reduced.fastmath.add("fast")
+                return reduced
+
+        if isinstance(uniform_type, ir.IntType):
+            if operator in {"sum", "avg"}:
+                intrinsic_name = f"llvm.vector.reduce.add.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+                if operator == "avg":
+                    divisor = ir.Constant(uniform_type, simd_width)
+                    reduced = tick_builder.sdiv(reduced, divisor, name="fold_avg")
+                return reduced
+            if operator == "min":
+                intrinsic_name = f"llvm.vector.reduce.smin.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+                return tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+            if operator == "max":
+                intrinsic_name = f"llvm.vector.reduce.smax.v{simd_width}{uniform_type.intrinsic_name}"
+                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+                return tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+
+        return _zero_value(uniform_type)
 
     def _lower_kernel_route(route: dict[str, Any]):
         kernel_name = str(route.get("kernel", ""))
@@ -703,6 +776,20 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         for route in bind_routes_ir:
             if route.get("kind") == "kernel":
                 _lower_kernel_route(route)
+                continue
+            if route.get("kind") == "fold":
+                source_name = str(route.get("source", ""))
+                uniform_name = str(route.get("uniform_name", ""))
+                operator = str(route.get("operator", ""))
+                source_slot = accum_slots.get(source_name)
+                uniform_slot = uniform_slots.get(uniform_name)
+                if source_slot is None or uniform_slot is None:
+                    continue
+                uniform_type_name = str(route.get("uniform_type", "float"))
+                uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+                accum_value = _load_arena_slot(source_slot, uniform_type)
+                reduced = _reduce_fold(operator, accum_value, uniform_type)
+                _store_arena_slot(uniform_slot, reduced)
                 continue
             asm_ty = ir.FunctionType(ir.VoidType(), [])
             escaped = str(route.get("route", route)).replace("\\", "\\\\").replace('"', '\\"')
