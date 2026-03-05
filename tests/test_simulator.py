@@ -8,7 +8,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lockstep_compiler.cli import run_cli
-from lockstep_compiler.simulator import simulate_pipeline_entities
+from lockstep_compiler.simulator import parse_simulation_inputs, simulate_pipeline_entities
 
 
 def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():
@@ -151,3 +151,59 @@ def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
         {"_source": 1, "_kernel": "Project"},
         {"_source": 4, "_kernel": "Project"},
     ]
+
+
+
+def test_parse_simulation_inputs_rejects_non_object_root():
+    try:
+        parse_simulation_inputs('[1, 2, 3]')
+    except ValueError as err:
+        assert "<root>" in str(err)
+    else:
+        raise AssertionError("Expected ValueError for non-object root")
+
+
+def test_parse_simulation_inputs_rejects_invalid_field_types():
+    try:
+        parse_simulation_inputs('{"streams": [], "accumulators": {}}')
+    except ValueError as err:
+        assert "streams" in str(err)
+    else:
+        raise AssertionError("Expected ValueError for non-object streams field")
+
+
+def test_parse_simulation_inputs_rejects_non_list_values():
+    try:
+        parse_simulation_inputs('{"streams": {"s": 42}, "accumulators": {}}')
+    except ValueError as err:
+        assert "streams.s" in str(err)
+    else:
+        raise AssertionError("Expected ValueError for non-list stream value")
+
+
+def test_run_cli_simulate_reports_invalid_simulation_shape(tmp_path):
+    input_file = tmp_path / "sim-input.json"
+    input_file.write_text('{"streams": {"s": 1}}', encoding="utf-8")
+
+    def fake_compiler(_source):
+        return {
+            "streams": [{"name": "s", "type": "int", "capacity": "4"}],
+            "accumulators": [],
+            "uniforms": [],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": [],
+        }
+
+    stderr = io.StringIO()
+    exit_code = run_cli(
+        ["--simulate", "--simulate-input", str(input_file)],
+        stdin=io.StringIO("pipeline P { }"),
+        stdout=io.StringIO(),
+        stderr=stderr,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 1
+    assert "Invalid simulation input:" in stderr.getvalue()
+    assert "streams.s" in stderr.getvalue()
