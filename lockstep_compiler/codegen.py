@@ -175,13 +175,59 @@ class _FunctionLowerer:
         function_map: dict[str, ir.Function],
         known_structs: dict[str, ir.IdentifiedStructType] | None = None,
         struct_fields: dict[str, list[dict[str, str]]] | None = None,
+        intrinsic_names: set[str] | None = None,
     ):
         self.module = module
         self.function_map = function_map
         self.known_structs = known_structs or {}
         self.struct_fields = struct_fields or {}
+        self.intrinsic_names = intrinsic_names or set()
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
+
+    def _declare_llvm_intrinsic(self, intrinsic_name: str, arg_type: ir.Type) -> ir.Function:
+        llvm_name = f"llvm.{intrinsic_name}.f32"
+        intrinsic = self.module.globals.get(llvm_name)
+        if intrinsic is not None:
+            return intrinsic
+        fn_type = ir.FunctionType(arg_type, [arg_type, arg_type])
+        return ir.Function(self.module, fn_type, name=llvm_name)
+
+    def _lower_intrinsic_call(self, name: str, args: list[ir.Value]) -> ir.Value | None:
+        if name == "step" and len(args) == 2:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            edge, x_val = args
+            cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
+            return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
+
+        if name == "mix" and len(args) == 3:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            a, b, t = args
+            one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
+            return self.builder.fadd(
+                self.builder.fmul(a, one_minus_t),
+                self.builder.fmul(b, t),
+                name="mix",
+            )
+
+        if name == "max" and len(args) == 2:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
+            return self.builder.call(maxnum, args, name="max")
+
+        if name == "clamp" and len(args) == 3:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            x_val, min_value, max_value = args
+            maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
+            minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
+            clamped_min = self.builder.call(maxnum, [x_val, min_value], name="clamp_min")
+            return self.builder.call(minnum, [clamped_min, max_value], name="clamp")
+
+        return None
 
     def _struct_name_for_type(self, llvm_type: ir.Type) -> str | None:
         for name, known_ty in self.known_structs.items():
@@ -296,19 +342,10 @@ class _FunctionLowerer:
         return parser.parse()
 
     def _lower_call(self, name: str, args: list[ir.Value]) -> ir.Value:
-        if name == "mix" and len(args) == 3:
-            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
-            a, b, t = args
-            one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
-            return self.builder.fadd(self.builder.fmul(a, one_minus_t), self.builder.fmul(b, t), name="mix")
-        if name == "step" and len(args) == 2:
-            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
-            edge = args[0]
-            x_val = args[1]
-            cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
-            return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
+        if name in self.intrinsic_names:
+            lowered_intrinsic = self._lower_intrinsic_call(name, args)
+            if lowered_intrinsic is not None:
+                return lowered_intrinsic
         callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
         if callee is not None:
             coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
@@ -527,7 +564,13 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         known_structs[struct_name] = struct_ty
         struct_fields[struct_name] = struct_decl["fields"]
 
-    lowerer = _FunctionLowerer(module, {}, known_structs, struct_fields)
+    intrinsic_names = {
+        pure.get("name")
+        for pure in pure_functions
+        if isinstance(pure, dict) and pure.get("intrinsic") and pure.get("name")
+    }
+
+    lowerer = _FunctionLowerer(module, {}, known_structs, struct_fields, intrinsic_names)
 
     unresolved = set(known_structs.keys())
     while unresolved:
@@ -580,6 +623,8 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     for pure in pure_functions:
         fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
+        if pure.get("intrinsic"):
+            continue
         lowerer.lower_function(fn, pure.get("body_ast", pure.get("body", [])), fn.function_type.return_type)
 
     for shader in shaders:

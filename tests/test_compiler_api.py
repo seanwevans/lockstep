@@ -78,7 +78,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["structs"] == []
     assert result.entities["shaders"] == []
     assert result.entities["filters"] == []
-    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp"}
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp", "max"}
     assert result.entities["streams"] == []
     assert result.entities["accumulators"] == []
     assert result.entities["uniforms"] == []
@@ -106,7 +106,13 @@ def test_emit_llvm_ir_generates_expected_declarations():
             ],
             "shaders": [{"name": "ApplyGravity"}],
             "filters": [{"name": "Cull"}],
-            "pure_functions": [{"name": "mix", "return_type": "float", "params": [], "body": ["returnmix(0.0,1.0,step(0.5,1.0));"]}],
+            "pure_functions": [
+                {"name": "step", "return_type": "float", "params": [{"name": "edge", "type": "float"}, {"name": "x", "type": "float"}], "intrinsic": True},
+                {"name": "mix", "return_type": "float", "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}, {"name": "t", "type": "float"}], "intrinsic": True},
+                {"name": "clamp", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "min_value", "type": "float"}, {"name": "max_value", "type": "float"}], "intrinsic": True},
+                {"name": "max", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "y", "type": "float"}], "intrinsic": True},
+                {"name": "demo", "return_type": "float", "params": [], "body": ["return clamp(max(mix(0.0, 1.0, step(0.5, 1.0)), 0.25), 0.0, 1.0);"]},
+            ],
             "streams": [{"name": "raw_positions", "type": "Vec3"}],
             "accumulators": [{"name": "energy", "type": "float"}],
             "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
@@ -115,12 +121,15 @@ def test_emit_llvm_ir_generates_expected_declarations():
     )
 
     assert "%\"struct.Vec3\" = type {float, float, float}" in llvm_ir
-    assert "define float @\"pure_mix\"()" in llvm_ir
+    assert "define float @\"pure_demo\"()" in llvm_ir
     assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
     assert "define void @\"filter_Cull\"()" in llvm_ir
     assert 'define void @"Lockstep_Tick"(<{%"struct.Vec3", float, float}>* %"arena")' in llvm_ir
     assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
-    assert "fmul float" in llvm_ir
+    assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
+    assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
+    assert 'call float @"llvm.maxnum.f32"' in llvm_ir
+    assert 'call float @"llvm.minnum.f32"' in llvm_ir
     assert "uitofp i1" in llvm_ir
 
 
