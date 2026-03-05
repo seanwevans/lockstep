@@ -4,6 +4,7 @@ from typing import Any
 from antlr4 import CommonTokenStream, InputStream
 
 from .ast import ast_to_entities, build_program_ast
+from .c_header import emit_c_header
 from .codegen import emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, normalize_diagnostics
@@ -112,6 +113,7 @@ def _compile_lockstep_with_dependencies(
         entities=entities,
         ast=typed_ast,
         llvm_ir=emit_llvm_ir(typed_ast or entities),
+        c_header=emit_c_header(typed_ast or entities),
         diagnostics=all_diagnostics,
     )
 

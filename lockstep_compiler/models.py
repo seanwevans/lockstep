@@ -18,6 +18,7 @@ class LockstepCompileResult:
     entities: dict[str, Any]
     ast: Any | None = None
     llvm_ir: str = ""
+    c_header: str = ""
     diagnostics: list[LockstepDiagnostic] = field(default_factory=list)
 
 

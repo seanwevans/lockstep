@@ -197,6 +197,9 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         except json.JSONDecodeError as err:
             print(f"Unable to parse simulation input JSON: {err}", file=stderr)
             return 1
+        except ValueError as err:
+            print(f"Invalid simulation input: {err}", file=stderr)
+            return 1
 
         entities = getattr(result, "entities", result)
         simulation = simulate_pipeline_entities(

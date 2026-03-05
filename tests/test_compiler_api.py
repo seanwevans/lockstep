@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
+from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import emit_llvm_ir
 import pytest
 
@@ -78,7 +79,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["structs"] == []
     assert result.entities["shaders"] == []
     assert result.entities["filters"] == []
-    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp"}
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp", "max"}
     assert result.entities["streams"] == []
     assert result.entities["accumulators"] == []
     assert result.entities["uniforms"] == []
@@ -107,7 +108,13 @@ def test_emit_llvm_ir_generates_expected_declarations():
             ],
             "shaders": [{"name": "ApplyGravity"}],
             "filters": [{"name": "Cull"}],
-            "pure_functions": [{"name": "mix", "return_type": "float", "params": [], "body": ["returnmix(0.0,1.0,step(0.5,1.0));"]}],
+            "pure_functions": [
+                {"name": "step", "return_type": "float", "params": [{"name": "edge", "type": "float"}, {"name": "x", "type": "float"}], "intrinsic": True},
+                {"name": "mix", "return_type": "float", "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}, {"name": "t", "type": "float"}], "intrinsic": True},
+                {"name": "clamp", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "min_value", "type": "float"}, {"name": "max_value", "type": "float"}], "intrinsic": True},
+                {"name": "max", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "y", "type": "float"}], "intrinsic": True},
+                {"name": "demo", "return_type": "float", "params": [], "body": ["return clamp(max(mix(0.0, 1.0, step(0.5, 1.0)), 0.25), 0.0, 1.0);"]},
+            ],
             "streams": [{"name": "raw_positions", "type": "Vec3"}],
             "accumulators": [{"name": "energy", "type": "float"}],
             "uniforms": [{"name": "dt", "type": "float", "initializer": "0.016"}],
@@ -116,13 +123,16 @@ def test_emit_llvm_ir_generates_expected_declarations():
     )
 
     assert "%\"struct.Vec3\" = type {float, float, float}" in llvm_ir
-    assert "define float @\"pure_mix\"()" in llvm_ir
+    assert "define float @\"pure_demo\"()" in llvm_ir
     assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
     assert "define void @\"filter_Cull\"()" in llvm_ir
-    assert 'define void @"Lockstep_BindMemory"(i8* %"ptr")' in llvm_ir
-    assert 'define void @"Lockstep_Tick"()' in llvm_ir
+    assert 'define void @"Lockstep_BindMemory"(i8* %"ptr")' in llvm_ir    
+    assert 'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")' in llvm_ir
     assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
-    assert "fmul float" in llvm_ir
+    assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
+    assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
+    assert 'call float @"llvm.maxnum.f32"' in llvm_ir
+    assert 'call float @"llvm.minnum.f32"' in llvm_ir
     assert "uitofp i1" in llvm_ir
 
 
@@ -333,6 +343,34 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
+def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+    assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
+
+
 def test_emit_llvm_ir_does_not_raise_on_mixed_int_float_expression():
     llvm_ir = emit_llvm_ir(
         {
@@ -388,3 +426,94 @@ def test_ast_dataclasses_normalize_declared_types_to_ast_type():
     assert isinstance(param.declared_type, AstType)
     assert param.declared_type.name == "float"
     assert param.declared_type.kind == "primitive"
+
+
+def test_emit_c_header_generates_structs_offsets_and_tick_signature():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Vec3",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                        {"type": "float", "name": "z"},
+                    ],
+                }
+            ],
+            "streams": [{"name": "raw_positions", "type": "Vec3"}],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "dt", "type": "float"}],
+        }
+    )
+
+    assert "#ifndef LOCKSTEP_GENERATED_H" in header
+    assert "struct Lockstep_Vec3" in header
+    assert "struct Lockstep_Arena" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 20" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 0" in header
+    assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
+    assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
+    assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
+
+
+def test_compile_result_includes_c_header(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    class StubDebugVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = [{"name": "s", "type": "float"}]
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.bind_routes_ir = []
+            self.diagnostics = []
+
+        def visit(self, tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    result = lockstep_compiler.compile_lockstep(
+        "pipeline P { }",
+        verbose=False,
+        semantic_validator=lambda _tree: [],
+        token_stream_cls=lambda lexer: object(),
+        debug_visitor_cls=StubDebugVisitor,
+    )
+
+    assert "#define LOCKSTEP_ARENA_BYTES 4" in result.c_header
+    assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in result.c_header
