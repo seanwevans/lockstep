@@ -159,4 +159,21 @@ def simulate_pipeline_source(source_code: str, *, stream_inputs=None, accumulato
 
 def parse_simulation_inputs(raw: str) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
     payload = json.loads(raw) if raw.strip() else {}
-    return payload.get("streams", {}), payload.get("accumulators", {})
+
+    if not isinstance(payload, dict):
+        raise ValueError("Invalid simulation input at '<root>': expected an object.")
+
+    def _validate_input_map(field: str) -> dict[str, list[Any]]:
+        value = payload.get(field, {})
+        if not isinstance(value, dict):
+            raise ValueError(f"Invalid simulation input at '{field}': expected an object map.")
+        for name, rows in value.items():
+            if not isinstance(rows, list):
+                raise ValueError(
+                    f"Invalid simulation input at '{field}.{name}': expected a list of values."
+                )
+        return value
+
+    streams = _validate_input_map("streams")
+    accumulators = _validate_input_map("accumulators")
+    return streams, accumulators

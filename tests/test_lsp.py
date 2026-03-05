@@ -42,7 +42,8 @@ def test_find_member_definition_resolves_struct_field():
 
 
 def test_provide_bind_completion_items_includes_routes_and_kernels():
-    items = provide_bind_completion_items(SOURCE)
+    items = provide_bind_completion_items(SOURCE, line=12, column=8)
+    labels = [item["label"] for item in items]
 
     assert "dst=Integrate(src,dst,0.1);" in items
     assert "Integrate(...)" in items

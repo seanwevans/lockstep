@@ -28,6 +28,48 @@ _BIND_BLOCK_RE = re.compile(r"\bbind\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE)
 _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
+def _is_inside_bind_block(source: str, line: int, column: int) -> bool:
+    """Return whether the given cursor position is inside any `bind { ... }` body."""
+
+    if line < 0 or column < 0:
+        return False
+
+    lines = source.splitlines(keepends=True)
+    if line >= len(lines):
+        return False
+
+    offset = sum(len(existing) for existing in lines[:line]) + min(column, len(lines[line]))
+
+    for match in re.finditer(r"\bbind\s*\{", source):
+        block_start = match.end()
+        depth = 1
+        index = block_start
+        while index < len(source) and depth > 0:
+            token = source[index]
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+            index += 1
+
+        if depth != 0:
+            continue
+
+        block_end = index - 1
+        if block_start <= offset <= block_end:
+            return True
+
+    return False
+
+
+def _normalize_completion_name(entry: Any) -> str | None:
+    if isinstance(entry, dict):
+        return entry.get("name")
+    if isinstance(entry, str):
+        return entry
+    return str(entry) if entry else None
+
+
 def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Compile source and return entities + diagnostics in dictionary form."""
 
@@ -259,11 +301,23 @@ def find_member_definition(
     return None
 
 
-def provide_bind_completion_items(source: str) -> list[str]:
-    """Return completion labels for bind routes and callable kernels."""
+def provide_bind_completion_items(
+    source: str,
+    *,
+    line: int | None = None,
+    column: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return ranked completion entries for bind routes and callable symbols."""
 
     entities, _ = compile_for_lsp(source)
-    items: list[str] = []
+    completion_entries: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+
+    inside_bind = (
+        line is not None
+        and column is not None
+        and _is_inside_bind_block(source, line=line, column=column)
+    )
 
     bind_routes = entities.get("bind_routes", [])
     if not bind_routes:
@@ -274,33 +328,75 @@ def provide_bind_completion_items(source: str) -> list[str]:
                 if normalized:
                     bind_routes.append(f"{normalized};")
 
-    for route in bind_routes:
-        if route not in items:
-            items.append(route)
+    if inside_bind:
+        for route in bind_routes:
+            if route in seen_labels:
+                continue
+            completion_entries.append(
+                {
+                    "label": route,
+                    "detail": "Bind route template",
+                    "sort_text": f"1-{route}",
+                    "kind": "snippet",
+                }
+            )
+            seen_labels.add(route)
 
     shaders = entities.get("shaders", [])
+    filters = entities.get("filters", [])
     if not shaders:
         shaders = [{"name": name} for name in _SHADER_DEF_RE.findall(source)]
+    if not filters:
+        filters = []
 
-    for shader in shaders:
-        shader_name = shader.get("name") if isinstance(shader, dict) else str(shader)
-        if shader_name and shader_name not in items:
-            items.append(f"{shader_name}(...)")
+    shader_filter_names = sorted(
+        {
+            f"{name}(...)"
+            for name in [
+                _normalize_completion_name(entry)
+                for entry in [*shaders, *filters]
+            ]
+            if name
+        }
+    )
+    for callable_name in shader_filter_names:
+        if callable_name in seen_labels:
+            continue
+        completion_entries.append(
+            {
+                "label": callable_name,
+                "detail": "Shader/filter callable",
+                "sort_text": f"2-{callable_name}",
+                "kind": "function",
+            }
+        )
+        seen_labels.add(callable_name)
 
     pure_functions = entities.get("pure_functions", [])
     if not pure_functions:
         pure_functions = [{"name": name} for name in _PURE_DEF_RE.findall(source)]
 
-    for pure_function in pure_functions:
-        function_name = (
-            pure_function.get("name")
-            if isinstance(pure_function, dict)
-            else str(pure_function)
+    pure_function_names = sorted(
+        {
+            f"{name}(...)"
+            for name in [_normalize_completion_name(entry) for entry in pure_functions]
+            if name
+        }
+    )
+    for function_name in pure_function_names:
+        if function_name in seen_labels:
+            continue
+        completion_entries.append(
+            {
+                "label": function_name,
+                "detail": "Pure function callable",
+                "sort_text": f"3-{function_name}",
+                "kind": "function",
+            }
         )
-        if function_name and function_name not in items:
-            items.append(f"{function_name}(...)")
+        seen_labels.add(function_name)
 
-    return items
+    return completion_entries
 
 
 def run_lsp_server() -> int:
@@ -344,10 +440,26 @@ def run_lsp_server() -> int:
     @server.feature(types.TEXT_DOCUMENT_COMPLETION)
     def completion(params: types.CompletionParams):
         document = server.workspace.get_text_document(params.text_document.uri)
-        labels = provide_bind_completion_items(document.source)
+        entries = provide_bind_completion_items(
+            document.source,
+            line=params.position.line,
+            column=params.position.character,
+        )
         return types.CompletionList(
             is_incomplete=False,
-            items=[types.CompletionItem(label=label, kind=types.CompletionItemKind.Function) for label in labels],
+            items=[
+                types.CompletionItem(
+                    label=entry["label"],
+                    detail=entry["detail"],
+                    sort_text=entry["sort_text"],
+                    kind=(
+                        types.CompletionItemKind.Snippet
+                        if entry["kind"] == "snippet"
+                        else types.CompletionItemKind.Function
+                    ),
+                )
+                for entry in entries
+            ],
         )
 
     @server.feature(types.TEXT_DOCUMENT_DEFINITION)
