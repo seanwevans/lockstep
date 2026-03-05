@@ -619,11 +619,29 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         }
     )
 
-    tick = ir.Function(module, ir.FunctionType(ir.VoidType(), [arena_type.as_pointer()]), name="Lockstep_Tick")
-    arena_ptr = tick.args[0]
-    arena_ptr.name = "arena"
+    arena_ptr_type = arena_type.as_pointer()
+    arena_binding = ir.GlobalVariable(module, arena_ptr_type, name="lockstep_bound_arena")
+    arena_binding.linkage = "internal"
+    arena_binding.initializer = ir.Constant(arena_ptr_type, None)
+
+    bind_memory = ir.Function(module, ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()]), name="Lockstep_BindMemory")
+    bind_arg = bind_memory.args[0]
+    bind_arg.name = "ptr"
+    bind_entry = bind_memory.append_basic_block("entry")
+    bind_builder = ir.IRBuilder(bind_entry)
+    typed_arena = bind_builder.bitcast(bind_arg, arena_ptr_type, name="arena")
+    bind_builder.store(typed_arena, arena_binding)
+    bind_builder.ret_void()
+
+    tick = ir.Function(module, ir.FunctionType(ir.VoidType(), []), name="Lockstep_Tick")
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
+    arena_ptr = tick_builder.load(arena_binding, name="arena")
+    arena_is_null = tick_builder.icmp_unsigned("==", arena_ptr, ir.Constant(arena_ptr_type, None), name="arena_is_null")
+    tick_exit = tick.append_basic_block("exit")
+    tick_active = tick.append_basic_block("active")
+    tick_builder.cbranch(arena_is_null, tick_exit, tick_active)
+    tick_builder.position_at_end(tick_active)
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
@@ -714,6 +732,8 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
             asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
             tick_builder.call(asm, [])
+    tick_builder.branch(tick_exit)
+    tick_builder.position_at_end(tick_exit)
     tick_builder.ret_void()
 
     return str(module)

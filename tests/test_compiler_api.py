@@ -88,7 +88,8 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert 'define void @"Lockstep_Tick"(<{}>* %"arena")' in result.llvm_ir
+    assert 'define void @"Lockstep_BindMemory"(i8* %"ptr")' in result.llvm_ir
+    assert 'define void @"Lockstep_Tick"()' in result.llvm_ir
 
 
 def test_emit_llvm_ir_generates_expected_declarations():
@@ -118,7 +119,8 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert "define float @\"pure_mix\"()" in llvm_ir
     assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
     assert "define void @\"filter_Cull\"()" in llvm_ir
-    assert 'define void @"Lockstep_Tick"(<{%"struct.Vec3", float, float}>* %"arena")' in llvm_ir
+    assert 'define void @"Lockstep_BindMemory"(i8* %"ptr")' in llvm_ir
+    assert 'define void @"Lockstep_Tick"()' in llvm_ir
     assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
     assert "fmul float" in llvm_ir
     assert "uitofp i1" in llvm_ir
