@@ -1,3 +1,4 @@
+from .c_header import emit_c_header
 from .cli import build_arg_parser, run_cli
 from .compiler import compile_lockstep, load_default_parser_classes, validate_semantics
 from .errors import LockstepCompileError, ParseErrorCollector
@@ -12,6 +13,7 @@ __all__ = [
     "LockstepDiagnostic",
     "ParseErrorCollector",
     "build_arg_parser",
+    "emit_c_header",
     "build_debug_visitor",
     "build_semantic_validator",
     "compile_lockstep",
