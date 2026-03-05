@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
+from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import emit_llvm_ir
 import pytest
 
@@ -386,3 +387,94 @@ def test_ast_dataclasses_normalize_declared_types_to_ast_type():
     assert isinstance(param.declared_type, AstType)
     assert param.declared_type.name == "float"
     assert param.declared_type.kind == "primitive"
+
+
+def test_emit_c_header_generates_structs_offsets_and_tick_signature():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Vec3",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                        {"type": "float", "name": "z"},
+                    ],
+                }
+            ],
+            "streams": [{"name": "raw_positions", "type": "Vec3"}],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "dt", "type": "float"}],
+        }
+    )
+
+    assert "#ifndef LOCKSTEP_GENERATED_H" in header
+    assert "struct Lockstep_Vec3" in header
+    assert "struct Lockstep_Arena" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 20" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 0" in header
+    assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
+    assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
+    assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
+
+
+def test_compile_result_includes_c_header(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    class StubDebugVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = [{"name": "s", "type": "float"}]
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.bind_routes_ir = []
+            self.diagnostics = []
+
+        def visit(self, tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    result = lockstep_compiler.compile_lockstep(
+        "pipeline P { }",
+        verbose=False,
+        semantic_validator=lambda _tree: [],
+        token_stream_cls=lambda lexer: object(),
+        debug_visitor_cls=StubDebugVisitor,
+    )
+
+    assert "#define LOCKSTEP_ARENA_BYTES 4" in result.c_header
+    assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in result.c_header
