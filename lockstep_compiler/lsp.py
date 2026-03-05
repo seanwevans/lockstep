@@ -28,6 +28,39 @@ _PURE_DEF_RE = re.compile(
 )
 _BIND_BLOCK_RE = re.compile(r"\bbind\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE)
 _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
+_BLOCK_HEADER_RE = re.compile(r"\b(struct|shader|filter|pure|pipeline)\s+([A-Za-z_][A-Za-z0-9_]*)")
+_LOCAL_DECL_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)"
+)
+_PIPELINE_DECL_RE = re.compile(
+    r"^\s*(stream\s*<\s*([A-Za-z_][A-Za-z0-9_]*)[^>]*>|accum|uniform)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+)
+
+_EXCLUDED_DECL_TYPES = {
+    "return",
+    "if",
+    "for",
+    "while",
+    "bind",
+    "stream",
+    "uniform",
+    "accum",
+    "struct",
+    "shader",
+    "filter",
+    "pipeline",
+    "pure",
+}
+
+
+@dataclass(frozen=True)
+class _VariableSymbol:
+    name: str
+    declared_type: str
+    line: int
+    scope_start: int
+    scope_end: int
+    scope_depth: int
 
 
 def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -95,17 +128,168 @@ def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefiniti
     return index
 
 
-def infer_variable_types(source: str) -> dict[str, str]:
-    """Best-effort type inference for names declared as `<Type> <name>`."""
+def _collect_symbols(source: str, entities: dict[str, Any] | None) -> list[_VariableSymbol]:
+    lines = source.splitlines()
+    symbols: list[_VariableSymbol] = []
+    scope_stack: list[dict[str, Any]] = []
+    pending_block: dict[str, Any] | None = None
+
+    shader_param_map: dict[str, list[dict[str, Any]]] = {}
+    filter_param_map: dict[str, list[dict[str, Any]]] = {}
+    pure_param_map: dict[str, list[dict[str, Any]]] = {}
+    if entities:
+        shader_param_map = {
+            shader.get("name", ""): shader.get("params", [])
+            for shader in entities.get("shaders", [])
+            if isinstance(shader, dict)
+        }
+        filter_param_map = {
+            flt.get("name", ""): flt.get("params", [])
+            for flt in entities.get("filters", [])
+            if isinstance(flt, dict)
+        }
+        pure_param_map = {
+            pure.get("name", ""): pure.get("params", [])
+            for pure in entities.get("pure_functions", [])
+            if isinstance(pure, dict)
+        }
+
+    for line_no, line in enumerate(lines):
+        header = _BLOCK_HEADER_RE.search(line)
+        if header:
+            kind, scope_name = header.groups()
+            if "{" in line:
+                pending_block = {"kind": kind, "name": scope_name, "line": line_no}
+                if kind in {"shader", "filter", "pure"}:
+                    if kind == "shader":
+                        params = shader_param_map.get(scope_name)
+                    elif kind == "filter":
+                        params = filter_param_map.get(scope_name)
+                    else:
+                        params = pure_param_map.get(scope_name)
+                    if params:
+                        for param in params:
+                            declared_type = param.get("type")
+                            param_name = param.get("name")
+                            if declared_type and param_name:
+                                symbols.append(
+                                    _VariableSymbol(
+                                        name=param_name,
+                                        declared_type=declared_type,
+                                        line=line_no,
+                                        scope_start=line_no,
+                                        scope_end=10**9,
+                                        scope_depth=len(scope_stack) + 1,
+                                    )
+                                )
+
+        open_count = line.count("{")
+        close_count = line.count("}")
+        for _ in range(open_count):
+            if pending_block:
+                scope_stack.append({**pending_block, "depth": len(scope_stack) + 1})
+                pending_block = None
+            else:
+                scope_stack.append({"kind": "block", "name": "", "line": line_no, "depth": len(scope_stack) + 1})
+
+        active_scope = scope_stack[-1] if scope_stack else None
+        inside_struct = any(scope.get("kind") == "struct" for scope in scope_stack)
+
+        if active_scope and active_scope.get("kind") in {"shader", "filter", "pure"} and not inside_struct:
+            local_match = _LOCAL_DECL_RE.match(line)
+            if local_match:
+                declared_type, name = local_match.groups()
+                if declared_type not in _EXCLUDED_DECL_TYPES:
+                    symbols.append(
+                        _VariableSymbol(
+                            name=name,
+                            declared_type=declared_type,
+                            line=line_no,
+                            scope_start=active_scope["line"],
+                            scope_end=10**9,
+                            scope_depth=int(active_scope.get("depth", 0)),
+                        )
+                    )
+
+        if active_scope and active_scope.get("kind") == "pipeline" and not inside_struct:
+            pipeline_match = _PIPELINE_DECL_RE.match(line)
+            if pipeline_match:
+                kind_text, stream_type, name = pipeline_match.groups()
+                declared_type = stream_type if stream_type else kind_text
+                if declared_type not in _EXCLUDED_DECL_TYPES:
+                    symbols.append(
+                        _VariableSymbol(
+                            name=name,
+                            declared_type=declared_type,
+                            line=line_no,
+                            scope_start=active_scope["line"],
+                            scope_end=10**9,
+                            scope_depth=int(active_scope.get("depth", 0)),
+                        )
+                    )
+
+        for _ in range(close_count):
+            if scope_stack:
+                closed_scope = scope_stack.pop()
+                scope_start = int(closed_scope.get("line", line_no))
+                scope_depth = int(closed_scope.get("depth", 0))
+                for idx, symbol in enumerate(symbols):
+                    if (
+                        symbol.scope_start == scope_start
+                        and symbol.scope_depth == scope_depth
+                        and symbol.scope_end == 10**9
+                    ):
+                        symbols[idx] = _VariableSymbol(
+                            name=symbol.name,
+                            declared_type=symbol.declared_type,
+                            line=symbol.line,
+                            scope_start=symbol.scope_start,
+                            scope_end=line_no,
+                            scope_depth=symbol.scope_depth,
+                        )
+
+    return symbols
+
+
+def infer_variable_types(
+    source: str,
+    current_line: int,
+    entities: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Infer in-scope variable types for a source position."""
+
+    if entities:
+        inferred: dict[str, tuple[str, int, int]] = {}
+        for symbol in _collect_symbols(source, entities):
+            if symbol.line > current_line or not (symbol.scope_start <= current_line <= symbol.scope_end):
+                continue
+            previous = inferred.get(symbol.name)
+            rank = (symbol.scope_depth, symbol.line)
+            if previous is None or rank >= (previous[1], previous[2]):
+                inferred[symbol.name] = (symbol.declared_type, symbol.scope_depth, symbol.line)
+        return {name: value[0] for name, value in inferred.items()}
 
     inferred: dict[str, str] = {}
-    for declared_type, name in _PARAM_RE.findall(source):
-        inferred.setdefault(name, declared_type)
+    for idx, line in enumerate(source.splitlines()):
+        if idx > current_line:
+            break
+        local_match = _LOCAL_DECL_RE.match(line)
+        if local_match:
+            declared_type, name = local_match.groups()
+            if declared_type not in _EXCLUDED_DECL_TYPES:
+                inferred[name] = declared_type
 
-    for declared_type, name in _TYPED_NAME_RE.findall(source):
-        if declared_type in {"return", "if", "for", "while", "bind", "stream", "uniform"}:
-            continue
-        inferred.setdefault(name, declared_type)
+        param_match = _PARAM_RE.findall(line)
+        for declared_type, name in param_match:
+            if declared_type not in _EXCLUDED_DECL_TYPES:
+                inferred[name] = declared_type
+
+        pipeline_match = _PIPELINE_DECL_RE.match(line)
+        if pipeline_match:
+            kind_text, stream_type, name = pipeline_match.groups()
+            declared_type = stream_type if stream_type else kind_text
+            if declared_type not in _EXCLUDED_DECL_TYPES:
+                inferred[name] = declared_type
     return inferred
 
 
@@ -126,7 +310,8 @@ def find_member_definition(
         if not (start <= column <= end):
             continue
         variable_name, field_name = match.groups()
-        variable_types = infer_variable_types(source)
+        entities, _ = compile_for_lsp(source)
+        variable_types = infer_variable_types(source, line, entities if entities else None)
         struct_name = variable_types.get(variable_name)
         if not struct_name:
             return None
