@@ -33,32 +33,25 @@ _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_
 def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Compile source and return entities + diagnostics in dictionary form."""
 
+    def _diagnostics_to_dicts(diagnostics: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "severity": diagnostic.severity,
+                "code": diagnostic.code,
+                "message": diagnostic.message,
+                "line": diagnostic.line,
+                "column": diagnostic.column,
+                "hint": diagnostic.hint,
+            }
+            for diagnostic in diagnostics
+        ]
+
     try:
         result = compile_lockstep(source, verbose=False)
-        diagnostics = [
-            {
-                "severity": diagnostic.severity,
-                "code": diagnostic.code,
-                "message": diagnostic.message,
-                "line": diagnostic.line,
-                "column": diagnostic.column,
-                "hint": diagnostic.hint,
-            }
-            for diagnostic in result.diagnostics
-        ]
+        diagnostics = _diagnostics_to_dicts(result.diagnostics)
         return result.entities, diagnostics
     except LockstepCompileError as error:
-        diagnostics = [
-            {
-                "severity": diagnostic.severity,
-                "code": diagnostic.code,
-                "message": diagnostic.message,
-                "line": diagnostic.line,
-                "column": diagnostic.column,
-                "hint": diagnostic.hint,
-            }
-            for diagnostic in error.diagnostics
-        ]
+        diagnostics = _diagnostics_to_dicts(error.diagnostics or error.errors)
         return {}, diagnostics
 
 
