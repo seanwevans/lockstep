@@ -1154,6 +1154,7 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
         "step",
         "mix",
         "clamp",
+        "max",
     }
 
 
