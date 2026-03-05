@@ -341,6 +341,34 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
+def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+    assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
+
+
 def test_emit_llvm_ir_does_not_raise_on_mixed_int_float_expression():
     llvm_ir = emit_llvm_ir(
         {
