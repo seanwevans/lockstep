@@ -695,12 +695,15 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         return tick_builder.load(ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
 
     def _store_arena_slot(field_index: int, value: ir.Value):
-        slot_ptr = tick_builder.gep(
-            arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
-            name=f"arena_slot_{field_index}",
-        )
+        if field_index < 0 or field_index >= len(arena_fields):
+            return
+        kind, name, _ = arena_fields[field_index]
+        ptr = tick_param_ptrs.get((kind, name))
+        if ptr is None:
+            return
+        slot_ptr = tick_builder.alloca(value.type, name=f"arena_slot_{field_index}")
         tick_builder.store(value, slot_ptr)
+        tick_builder.store(tick_builder.load(slot_ptr), ptr)
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)
@@ -842,7 +845,8 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
                     continue
                 uniform_type_name = str(route.get("uniform_type", "float"))
                 uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                accum_value = _load_arena_slot(source_slot, uniform_type)
+                accum_kind, accum_name, _ = arena_fields[source_slot]
+                accum_value = _load_tick_param(accum_kind, accum_name, uniform_type)
                 reduced = _reduce_fold(operator, accum_value, uniform_type)
                 _store_arena_slot(uniform_slot, reduced)
                 continue
