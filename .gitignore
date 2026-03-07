@@ -1,9 +1,9 @@
 generated/parser/*.interp
 generated/parser/*.tokens
-__pycache__/*
+__pycache__/
+*.pyc
 .coverage
 coverage.xml
-tests/__pycache__/*
 tools/*.jar
 build/
 *.egg-info/

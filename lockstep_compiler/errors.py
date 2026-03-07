@@ -24,18 +24,20 @@ class ParseErrorCollector(ErrorListener):
 
 
 class LockstepCompileError(Exception):
-    """Raised when the Lockstep source contains parse errors."""
+    """Raised when the Lockstep source contains parse or semantic errors."""
 
-    def __init__(self, errors, diagnostics=None, *, phase: str = "parse"):
+    def __init__(self, errors, diagnostics=None, *, phase: str = "parse", source_file: str | None = None):
         self.errors = errors
         self.diagnostics = diagnostics or []
         self.phase = phase
+        self.source_file = source_file
         super().__init__(self._format_message())
 
     def _format_message(self):
         count = len(self.errors)
         suffix = "" if count == 1 else "s"
-        summary = f"Compilation failed with {count} {self.phase} error{suffix}."
+        file_context = f" in '{self.source_file}'" if self.source_file else ""
+        summary = f"Compilation failed with {count} {self.phase} error{suffix}{file_context}."
         details = "\n".join(
             f"line {error.line}:{error.column} {error.message}" for error in self.errors
         )

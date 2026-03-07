@@ -181,7 +181,11 @@ def test_cli_main_wires_default_compiler(monkeypatch):
     monkeypatch.setattr(cli_module, "run_cli", fake_run_cli)
     monkeypatch.setattr(compiler_module, "compile_lockstep", sentinel_compiler)
 
-    assert cli_module.main(["--dump"]) == 7
+    import pytest
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module.main(["--dump"])
+    assert exc_info.value.code == 7
 
 
 def test_load_default_parser_classes_is_cached(monkeypatch):
