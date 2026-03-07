@@ -20,6 +20,7 @@ from .ast import (
     AstVarDeclStmt,
     ast_to_entities,
 )
+from .utils import sanitize_symbol as _sanitize_symbol
 
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
@@ -29,10 +30,6 @@ _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "float": ir.FloatType(),
     "double": ir.DoubleType(),
 }
-
-
-def _sanitize_symbol(name: str) -> str:
-    return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
 
 
 def _type_name(value: AstType | str) -> str:
@@ -352,62 +349,24 @@ class _FunctionLowerer:
             return self.builder.call(callee, coerced, name=f"call_{name}")
         return ir.Constant(ir.FloatType(), 0.0)
 
-    def _lower_expr(self, node):
-        if isinstance(node, AstExprLiteral):
-            if node.kind == "float":
-                return ir.Constant(ir.FloatType(), float(node.value))
-            if node.kind == "int":
-                return ir.Constant(ir.IntType(32), int(node.value))
-            return ir.Constant(ir.IntType(1), int(node.value == "true"))
-        if isinstance(node, AstExprVar):
-            return self._load_var(".".join(node.path))
-        if isinstance(node, AstExprUnary):
-            operand = self._lower_expr(node.operand)
-            if node.op == "-":
-                return self._emit_numeric_unary_minus(operand)
-            return self.builder.not_(operand)
-        if isinstance(node, AstExprCall):
-            return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
-        if isinstance(node, AstExprBinary):
-            op, lhs, rhs = node.op, self._lower_expr(node.left), self._lower_expr(node.right)
-            if op in {"+", "-", "*", "/", "%"}:
-                return self._emit_numeric_binary(op, lhs, rhs)
-            if op in {"&", "|", "^", "<<", ">>"} and isinstance(lhs.type, ir.IntType) and lhs.type == rhs.type:
-                if op == "&":
-                    return self.builder.and_(lhs, rhs)
-                if op == "|":
-                    return self.builder.or_(lhs, rhs)
-                if op == "^":
-                    return self.builder.xor(lhs, rhs)
-                if op == "<<":
-                    return self.builder.shl(lhs, rhs)
-                return self.builder.ashr(lhs, rhs)
-            if op in {"<", "<=", ">", ">=", "==", "!="}:
-                return self._emit_relational_compare(op, lhs, rhs)
-            if op == "&&":
-                return self.builder.and_(lhs, rhs)
-            if op == "||":
-                return self.builder.or_(lhs, rhs)
-            return ir.Constant(ir.FloatType(), 0.0)
-
+    @staticmethod
+    def _normalize_expr_node(node) -> "AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall":
+        """Convert legacy tuple-based expression nodes to typed AST nodes."""
+        if isinstance(node, (AstExprLiteral, AstExprVar, AstExprUnary, AstExprBinary, AstExprCall)):
+            return node
         kind = node[0]
-        if kind == "float":
-            return ir.Constant(ir.FloatType(), node[1])
-        if kind == "int":
-            return ir.Constant(ir.IntType(32), node[1])
-        if kind == "bool":
-            return ir.Constant(ir.IntType(1), int(node[1]))
+        if kind in {"float", "int", "bool"}:
+            return AstExprLiteral(kind=kind, value=str(node[1]))
         if kind == "var":
-            return self._load_var(node[1])
+            return AstExprVar(path=tuple(node[1].split(".")))
         if kind == "un":
-            op, operand = node[1], self._lower_expr(node[2])
-            if op == "-":
-                return self._emit_numeric_unary_minus(operand)
-            return self.builder.not_(operand)
+            return AstExprUnary(op=node[1], operand=node[2])
         if kind == "call":
-            return self._lower_call(node[1], [self._lower_expr(arg) for arg in node[2]])
+            return AstExprCall(name=node[1], args=tuple(node[2]))
+        # "bin" — binary operation
+        return AstExprBinary(op=node[1], left=node[2], right=node[3])
 
-        op, lhs, rhs = node[1], self._lower_expr(node[2]), self._lower_expr(node[3])
+    def _lower_binary_op(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if op in {"+", "-", "*", "/", "%"}:
             return self._emit_numeric_binary(op, lhs, rhs)
         if op in {"&", "|", "^", "<<", ">>"} and isinstance(lhs.type, ir.IntType) and lhs.type == rhs.type:
@@ -427,6 +386,28 @@ class _FunctionLowerer:
         if op == "||":
             return self.builder.or_(lhs, rhs)
         return ir.Constant(ir.FloatType(), 0.0)
+
+    def _lower_expr(self, node):
+        node = self._normalize_expr_node(node)
+
+        if isinstance(node, AstExprLiteral):
+            if node.kind == "float":
+                return ir.Constant(ir.FloatType(), float(node.value))
+            if node.kind == "int":
+                return ir.Constant(ir.IntType(32), int(node.value))
+            return ir.Constant(ir.IntType(1), int(node.value == "true"))
+        if isinstance(node, AstExprVar):
+            return self._load_var(".".join(node.path))
+        if isinstance(node, AstExprUnary):
+            operand = self._lower_expr(node.operand)
+            if node.op == "-":
+                return self._emit_numeric_unary_minus(operand)
+            return self.builder.not_(operand)
+        if isinstance(node, AstExprCall):
+            return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
+        # AstExprBinary
+        lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
+        return self._lower_binary_op(node.op, lhs, rhs)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
         base_name, *field_path = target_name.split(".")
@@ -726,48 +707,39 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         vector_value = _build_vector_splat(accum_value, simd_width)
         vector_ty = vector_value.type
 
-        if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
-            if operator in {"sum", "avg"}:
-                intrinsic_name = f"llvm.vector.reduce.fadd.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [uniform_type, vector_ty])
-                reduced = tick_builder.call(intrinsic, [ir.Constant(uniform_type, 0.0), vector_value], name="fold_reduce")
-                reduced.fastmath.add("fast")
-                if operator == "avg":
-                    divisor = ir.Constant(uniform_type, float(simd_width))
-                    reduced = tick_builder.fdiv(reduced, divisor, name="fold_avg")
-                return reduced
-            if operator == "min":
-                intrinsic_name = f"llvm.vector.reduce.fmin.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
-                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
-                reduced.fastmath.add("fast")
-                return reduced
-            if operator == "max":
-                intrinsic_name = f"llvm.vector.reduce.fmax.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
-                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
-                reduced.fastmath.add("fast")
-                return reduced
+        # Map (is_float, operator) -> intrinsic suffix for reduction ops.
+        is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
+        is_int = isinstance(uniform_type, ir.IntType)
+        _REDUCE_INTRINSIC = {
+            (True, "sum"): "fadd", (True, "avg"): "fadd",
+            (True, "min"): "fmin", (True, "max"): "fmax",
+            (False, "sum"): "add", (False, "avg"): "add",
+            (False, "min"): "smin", (False, "max"): "smax",
+        }
+        intrinsic_suffix = _REDUCE_INTRINSIC.get((is_float, operator)) if (is_float or is_int) else None
+        if intrinsic_suffix is None:
+            return _zero_value(uniform_type)
 
-        if isinstance(uniform_type, ir.IntType):
-            if operator in {"sum", "avg"}:
-                intrinsic_name = f"llvm.vector.reduce.add.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
-                reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
-                if operator == "avg":
-                    divisor = ir.Constant(uniform_type, simd_width)
-                    reduced = tick_builder.sdiv(reduced, divisor, name="fold_avg")
-                return reduced
-            if operator == "min":
-                intrinsic_name = f"llvm.vector.reduce.smin.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
-                return tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
-            if operator == "max":
-                intrinsic_name = f"llvm.vector.reduce.smax.v{simd_width}{uniform_type.intrinsic_name}"
-                intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
-                return tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+        intrinsic_name = f"llvm.vector.reduce.{intrinsic_suffix}.v{simd_width}{uniform_type.intrinsic_name}"
+        # fadd requires a starting accumulator argument
+        needs_start_value = is_float and operator in {"sum", "avg"}
+        if needs_start_value:
+            intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [uniform_type, vector_ty])
+            reduced = tick_builder.call(intrinsic, [ir.Constant(uniform_type, 0.0), vector_value], name="fold_reduce")
+        else:
+            intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+            reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
 
-        return _zero_value(uniform_type)
+        if is_float:
+            reduced.fastmath.add("fast")
+
+        if operator == "avg":
+            if is_float:
+                reduced = tick_builder.fdiv(reduced, ir.Constant(uniform_type, float(simd_width)), name="fold_avg")
+            else:
+                reduced = tick_builder.sdiv(reduced, ir.Constant(uniform_type, simd_width), name="fold_avg")
+
+        return reduced
 
     def _lower_kernel_route(route: dict[str, Any]):
         kernel_name = str(route.get("kernel", ""))

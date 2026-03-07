@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .ast import AstProgram, ast_to_entities
+from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_C_TYPE = {
     "bool": "uint8_t",
@@ -19,10 +20,6 @@ _PRIMITIVE_SIZE = {
     "float": 4,
     "double": 8,
 }
-
-
-def _sanitize_symbol(name: str) -> str:
-    return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
 
 
 def _normalize_structs(structs: list[Any]) -> list[dict[str, Any]]:

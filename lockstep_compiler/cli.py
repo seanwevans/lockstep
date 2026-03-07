@@ -215,4 +215,4 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
 def main(argv=None):
     from .compiler import compile_lockstep
 
-    return run_cli(argv, compiler=compile_lockstep)
+    sys.exit(run_cli(argv, compiler=compile_lockstep))
