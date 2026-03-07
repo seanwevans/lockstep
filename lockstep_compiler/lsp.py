@@ -275,6 +275,74 @@ def provide_bind_completion_items(
     return completion_entries
 
 
+def provide_hover_info(
+    source: str,
+    line: int,
+    column: int,
+) -> str | None:
+    """Return hover text for the identifier at the given position."""
+
+    lines = source.splitlines()
+    if line < 0 or line >= len(lines):
+        return None
+
+    line_text = lines[line]
+
+    # Try member access first (foo.bar)
+    for match in _MEMBER_ACCESS_RE.finditer(line_text):
+        start, end = match.span(0)
+        if not (start <= column <= end):
+            continue
+        variable_name, field_name = match.groups()
+        variable_types = infer_variable_types(source)
+        struct_name = variable_types.get(variable_name)
+        if struct_name:
+            struct_index = build_struct_member_index(source)
+            field_def = struct_index.get(struct_name, {}).get(field_name)
+            if field_def:
+                # Find the field type from struct declarations
+                for struct_match in _STRUCT_RE.finditer(source):
+                    if struct_match.group(1) != struct_name:
+                        continue
+                    body_start = struct_match.end()
+                    body_end = source.find("}", body_start)
+                    if body_end == -1:
+                        continue
+                    body = source[body_start:body_end]
+                    for fm in _FIELD_RE.finditer(body):
+                        if fm.group(2) == field_name:
+                            return f"(field) `{struct_name}.{field_name}: {fm.group(1)}`"
+            return f"(field) `{struct_name}.{field_name}`"
+        return None
+
+    # Try plain identifier
+    id_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
+    for match in id_pattern.finditer(line_text):
+        start, end = match.span(1)
+        if not (start <= column < end):
+            continue
+        name = match.group(1)
+        variable_types = infer_variable_types(source)
+        if name in variable_types:
+            return f"(variable) `{name}: {variable_types[name]}`"
+
+        # Check if it's a struct name
+        for struct_match in _STRUCT_RE.finditer(source):
+            if struct_match.group(1) == name:
+                return f"(struct) `struct {name}`"
+
+        # Check shaders/filters/pure functions
+        for shader_match in _SHADER_DEF_RE.finditer(source):
+            if shader_match.group(1) == name:
+                return f"(shader) `shader {name}(...)`"
+        for pure_match in _PURE_DEF_RE.finditer(source):
+            if pure_match.group(1) == name:
+                return f"(pure) `pure {name}(...)`"
+        return None
+
+    return None
+
+
 def run_lsp_server() -> int:
     """Run the Lockstep LSP server via pygls if installed."""
 
@@ -336,6 +404,23 @@ def run_lsp_server() -> int:
                 )
                 for entry in entries
             ],
+        )
+
+    @server.feature(types.TEXT_DOCUMENT_HOVER)
+    def hover(params: types.HoverParams):
+        document = server.workspace.get_text_document(params.text_document.uri)
+        info = provide_hover_info(
+            document.source,
+            params.position.line,
+            params.position.character,
+        )
+        if info is None:
+            return None
+        return types.Hover(
+            contents=types.MarkupContent(
+                kind=types.MarkupKind.Markdown,
+                value=info,
+            ),
         )
 
     @server.feature(types.TEXT_DOCUMENT_DEFINITION)

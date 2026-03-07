@@ -79,7 +79,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["structs"] == []
     assert result.entities["shaders"] == []
     assert result.entities["filters"] == []
-    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp", "max"}
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp", "max", "min", "abs", "sign", "smoothstep"}
     assert result.entities["streams"] == []
     assert result.entities["accumulators"] == []
     assert result.entities["uniforms"] == []

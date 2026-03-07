@@ -35,6 +35,11 @@ def build_arg_parser():
         nargs="?",
         help="Optional path to a Lockstep source file. Reads from stdin when omitted.",
     )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print the Lockstep compiler version and exit.",
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--dump",
@@ -45,6 +50,16 @@ def build_arg_parser():
         "--format",
         action="store_true",
         help="Format Lockstep source code into canonical straight-line style.",
+    )
+    mode_group.add_argument(
+        "--emit-ir",
+        action="store_true",
+        help="Emit generated LLVM IR to stdout.",
+    )
+    mode_group.add_argument(
+        "--emit-header",
+        action="store_true",
+        help="Emit generated C host header to stdout.",
     )
     parser.add_argument(
         "--debug",
@@ -77,6 +92,15 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
+
+    if args.version:
+        from importlib.metadata import version as _pkg_version, PackageNotFoundError
+        try:
+            ver = _pkg_version("Lockstep")
+        except PackageNotFoundError:
+            ver = "0.1.0"
+        print(f"lockstepc {ver}", file=stdout)
+        return 0
 
     if args.path:
         source_path = Path(args.path)
@@ -178,6 +202,16 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             print(f"{type(err).__name__}: {err}", file=stderr)
             traceback.print_exc(file=stderr)
         return 1
+
+    if args.emit_ir:
+        llvm_ir = getattr(result, "llvm_ir", "")
+        print(llvm_ir, file=stdout)
+        return 0
+
+    if args.emit_header:
+        c_header = getattr(result, "c_header", "")
+        print(c_header, file=stdout)
+        return 0
 
     if args.dump:
         entities = getattr(result, "entities", result)

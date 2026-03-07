@@ -215,6 +215,12 @@ class _FunctionLowerer:
             maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
             return self.builder.call(maxnum, args, name="max")
 
+        if name == "min" and len(args) == 2:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
+            return self.builder.call(minnum, args, name="min")
+
         if name == "clamp" and len(args) == 3:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
                 return ir.Constant(ir.FloatType(), 0.0)
@@ -223,6 +229,54 @@ class _FunctionLowerer:
             minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
             clamped_min = self.builder.call(maxnum, [x_val, min_value], name="clamp_min")
             return self.builder.call(minnum, [clamped_min, max_value], name="clamp")
+
+        if name == "abs" and len(args) == 1:
+            if not isinstance(args[0].type, ir.FloatType):
+                return ir.Constant(ir.FloatType(), 0.0)
+            llvm_name = "llvm.fabs.f32"
+            fabs = self.module.globals.get(llvm_name)
+            if fabs is None:
+                fabs = ir.Function(
+                    self.module,
+                    ir.FunctionType(ir.FloatType(), [ir.FloatType()]),
+                    name=llvm_name,
+                )
+            return self.builder.call(fabs, args, name="abs")
+
+        if name == "sign" and len(args) == 1:
+            if not isinstance(args[0].type, ir.FloatType):
+                return ir.Constant(ir.FloatType(), 0.0)
+            x = args[0]
+            zero = ir.Constant(ir.FloatType(), 0.0)
+            pos = self.builder.fcmp_ordered(">", x, zero, name="sign_pos")
+            neg = self.builder.fcmp_ordered("<", x, zero, name="sign_neg")
+            pos_f = self.builder.uitofp(pos, ir.FloatType(), name="sign_pos_f")
+            neg_f = self.builder.uitofp(neg, ir.FloatType(), name="sign_neg_f")
+            return self.builder.fsub(pos_f, neg_f, name="sign")
+
+        if name == "smoothstep" and len(args) == 3:
+            if not all(isinstance(arg.type, ir.FloatType) for arg in args):
+                return ir.Constant(ir.FloatType(), 0.0)
+            edge0, edge1, x = args
+            # t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+            diff = self.builder.fsub(x, edge0, name="ss_diff")
+            range_val = self.builder.fsub(edge1, edge0, name="ss_range")
+            t_raw = self.builder.fdiv(diff, range_val, name="ss_t_raw")
+            maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
+            minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
+            t_clamped = self.builder.call(
+                maxnum, [t_raw, ir.Constant(ir.FloatType(), 0.0)], name="ss_clamp_lo"
+            )
+            t = self.builder.call(
+                minnum, [t_clamped, ir.Constant(ir.FloatType(), 1.0)], name="ss_t"
+            )
+            # result = t * t * (3 - 2 * t)
+            two_t = self.builder.fmul(ir.Constant(ir.FloatType(), 2.0), t, name="ss_2t")
+            three_minus_2t = self.builder.fsub(
+                ir.Constant(ir.FloatType(), 3.0), two_t, name="ss_3m2t"
+            )
+            t_sq = self.builder.fmul(t, t, name="ss_tsq")
+            return self.builder.fmul(t_sq, three_minus_2t, name="smoothstep")
 
         return None
 
