@@ -37,7 +37,7 @@ Lockstep uses a **Host-Owned Static Arena**. The compiler calculates the exact b
 
 ### Straight-Line Shaders
 
-Since `if/else` is banned, conditional logic is performed using branchless intrinsics like `step`, `mix`, and `clamp`.
+Since `if/else` is banned, conditional logic is performed using branchless intrinsics like `step`, `mix`, `clamp`, `min`, `max`, `abs`, `sign`, and `smoothstep`.
 
 ```c
 shader ApplyPhysics(in Entity ent, out Entity updated, uniform float dt) {
@@ -107,6 +107,12 @@ lockstepc path/to/program.lock
 cat path/to/program.lock | lockstepc --dump
 # canonical straight-line formatting
 lockstepc path/to/program.lock --format
+# emit LLVM IR
+lockstepc path/to/program.lock --emit-ir
+# emit C host header
+lockstepc path/to/program.lock --emit-header
+# print compiler version
+lockstepc --version
 ```
 
 `debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
@@ -190,6 +196,7 @@ Current capabilities:
 
 * **Live diagnostics:** Mirrors compiler parse/semantic diagnostics via `textDocument/publishDiagnostics`.
 * **Go to Definition for struct members:** Resolves `foo.bar` member access back to the `struct` field declaration when the variable type can be inferred.
+* **Hover type info:** Shows inferred type annotations on variables, struct fields, shader names, and pure function names.
 * **Bind-route autocompletion:** Suggests existing `bind` routes and callable shader/pure symbols from the current file.
 
 The server communicates over stdio and is compatible with standard editor LSP client configuration.
