@@ -459,6 +459,24 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
 
 
+
+
+def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
+    header = emit_c_header(
+        {
+            "streams": [{"name": "output_stream", "type": "float", "capacity": "16"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES" in header
+    assert '#include <stdio.h>' in header
+    assert "#define LOCKSTEP_CAPACITY_STREAM_OUTPUT_STREAM 16" in header
+    assert "#ifndef LOCKSTEP_SATURATED_WRITE_LOG" in header
+    assert "static inline size_t Lockstep_SaturatedWriteIndex(size_t index, size_t capacity, const char* stream_name)" in header
+    assert "LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : \"<unnamed>\"" in header
+
 def test_compile_result_includes_c_header(monkeypatch):
     class StubLexer:
         def __init__(self, input_stream):
