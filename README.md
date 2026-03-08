@@ -145,6 +145,8 @@ lockstepc path/to/program.lock --simulate --simulate-input path/to/input.json
 
 Simulation output includes per-route `input_count`/`output_count`, updated stream snapshots, accumulator contents, and folded uniform values.
 
+Generated C headers include `Lockstep_SaturatedWriteIndex(...)` plus per-stream `LOCKSTEP_CAPACITY_STREAM_<NAME>` macros. Define `LOCKSTEP_DEBUG_SATURATED_WRITES` before including the header to log whenever a saturated write falls back to the final index. Override `LOCKSTEP_SATURATED_WRITE_LOG(...)` to integrate with custom telemetry.
+
 ### Diagnostic Shape
 
 Each diagnostic includes:

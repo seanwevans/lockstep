@@ -109,6 +109,9 @@ def emit_c_header(program_or_entities: AstProgram | dict[str, Any], guard: str =
         "",
         "#include <stdint.h>",
         "#include <stddef.h>",
+        "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES",
+        "#include <stdio.h>",
+        "#endif",
         "",
         "#if defined(_MSC_VER)",
         "#define LOCKSTEP_PACKED_STRUCT(definition) __pragma(pack(push, 1)) definition __pragma(pack(pop))",
@@ -147,7 +150,36 @@ def emit_c_header(program_or_entities: AstProgram | dict[str, Any], guard: str =
     for kind, name, offset in offsets:
         macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
+    for stream in entities.get("streams", []):
+        stream_name = _sanitize_symbol(stream["name"]).upper()
+        stream_capacity = int(stream.get("capacity", 0)) if stream.get("capacity") is not None else 0
+        lines.append(f"#define LOCKSTEP_CAPACITY_STREAM_{stream_name} {stream_capacity}")
     lines.append("")
+
+    lines.extend(
+        [
+            "#ifndef LOCKSTEP_SATURATED_WRITE_LOG",
+            "#define LOCKSTEP_SATURATED_WRITE_LOG(stream_name, index, capacity, saturated_index) \\",
+            "    fprintf(stderr, \"[lockstep] saturated write stream=%s index=%zu capacity=%zu -> %zu\\n\", \\",
+            "            (stream_name), (size_t)(index), (size_t)(capacity), (size_t)(saturated_index))",
+            "#endif",
+            "",
+            "static inline size_t Lockstep_SaturatedWriteIndex(size_t index, size_t capacity, const char* stream_name) {",
+            "    if (capacity == 0) {",
+            "        return 0;",
+            "    }",
+            "    if (index < capacity) {",
+            "        return index;",
+            "    }",
+            "    const size_t saturated_index = capacity - 1;",
+            "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES",
+            "    LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : \"<unnamed>\", index, capacity, saturated_index);",
+            "#endif",
+            "    return saturated_index;",
+            "}",
+            "",
+        ]
+    )
 
     lines.extend(
         [
