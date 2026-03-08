@@ -32,6 +32,10 @@ _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
 }
 
 
+class CodegenError(RuntimeError):
+    """Raised when IR lowering encounters an invalid or unsupported expression."""
+
+
 def _type_name(value: AstType | str) -> str:
     return value.name if isinstance(value, AstType) else value
 
@@ -182,6 +186,9 @@ class _FunctionLowerer:
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
 
+    def _compiler_error(self, message: str) -> None:
+        raise CodegenError(message)
+
     def _declare_llvm_intrinsic(self, intrinsic_name: str, arg_type: ir.Type) -> ir.Function:
         llvm_name = f"llvm.{intrinsic_name}.f32"
         intrinsic = self.module.globals.get(llvm_name)
@@ -193,14 +200,14 @@ class _FunctionLowerer:
     def _lower_intrinsic_call(self, name: str, args: list[ir.Value]) -> ir.Value | None:
         if name == "step" and len(args) == 2:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'step' expects float arguments")
             edge, x_val = args
             cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
             return self.builder.uitofp(cmp_result, ir.FloatType(), name="step")
 
         if name == "mix" and len(args) == 3:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'mix' expects float arguments")
             a, b, t = args
             one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
             return self.builder.fadd(
@@ -211,19 +218,19 @@ class _FunctionLowerer:
 
         if name == "max" and len(args) == 2:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'max' expects float arguments")
             maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
             return self.builder.call(maxnum, args, name="max")
 
         if name == "min" and len(args) == 2:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'min' expects float arguments")
             minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
             return self.builder.call(minnum, args, name="min")
 
         if name == "clamp" and len(args) == 3:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'clamp' expects float arguments")
             x_val, min_value, max_value = args
             maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
             minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
@@ -232,7 +239,7 @@ class _FunctionLowerer:
 
         if name == "abs" and len(args) == 1:
             if not isinstance(args[0].type, ir.FloatType):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'abs' expects a float argument")
             llvm_name = "llvm.fabs.f32"
             fabs = self.module.globals.get(llvm_name)
             if fabs is None:
@@ -245,7 +252,7 @@ class _FunctionLowerer:
 
         if name == "sign" and len(args) == 1:
             if not isinstance(args[0].type, ir.FloatType):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'sign' expects a float argument")
             x = args[0]
             zero = ir.Constant(ir.FloatType(), 0.0)
             pos = self.builder.fcmp_ordered(">", x, zero, name="sign_pos")
@@ -256,7 +263,7 @@ class _FunctionLowerer:
 
         if name == "smoothstep" and len(args) == 3:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error("intrinsic 'smoothstep' expects float arguments")
             edge0, edge1, x = args
             # t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
             diff = self.builder.fsub(x, edge0, name="ss_diff")
@@ -304,14 +311,14 @@ class _FunctionLowerer:
                 return self.builder.sext(value, target_type)
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
-        return ir.Constant(target_type, None)
+        self._compiler_error(f"cannot coerce value of type '{value.type}' to '{target_type}'")
 
     def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
         current = value
         for field_name in path:
             field_info = self._field_index_and_type(current.type, field_name)
             if field_info is None:
-                return ir.Constant(ir.FloatType(), 0.0)
+                self._compiler_error(f"unknown struct field '{field_name}' in access path")
             index, _ = field_info
             current = self.builder.extract_value(current, index, name=f"{field_name}_field")
         return current
@@ -319,7 +326,7 @@ class _FunctionLowerer:
     def _insert_field_path(self, aggregate: ir.Value, path: list[str], value: ir.Value) -> ir.Value:
         field_info = self._field_index_and_type(aggregate.type, path[0])
         if field_info is None:
-            return aggregate
+            self._compiler_error(f"unknown struct field '{path[0]}' in assignment path")
         index, field_type = field_info
         if len(path) == 1:
             coerced = self._coerce_value_to_type(value, field_type)
@@ -341,11 +348,11 @@ class _FunctionLowerer:
             return self.builder.fsub(ir.Constant(value.type, 0.0), value)
         if isinstance(value.type, ir.IntType):
             return self.builder.sub(ir.Constant(value.type, 0), value)
-        return ir.Constant(value.type, None)
+        self._compiler_error(f"unary '-' is unsupported for type '{value.type}'")
 
     def _emit_numeric_binary(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if lhs.type != rhs.type:
-            return ir.Constant(lhs.type, None)
+            self._compiler_error(f"operator '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'")
 
         if isinstance(lhs.type, ir.FloatType):
             return {
@@ -365,18 +372,18 @@ class _FunctionLowerer:
                 "%": self.builder.srem,
             }[op](lhs, rhs)
 
-        return ir.Constant(lhs.type, None)
+        self._compiler_error(f"operator '{op}' is unsupported for type '{lhs.type}'")
 
     def _emit_relational_compare(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if lhs.type != rhs.type:
-            return ir.Constant(ir.IntType(1), 0)
+            self._compiler_error(f"comparison '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'")
 
         rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
         if isinstance(lhs.type, ir.FloatType):
             return self.builder.fcmp_ordered(rel_map[op], lhs, rhs)
         if isinstance(lhs.type, ir.IntType):
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
-        return ir.Constant(ir.IntType(1), 0)
+        self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
 
     def _load_var(self, name: str) -> ir.Value:
         parts = name.split(".")
@@ -386,7 +393,7 @@ class _FunctionLowerer:
             if len(parts) == 1:
                 return base_value
             return self._extract_field_path(base_value, parts[1:])
-        return ir.Constant(ir.FloatType(), 0.0)
+        self._compiler_error(f"undefined variable '{parts[0]}'")
 
     def _parse_expr(self, expr: str):
         parser = _ExprParser(_tokenize_expr(expr))
@@ -399,9 +406,13 @@ class _FunctionLowerer:
                 return lowered_intrinsic
         callee = self.function_map.get(f"pure_{_sanitize_symbol(name)}")
         if callee is not None:
+            if len(args) != len(callee.args):
+                self._compiler_error(
+                    f"function '{name}' expects {len(callee.args)} argument(s), got {len(args)}"
+                )
             coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
             return self.builder.call(callee, coerced, name=f"call_{name}")
-        return ir.Constant(ir.FloatType(), 0.0)
+        self._compiler_error(f"unknown function '{name}'")
 
     @staticmethod
     def _normalize_expr_node(node) -> "AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall":
@@ -436,10 +447,14 @@ class _FunctionLowerer:
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._emit_relational_compare(op, lhs, rhs)
         if op == "&&":
+            if not isinstance(lhs.type, ir.IntType) or lhs.type.width != 1 or lhs.type != rhs.type:
+                self._compiler_error("operator '&&' expects matching boolean operands")
             return self.builder.and_(lhs, rhs)
         if op == "||":
+            if not isinstance(lhs.type, ir.IntType) or lhs.type.width != 1 or lhs.type != rhs.type:
+                self._compiler_error("operator '||' expects matching boolean operands")
             return self.builder.or_(lhs, rhs)
-        return ir.Constant(ir.FloatType(), 0.0)
+        self._compiler_error(f"unsupported binary operator '{op}'")
 
     def _lower_expr(self, node):
         node = self._normalize_expr_node(node)
