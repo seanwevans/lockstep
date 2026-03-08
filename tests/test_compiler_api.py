@@ -9,7 +9,7 @@ if str(REPO_ROOT) not in sys.path:
 import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
-from lockstep_compiler.codegen import emit_llvm_ir
+from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
 import pytest
 
 
@@ -373,28 +373,27 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
 
 
-def test_emit_llvm_ir_does_not_raise_on_mixed_int_float_expression():
-    llvm_ir = emit_llvm_ir(
-        {
-            "structs": [],
-            "pure_functions": [
-                {
-                    "name": "bad_mix",
-                    "return_type": "float",
-                    "params": [],
-                    "body": ["return 1 + 1.0;"],
-                }
-            ],
-            "shaders": [],
-            "filters": [],
-            "streams": [],
-            "accumulators": [],
-            "uniforms": [],
-            "bind_routes": [],
-        }
-    )
-
-    assert 'define float @"pure_bad_mix"()' in llvm_ir
+def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
+    with pytest.raises(CodegenError, match="requires matching operand types"):
+        emit_llvm_ir(
+            {
+                "structs": [],
+                "pure_functions": [
+                    {
+                        "name": "bad_mix",
+                        "return_type": "float",
+                        "params": [],
+                        "body": ["return 1 + 1.0;"],
+                    }
+                ],
+                "shaders": [],
+                "filters": [],
+                "streams": [],
+                "accumulators": [],
+                "uniforms": [],
+                "bind_routes": [],
+            }
+        )
 
 
 def test_compile_lockstep_builds_structured_statement_ast():
@@ -519,3 +518,48 @@ def test_compile_result_includes_c_header(monkeypatch):
 
     assert "#define LOCKSTEP_ARENA_BYTES 4" in result.c_header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in result.c_header
+
+
+def test_emit_llvm_ir_raises_on_undefined_variable_reference():
+    with pytest.raises(CodegenError, match="undefined variable"):
+        emit_llvm_ir(
+            {
+                "pure_functions": [
+                    {"name": "demo", "return_type": "float", "params": [], "body": ["return missing;"]}
+                ],
+                "shaders": [],
+                "filters": [],
+                "streams": [],
+                "accumulators": [],
+                "uniforms": [],
+                "bind_routes": [],
+            }
+        )
+
+
+def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
+    with pytest.raises(CodegenError, match="intrinsic 'max' expects float arguments"):
+        emit_llvm_ir(
+            {
+                "pure_functions": [
+                    {
+                        "name": "max",
+                        "return_type": "float",
+                        "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}],
+                        "intrinsic": True,
+                    },
+                    {
+                        "name": "demo",
+                        "return_type": "float",
+                        "params": [],
+                        "body": ["return max(1, 2);"]
+                    }
+                ],
+                "shaders": [],
+                "filters": [],
+                "streams": [],
+                "accumulators": [],
+                "uniforms": [],
+                "bind_routes": [],
+            }
+        )
