@@ -92,6 +92,7 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "line": diagnostic.line,
                 "column": diagnostic.column,
                 "hint": diagnostic.hint,
+                "source_file": diagnostic.source_file,
             }
             for diagnostic in result.diagnostics
         ]
@@ -105,6 +106,7 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "line": diagnostic.line,
                 "column": diagnostic.column,
                 "hint": diagnostic.hint,
+                "source_file": diagnostic.source_file,
             }
             for diagnostic in error.diagnostics
         ]
