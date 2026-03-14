@@ -10,6 +10,7 @@ from .ast import (
     AstAssignStmt,
     AstExprBinary,
     AstExprCall,
+    AstExprCast,
     AstExprLiteral,
     AstExprUnary,
     AstExprVar,
@@ -52,6 +53,10 @@ class _ExprParser:
 
     def _peek(self) -> str | None:
         return self.tokens[self.index] if self.index < len(self.tokens) else None
+
+    def _peek_n(self, offset: int) -> str | None:
+        idx = self.index + offset
+        return self.tokens[idx] if idx < len(self.tokens) else None
 
     def _take(self, token: str | None = None) -> str:
         current = self._peek()
@@ -139,6 +144,17 @@ class _ExprParser:
         if self._peek() in {"-", "!"}:
             op = self._take()
             return ("un", op, self._parse_unary())
+        if self._peek() in {"int", "float"} and self._peek_n(1) == "(":
+            cast_type = self._take()
+            self._take("(")
+            value = self._parse_or()
+            self._take(")")
+            return ("cast", cast_type, value)
+        if self._peek() == "(" and self._peek_n(1) in {"int", "float"} and self._peek_n(2) == ")":
+            self._take("(")
+            cast_type = self._take()
+            self._take(")")
+            return ("cast", cast_type, self._parse_unary())
         return self._parse_primary()
 
     def _parse_primary(self):
@@ -415,9 +431,9 @@ class _FunctionLowerer:
         self._compiler_error(f"unknown function '{name}'")
 
     @staticmethod
-    def _normalize_expr_node(node) -> "AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall":
+    def _normalize_expr_node(node) -> "AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast":
         """Convert legacy tuple-based expression nodes to typed AST nodes."""
-        if isinstance(node, (AstExprLiteral, AstExprVar, AstExprUnary, AstExprBinary, AstExprCall)):
+        if isinstance(node, (AstExprLiteral, AstExprVar, AstExprUnary, AstExprBinary, AstExprCall, AstExprCast)):
             return node
         kind = node[0]
         if kind in {"float", "int", "bool"}:
@@ -428,6 +444,8 @@ class _FunctionLowerer:
             return AstExprUnary(op=node[1], operand=node[2])
         if kind == "call":
             return AstExprCall(name=node[1], args=tuple(node[2]))
+        if kind == "cast":
+            return AstExprCast(target_type=node[1], operand=node[2])
         # "bin" — binary operation
         return AstExprBinary(op=node[1], left=node[2], right=node[3])
 
@@ -456,6 +474,24 @@ class _FunctionLowerer:
             return self.builder.or_(lhs, rhs)
         self._compiler_error(f"unsupported binary operator '{op}'")
 
+    def _lower_cast(self, target_type: AstType, operand: ir.Value) -> ir.Value:
+        target = self._llvm_type(_type_name(target_type), self.known_structs)
+        if not isinstance(target, (ir.IntType, ir.FloatType)):
+            self._compiler_error(f"unsupported cast target type '{target_type}'")
+        if operand.type == target:
+            return operand
+        if isinstance(target, ir.FloatType) and isinstance(operand.type, ir.IntType):
+            return self.builder.sitofp(operand, target, name="sitofp_cast")
+        if isinstance(target, ir.IntType) and isinstance(operand.type, ir.FloatType):
+            return self.builder.fptosi(operand, target, name="fptosi_cast")
+        if isinstance(target, ir.IntType) and isinstance(operand.type, ir.IntType):
+            if operand.type.width < target.width:
+                return self.builder.sext(operand, target, name="sext_cast")
+            return self.builder.trunc(operand, target, name="trunc_cast")
+        if isinstance(target, ir.FloatType) and isinstance(operand.type, ir.FloatType):
+            return self.builder.fpext(operand, target, name="fpext_cast") if operand.type != target else operand
+        self._compiler_error(f"cannot cast value of type '{operand.type}' to '{target}'")
+
     def _lower_expr(self, node):
         node = self._normalize_expr_node(node)
 
@@ -474,6 +510,8 @@ class _FunctionLowerer:
             return self.builder.not_(operand)
         if isinstance(node, AstExprCall):
             return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
+        if isinstance(node, AstExprCast):
+            return self._lower_cast(node.target_type, self._lower_expr(node.operand))
         # AstExprBinary
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
         return self._lower_binary_op(node.op, lhs, rhs)

@@ -610,3 +610,56 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                 "bind_routes": [],
             }
         )
+
+
+def test_compile_lockstep_parses_c_style_and_function_style_casts():
+    from lockstep_compiler.ast import AstExprBinary, AstExprCast
+
+    result = compiler_module.compile_lockstep(
+        """
+        pure float cast_mix(int x) {
+            return (float)x + float(x);
+        }
+        pipeline Main {
+            bind { }
+        }
+        """,
+        verbose=False,
+    )
+
+    expr = result.ast.pure_functions[0].body[0].value
+    assert isinstance(expr, AstExprBinary)
+    assert isinstance(expr.left, AstExprCast)
+    assert expr.left.target_type.name == "float"
+    assert isinstance(expr.right, AstExprCast)
+    assert expr.right.target_type.name == "float"
+
+
+def test_emit_llvm_ir_lowers_float_int_cast_instructions():
+    llvm_ir = emit_llvm_ir(
+        {
+            "pure_functions": [
+                {
+                    "name": "up",
+                    "return_type": "float",
+                    "params": [{"name": "x", "type": "int", "modifier": "value"}],
+                    "body": ["return float(x);"]
+                },
+                {
+                    "name": "down",
+                    "return_type": "int",
+                    "params": [{"name": "x", "type": "float", "modifier": "value"}],
+                    "body": ["return (int)x;"]
+                },
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "sitofp i32" in llvm_ir
+    assert "fptosi float" in llvm_ir

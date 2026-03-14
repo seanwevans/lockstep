@@ -62,7 +62,16 @@ class AstExprCall:
     args: tuple["AstExpr", ...]
 
 
-AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall
+@dataclass(frozen=True)
+class AstExprCast:
+    target_type: AstType
+    operand: "AstExpr"
+
+    def __post_init__(self):
+        object.__setattr__(self, "target_type", _normalize_type(self.target_type))
+
+
+AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast
 
 
 @dataclass(frozen=True)
@@ -314,9 +323,20 @@ class AstBuilder(_AstBuilderMixin):
         return self._parse_left_associative(ctx, self._call(ctx, "unaryExpr", []) or [])
 
     def visitUnaryExpr(self, ctx: Any):
+        cast_type_ctx = self._call(ctx, "castType")
         nested = self._call(ctx, "unaryExpr")
+        if cast_type_ctx is not None and nested is not None:
+            return AstExprCast(target_type=self._resolve_type(cast_type_ctx.getText()), operand=self.visit(nested))
+
         if nested is not None:
-            return AstExprUnary(op=ctx.getChild(0).getText(), operand=self.visit(nested))
+            first_child = ctx.getChild(0).getText()
+            if first_child in {"-", "!"}:
+                return AstExprUnary(op=first_child, operand=self.visit(nested))
+
+        expr_ctx = self._call(ctx, "expr")
+        if cast_type_ctx is not None and expr_ctx is not None:
+            return AstExprCast(target_type=self._resolve_type(cast_type_ctx.getText()), operand=self.visit(expr_ctx))
+
         return self.visit(self._call(ctx, "primaryExpr"))
 
     def visitPrimaryExpr(self, ctx: Any):
@@ -548,6 +568,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             return f"{expr.op}{_expr_to_text(expr.operand)}"
         if isinstance(expr, AstExprBinary):
             return f"({_expr_to_text(expr.left)} {expr.op} {_expr_to_text(expr.right)})"
+        if isinstance(expr, AstExprCast):
+            return f"{_type_name(expr.target_type)}({_expr_to_text(expr.operand)})"
         return f"{expr.name}({', '.join(_expr_to_text(arg) for arg in expr.args)})"
 
     def _statement_to_text(statement: AstStatement) -> str:

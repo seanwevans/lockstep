@@ -332,6 +332,15 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#castType.
+    def enterCastType(self, ctx:LockstepParser.CastTypeContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#castType.
+    def exitCastType(self, ctx:LockstepParser.CastTypeContext):
+        pass
+
+
     # Enter a parse tree produced by LockstepParser#primaryExpr.
     def enterPrimaryExpr(self, ctx:LockstepParser.PrimaryExprContext):
         pass
@@ -365,6 +374,15 @@ class LockstepListener(ParseTreeListener):
 
     # Exit a parse tree produced by LockstepParser#typeName.
     def exitTypeName(self, ctx:LockstepParser.TypeNameContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#typeAtom.
+    def enterTypeAtom(self, ctx:LockstepParser.TypeAtomContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#typeAtom.
+    def exitTypeAtom(self, ctx:LockstepParser.TypeAtomContext):
         pass
 
 

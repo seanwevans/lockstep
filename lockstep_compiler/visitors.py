@@ -1184,7 +1184,24 @@ def build_semantic_validator(base_visitor_cls):
                         _report_operand_error(operator, "bool", [operand_type])
                         return None
                     return "bool" if operand_type is not None else None
+                if operator in {"int", "float"}:
+                    if operand_type is not None and operand_type not in {"int", "float", "bool"}:
+                        _report_operand_error(operator, "scalar", [operand_type])
+                        return None
+                    return operator if operand_type is not None else None
                 return operand_type
+
+            if hasattr(ctx, "castType") and callable(ctx.castType) and ctx.castType() is not None:
+                target_type = ctx.castType().getText()
+                if target_type not in {"int", "float"}:
+                    return None
+                if hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None:
+                    operand_type = self._resolve_expr_type(ctx.expr())
+                    if operand_type is not None and operand_type not in {"int", "float", "bool"}:
+                        _report_operand_error(target_type, "scalar", [operand_type])
+                        return None
+                    return target_type if operand_type is not None else None
+                return target_type
 
             if hasattr(ctx, "declared_type"):
                 return ctx.declared_type

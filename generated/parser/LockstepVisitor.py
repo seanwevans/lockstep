@@ -189,6 +189,11 @@ class LockstepVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by LockstepParser#castType.
+    def visitCastType(self, ctx:LockstepParser.CastTypeContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by LockstepParser#primaryExpr.
     def visitPrimaryExpr(self, ctx:LockstepParser.PrimaryExprContext):
         return self.visitChildren(ctx)
@@ -206,6 +211,11 @@ class LockstepVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by LockstepParser#typeName.
     def visitTypeName(self, ctx:LockstepParser.TypeNameContext):
+        return self.visitChildren(ctx)
+
+
+    # Visit a parse tree produced by LockstepParser#typeAtom.
+    def visitTypeAtom(self, ctx:LockstepParser.TypeAtomContext):
         return self.visitChildren(ctx)
 
 

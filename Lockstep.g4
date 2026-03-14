@@ -73,7 +73,16 @@ relExpr: shiftExpr (('<' | '<=' | '>' | '>=') shiftExpr)*;
 shiftExpr: addExpr (('<<' | '>>') addExpr)*;
 addExpr: mulExpr (('+' | '-') mulExpr)*;
 mulExpr: unaryExpr (('*' | '/' | '%') unaryExpr)*;
-unaryExpr: ('-' | '!') unaryExpr | primaryExpr;
+unaryExpr
+    : ('-' | '!') unaryExpr
+    | '(' castType ')' unaryExpr
+    | castType '(' expr ')'
+    | primaryExpr
+    ;
+castType
+    : 'int'
+    | 'float'
+    ;
 primaryExpr
     : '(' expr ')'
     | ID '(' exprList? ')'
@@ -85,7 +94,15 @@ primaryExpr
 
 exprList: expr (',' expr)*;
 lvalue: ID ('.' ID)*;
-typeName: ID typeSuffix*;
+typeName: typeAtom typeSuffix*;
+typeAtom
+    : ID
+    | 'int'
+    | 'float'
+    | 'bool'
+    | 'uint'
+    | 'double'
+    ;
 typeSuffix
     : '[' INT ']'
     | '<' typeName (',' INT)? '>'
