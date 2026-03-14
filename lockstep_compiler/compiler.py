@@ -1,4 +1,5 @@
 import functools
+from dataclasses import replace
 from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
@@ -7,10 +8,13 @@ from .ast import ast_to_entities, build_program_ast
 from .c_header import emit_c_header
 from .codegen import emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
-from .models import LockstepCompileResult, normalize_diagnostics
+from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
 from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
+
+
+DEFAULT_SOURCE_FILE = "<stdin>"
 
 
 def _merge_intrinsic_pure_functions(pure_functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -21,10 +25,76 @@ def _merge_intrinsic_pure_functions(pure_functions: list[dict[str, Any]]) -> lis
     return list(merged.values())
 
 
+def _line_count(source: str) -> int:
+    return source.count("\n") + 1
+
+
+def _build_combined_source(
+    source_code: str,
+    *,
+    source_file: str,
+    library_sources: list[str] | None,
+    library_source_files: list[str] | None,
+) -> tuple[str, list[tuple[int, int, str]]]:
+    libraries = library_sources or []
+    all_sources = [*libraries, source_code]
+    resolved_library_files = library_source_files or [
+        f"<library:{idx + 1}>" for idx in range(len(libraries))
+    ]
+    if len(resolved_library_files) < len(libraries):
+        resolved_library_files = [
+            *resolved_library_files,
+            *[
+                f"<library:{idx + 1}>"
+                for idx in range(len(resolved_library_files), len(libraries))
+            ],
+        ]
+    all_source_files = [*resolved_library_files[: len(libraries)], source_file]
+    mapping: list[tuple[int, int, str]] = []
+    current_line = 1
+    for index, part in enumerate(all_sources):
+        part_line_count = _line_count(part)
+        start_line = current_line
+        end_line = start_line + part_line_count - 1
+        mapping.append((start_line, end_line, all_source_files[index]))
+        current_line = end_line + 1
+        if index < len(all_sources) - 1:
+            current_line += 1
+    return "\n\n".join(all_sources), mapping
+
+
+def _remap_diagnostic(
+    diagnostic: LockstepDiagnostic,
+    source_map: list[tuple[int, int, str]],
+    default_source_file: str,
+) -> LockstepDiagnostic:
+    if diagnostic.source_file:
+        return diagnostic
+    for start_line, end_line, mapped_source in source_map:
+        if start_line <= diagnostic.line <= end_line:
+            return replace(
+                diagnostic,
+                source_file=mapped_source,
+                line=(diagnostic.line - start_line) + 1,
+            )
+    return replace(diagnostic, source_file=default_source_file)
+
+
+def _remap_diagnostics(
+    diagnostics: list[LockstepDiagnostic],
+    *,
+    source_map: list[tuple[int, int, str]],
+    default_source_file: str,
+) -> list[LockstepDiagnostic]:
+    return [_remap_diagnostic(diagnostic, source_map, default_source_file) for diagnostic in diagnostics]
+
+
 def _compile_lockstep_with_dependencies(
     source_code: str,
     *,
     verbose: bool = True,
+    source_file: str = DEFAULT_SOURCE_FILE,
+    source_map: list[tuple[int, int, str]] | None = None,
     lexer_cls,
     parser_cls,
     visitor_cls,
@@ -32,9 +102,11 @@ def _compile_lockstep_with_dependencies(
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
 ) -> LockstepCompileResult:
+    source_map = source_map or [(1, _line_count(source_code), source_file)]
+
     input_stream = InputStream(source_code)
     lexer = lexer_cls(input_stream)
-    error_listener = ParseErrorCollector()
+    error_listener = ParseErrorCollector(source_file=None)
     lexer.removeErrorListeners()
     lexer.addErrorListener(error_listener)
     stream = token_stream_cls(lexer)
@@ -45,7 +117,16 @@ def _compile_lockstep_with_dependencies(
     tree = parser.program()
 
     if error_listener.errors:
-        raise LockstepCompileError(error_listener.errors, diagnostics=error_listener.errors)
+        parse_errors = _remap_diagnostics(
+            error_listener.errors,
+            source_map=source_map,
+            default_source_file=source_file,
+        )
+        raise LockstepCompileError(
+            parse_errors,
+            diagnostics=parse_errors,
+            source_file=parse_errors[0].source_file if parse_errors else source_file,
+        )
 
     typed_ast = None
     if debug_visitor_cls is None:
@@ -64,12 +145,18 @@ def _compile_lockstep_with_dependencies(
         )
     except TypeError:
         semantic_diagnostics = normalize_diagnostics(semantic_validator(tree))
+    semantic_diagnostics = _remap_diagnostics(
+        semantic_diagnostics,
+        source_map=source_map,
+        default_source_file=source_file,
+    )
     semantic_errors = [d for d in semantic_diagnostics if d.severity == "error"]
     if semantic_errors:
         raise LockstepCompileError(
             semantic_errors,
             diagnostics=semantic_diagnostics,
             phase="semantic",
+            source_file=semantic_errors[0].source_file,
         )
 
     debug_diagnostics = []
@@ -80,7 +167,11 @@ def _compile_lockstep_with_dependencies(
         debug_visitor_cls = debug_visitor_cls or build_debug_visitor(visitor_cls)
         visitor = debug_visitor_cls(verbose=verbose)
         visitor.visit(tree)
-        debug_diagnostics = visitor.diagnostics
+        debug_diagnostics = _remap_diagnostics(
+            visitor.diagnostics,
+            source_map=source_map,
+            default_source_file=source_file,
+        )
         entities = {
             "structs": visitor.structs,
             "shaders": visitor.shaders,
@@ -142,7 +233,9 @@ def compile_lockstep(
     source_code: str,
     *,
     verbose: bool = True,
+    source_file: str = DEFAULT_SOURCE_FILE,
     library_sources: list[str] | None = None,
+    library_source_files: list[str] | None = None,
     lexer_cls=None,
     parser_cls=None,
     visitor_cls=None,
@@ -150,8 +243,12 @@ def compile_lockstep(
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
 ) -> LockstepCompileResult:
-    if library_sources:
-        source_code = "\n\n".join([*library_sources, source_code])
+    source_code, source_map = _build_combined_source(
+        source_code,
+        source_file=source_file,
+        library_sources=library_sources,
+        library_source_files=library_source_files,
+    )
 
     if lexer_cls is None or parser_cls is None or visitor_cls is None:
         default_lexer_cls, default_parser_cls, default_visitor_cls = (
@@ -164,6 +261,8 @@ def compile_lockstep(
     return _compile_lockstep_with_dependencies(
         source_code,
         verbose=verbose,
+        source_file=source_file,
+        source_map=source_map,
         lexer_cls=lexer_cls,
         parser_cls=parser_cls,
         visitor_cls=visitor_cls,

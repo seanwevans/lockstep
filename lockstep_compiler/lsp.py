@@ -16,6 +16,13 @@ class MemberDefinition:
     column: int
 
 
+@dataclass(frozen=True)
+class AnalysisContext:
+    variable_types: dict[str, str]
+    struct_member_index: dict[str, dict[str, MemberDefinition]]
+    struct_field_types: dict[str, dict[str, str]]
+
+
 _STRUCT_RE = re.compile(r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", re.MULTILINE)
 _FIELD_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 _TYPED_NAME_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
@@ -85,6 +92,7 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "line": diagnostic.line,
                 "column": diagnostic.column,
                 "hint": diagnostic.hint,
+                "source_file": diagnostic.source_file,
             }
             for diagnostic in result.diagnostics
         ]
@@ -98,6 +106,7 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "line": diagnostic.line,
                 "column": diagnostic.column,
                 "hint": diagnostic.hint,
+                "source_file": diagnostic.source_file,
             }
             for diagnostic in error.diagnostics
         ]
@@ -151,10 +160,40 @@ def infer_variable_types(source: str) -> dict[str, str]:
     return inferred
 
 
+def _build_struct_field_type_index(source: str) -> dict[str, dict[str, str]]:
+    """Index struct field type declarations for hover text generation."""
+
+    index: dict[str, dict[str, str]] = {}
+    for struct_match in _STRUCT_RE.finditer(source):
+        struct_name = struct_match.group(1)
+        body_start = struct_match.end()
+        body_end = source.find("}", body_start)
+        if body_end == -1:
+            continue
+
+        body = source[body_start:body_end]
+        index[struct_name] = {}
+        for field_match in _FIELD_RE.finditer(body):
+            index[struct_name][field_match.group(2)] = field_match.group(1)
+
+    return index
+
+
+def build_analysis_context(source: str) -> AnalysisContext:
+    """Build reusable per-request analysis context for member-based LSP features."""
+
+    return AnalysisContext(
+        variable_types=infer_variable_types(source),
+        struct_member_index=build_struct_member_index(source),
+        struct_field_types=_build_struct_field_type_index(source),
+    )
+
+
 def find_member_definition(
     source: str,
     line: int,
     column: int,
+    analysis_context: AnalysisContext | None = None,
 ) -> MemberDefinition | None:
     """Resolve `foo.bar` usages to `struct` field declaration locations."""
 
@@ -163,16 +202,18 @@ def find_member_definition(
         return None
 
     line_text = lines[line]
+    context = analysis_context or build_analysis_context(source)
+    variable_types = context.variable_types
+    struct_index = context.struct_member_index
+
     for match in _MEMBER_ACCESS_RE.finditer(line_text):
         start, end = match.span(0)
         if not (start <= column <= end):
             continue
         variable_name, field_name = match.groups()
-        variable_types = infer_variable_types(source)
         struct_name = variable_types.get(variable_name)
         if not struct_name:
             return None
-        struct_index = build_struct_member_index(source)
         return struct_index.get(struct_name, {}).get(field_name)
     return None
 
@@ -279,6 +320,7 @@ def provide_hover_info(
     source: str,
     line: int,
     column: int,
+    analysis_context: AnalysisContext | None = None,
 ) -> str | None:
     """Return hover text for the identifier at the given position."""
 
@@ -287,6 +329,10 @@ def provide_hover_info(
         return None
 
     line_text = lines[line]
+    context = analysis_context or build_analysis_context(source)
+    variable_types = context.variable_types
+    struct_index = context.struct_member_index
+    field_types = context.struct_field_types
 
     # Try member access first (foo.bar)
     for match in _MEMBER_ACCESS_RE.finditer(line_text):
@@ -294,24 +340,13 @@ def provide_hover_info(
         if not (start <= column <= end):
             continue
         variable_name, field_name = match.groups()
-        variable_types = infer_variable_types(source)
         struct_name = variable_types.get(variable_name)
         if struct_name:
-            struct_index = build_struct_member_index(source)
             field_def = struct_index.get(struct_name, {}).get(field_name)
             if field_def:
-                # Find the field type from struct declarations
-                for struct_match in _STRUCT_RE.finditer(source):
-                    if struct_match.group(1) != struct_name:
-                        continue
-                    body_start = struct_match.end()
-                    body_end = source.find("}", body_start)
-                    if body_end == -1:
-                        continue
-                    body = source[body_start:body_end]
-                    for fm in _FIELD_RE.finditer(body):
-                        if fm.group(2) == field_name:
-                            return f"(field) `{struct_name}.{field_name}: {fm.group(1)}`"
+                field_type = field_types.get(struct_name, {}).get(field_name)
+                if field_type:
+                    return f"(field) `{struct_name}.{field_name}: {field_type}`"
             return f"(field) `{struct_name}.{field_name}`"
         return None
 
@@ -322,7 +357,6 @@ def provide_hover_info(
         if not (start <= column < end):
             continue
         name = match.group(1)
-        variable_types = infer_variable_types(source)
         if name in variable_types:
             return f"(variable) `{name}: {variable_types[name]}`"
 
@@ -409,10 +443,12 @@ def run_lsp_server() -> int:
     @server.feature(types.TEXT_DOCUMENT_HOVER)
     def hover(params: types.HoverParams):
         document = server.workspace.get_text_document(params.text_document.uri)
+        analysis_context = build_analysis_context(document.source)
         info = provide_hover_info(
             document.source,
             params.position.line,
             params.position.character,
+            analysis_context=analysis_context,
         )
         if info is None:
             return None
@@ -426,10 +462,12 @@ def run_lsp_server() -> int:
     @server.feature(types.TEXT_DOCUMENT_DEFINITION)
     def definition(params: types.DefinitionParams):
         document = server.workspace.get_text_document(params.text_document.uri)
+        analysis_context = build_analysis_context(document.source)
         member = find_member_definition(
             document.source,
             params.position.line,
             params.position.character,
+            analysis_context=analysis_context,
         )
         if member is None:
             return None

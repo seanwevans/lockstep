@@ -234,6 +234,35 @@ def test_compile_lockstep_accepts_library_sources(monkeypatch):
     assert captured["source_code"].endswith("pipeline Main { bind { } }")
 
 
+def test_compile_lockstep_maps_parse_diagnostics_to_library_source_file():
+    library_source = "@"
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline Main { bind { } }",
+            source_file="main.lock",
+            library_sources=[library_source],
+            library_source_files=["lib/math.lock"],
+            verbose=False,
+        )
+
+    assert exc_info.value.errors[0].source_file == "lib/math.lock"
+    assert exc_info.value.errors[0].line == 1
+
+
+def test_compile_lockstep_maps_semantic_diagnostics_to_primary_source_file():
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline Main {\n    stream<MissingType, 1> values;\n    bind { }\n}",
+            source_file="main.lock",
+            library_sources=["struct Vec { float x; };"],
+            library_source_files=["lib/math.lock"],
+            verbose=False,
+        )
+
+    assert exc_info.value.errors[0].source_file == "main.lock"
+    assert exc_info.value.errors[0].line == 2
+
 def test_emit_llvm_ir_accepts_ast_program_input():
     from lockstep_compiler.ast import (
         AstKernelBindRoute,

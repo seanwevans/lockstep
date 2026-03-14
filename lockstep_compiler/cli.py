@@ -61,6 +61,16 @@ def build_arg_parser():
         action="store_true",
         help="Emit generated C host header to stdout.",
     )
+    mode_group.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Simulate bind-route execution on small in-memory datasets.",
+    )
+    mode_group.add_argument(
+        "--report",
+        action="store_true",
+        help="Emit one JSON report containing both compiled entities and simulation output.",
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -74,15 +84,28 @@ def build_arg_parser():
         help="Path to a Lockstep source library file containing shared structs/pure functions.",
     )
     parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Simulate bind-route execution on small in-memory datasets.",
-    )
-    parser.add_argument(
         "--simulate-input",
         help="Path to a JSON file containing simulation inputs with `streams` and optional `accumulators` maps.",
     )
     return parser
+
+
+def _load_simulation_inputs(args, *, stderr):
+    input_payload = ""
+    if args.simulate_input:
+        input_path = Path(args.simulate_input)
+        try:
+            input_payload = input_path.read_text(encoding="utf-8")
+        except OSError as err:
+            print(f"Unable to read simulation input '{input_path}': {err}", file=stderr)
+            return None
+    try:
+        return parse_simulation_inputs(input_payload)
+    except json.JSONDecodeError as err:
+        print(f"Unable to parse simulation input JSON: {err}", file=stderr)
+    except ValueError as err:
+        print(f"Invalid simulation input: {err}", file=stderr)
+    return None
 
 
 def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
@@ -118,11 +141,13 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         source = stdin.read()
 
     library_sources = []
+    library_source_files = []
     for library_path in args.lib:
         library_source = _read_source_file(Path(library_path), stderr=stderr)
         if library_source is None:
             return 1
         library_sources.append(library_source)
+        library_source_files.append(str(Path(library_path)))
 
     if args.format:
         print(format_lockstep_source(source), end="", file=stdout)
@@ -142,6 +167,8 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
 
     supports_verbose = False
     supports_library_sources = False
+    supports_source_file = False
+    supports_library_source_files = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -158,12 +185,26 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             or parameter.name == "library_sources"
             for parameter in signature.parameters.values()
         )
+        supports_source_file = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "source_file"
+            for parameter in signature.parameters.values()
+        )
+        supports_library_source_files = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "library_source_files"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs = {}
     if supports_verbose:
         compile_kwargs["verbose"] = False
     if supports_library_sources:
         compile_kwargs["library_sources"] = library_sources
+    if supports_source_file:
+        compile_kwargs["source_file"] = str(source_path) if args.path else "<stdin>"
+    if supports_library_source_files:
+        compile_kwargs["library_source_files"] = library_source_files
 
     try:
         if compile_kwargs:
@@ -178,7 +219,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             file=stderr,
         )
         for error in err.errors:
-            print(f"line {error.line}:{error.column} {error.message}", file=stderr)
+            if error.source_file:
+                print(f"{error.source_file}:{error.line}:{error.column} {error.message}", file=stderr)
+            else:
+                print(f"line {error.line}:{error.column} {error.message}", file=stderr)
         if args.debug:
             if err.diagnostics:
                 print("diagnostics:", file=stderr)
@@ -192,6 +236,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
                                 "line": diagnostic.line,
                                 "column": diagnostic.column,
                                 "hint": diagnostic.hint,
+                                "source_file": diagnostic.source_file,
                             }
                             for diagnostic in err.diagnostics
                         ],
@@ -220,35 +265,37 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         print(c_header, file=stdout)
         return 0
 
+    entities = getattr(result, "entities", result)
+
     if args.dump:
-        entities = getattr(result, "entities", result)
         print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
+        return 0
 
-    if args.simulate:
-        input_payload = ""
-        if args.simulate_input:
-            input_path = Path(args.simulate_input)
-            try:
-                input_payload = input_path.read_text(encoding="utf-8")
-            except OSError as err:
-                print(f"Unable to read simulation input '{input_path}': {err}", file=stderr)
-                return 1
-        try:
-            stream_inputs, accumulator_inputs = parse_simulation_inputs(input_payload)
-        except json.JSONDecodeError as err:
-            print(f"Unable to parse simulation input JSON: {err}", file=stderr)
+    if args.simulate or args.report:
+        simulation_inputs = _load_simulation_inputs(args, stderr=stderr)
+        if simulation_inputs is None:
             return 1
-        except ValueError as err:
-            print(f"Invalid simulation input: {err}", file=stderr)
-            return 1
+        stream_inputs, accumulator_inputs = simulation_inputs
 
-        entities = getattr(result, "entities", result)
         simulation = simulate_pipeline_entities(
             entities,
             stream_inputs=stream_inputs,
             accumulator_inputs=accumulator_inputs,
         )
-        print(json.dumps(simulation, indent=2, sort_keys=True, default=str), file=stdout)
+
+        if args.report:
+            print(
+                json.dumps(
+                    {"entities": entities, "simulation": simulation},
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                ),
+                file=stdout,
+            )
+        else:
+            print(json.dumps(simulation, indent=2, sort_keys=True, default=str), file=stdout)
+        return 0
 
     return 0
 
