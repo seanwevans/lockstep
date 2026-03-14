@@ -61,6 +61,16 @@ def build_arg_parser():
         action="store_true",
         help="Emit generated C host header to stdout.",
     )
+    mode_group.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Simulate bind-route execution on small in-memory datasets.",
+    )
+    mode_group.add_argument(
+        "--report",
+        action="store_true",
+        help="Emit one JSON report containing both compiled entities and simulation output.",
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -74,15 +84,28 @@ def build_arg_parser():
         help="Path to a Lockstep source library file containing shared structs/pure functions.",
     )
     parser.add_argument(
-        "--simulate",
-        action="store_true",
-        help="Simulate bind-route execution on small in-memory datasets.",
-    )
-    parser.add_argument(
         "--simulate-input",
         help="Path to a JSON file containing simulation inputs with `streams` and optional `accumulators` maps.",
     )
     return parser
+
+
+def _load_simulation_inputs(args, *, stderr):
+    input_payload = ""
+    if args.simulate_input:
+        input_path = Path(args.simulate_input)
+        try:
+            input_payload = input_path.read_text(encoding="utf-8")
+        except OSError as err:
+            print(f"Unable to read simulation input '{input_path}': {err}", file=stderr)
+            return None
+    try:
+        return parse_simulation_inputs(input_payload)
+    except json.JSONDecodeError as err:
+        print(f"Unable to parse simulation input JSON: {err}", file=stderr)
+    except ValueError as err:
+        print(f"Invalid simulation input: {err}", file=stderr)
+    return None
 
 
 def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
@@ -213,35 +236,37 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         print(c_header, file=stdout)
         return 0
 
+    entities = getattr(result, "entities", result)
+
     if args.dump:
-        entities = getattr(result, "entities", result)
         print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
+        return 0
 
-    if args.simulate:
-        input_payload = ""
-        if args.simulate_input:
-            input_path = Path(args.simulate_input)
-            try:
-                input_payload = input_path.read_text(encoding="utf-8")
-            except OSError as err:
-                print(f"Unable to read simulation input '{input_path}': {err}", file=stderr)
-                return 1
-        try:
-            stream_inputs, accumulator_inputs = parse_simulation_inputs(input_payload)
-        except json.JSONDecodeError as err:
-            print(f"Unable to parse simulation input JSON: {err}", file=stderr)
+    if args.simulate or args.report:
+        simulation_inputs = _load_simulation_inputs(args, stderr=stderr)
+        if simulation_inputs is None:
             return 1
-        except ValueError as err:
-            print(f"Invalid simulation input: {err}", file=stderr)
-            return 1
+        stream_inputs, accumulator_inputs = simulation_inputs
 
-        entities = getattr(result, "entities", result)
         simulation = simulate_pipeline_entities(
             entities,
             stream_inputs=stream_inputs,
             accumulator_inputs=accumulator_inputs,
         )
-        print(json.dumps(simulation, indent=2, sort_keys=True, default=str), file=stdout)
+
+        if args.report:
+            print(
+                json.dumps(
+                    {"entities": entities, "simulation": simulation},
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                ),
+                file=stdout,
+            )
+        else:
+            print(json.dumps(simulation, indent=2, sort_keys=True, default=str), file=stdout)
+        return 0
 
     return 0
 

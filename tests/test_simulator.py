@@ -115,6 +115,49 @@ def test_run_cli_simulate_reads_input_file(tmp_path):
     assert payload["streams"]["s"] == [1, 2, 3]
 
 
+
+def test_run_cli_report_prints_single_json_payload_with_entities_and_simulation():
+    def fake_compiler(_source):
+        return {
+            "streams": [{"name": "s", "type": "int", "capacity": "4"}],
+            "accumulators": [],
+            "uniforms": [],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": [],
+        }
+
+    stdout = io.StringIO()
+    exit_code = run_cli(
+        ["--report"],
+        stdin=io.StringIO("pipeline P { }"),
+        stdout=stdout,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    decoder = json.JSONDecoder()
+    payload_text = stdout.getvalue()
+    payload, index = decoder.raw_decode(payload_text)
+    assert payload["entities"]["streams"][0]["name"] == "s"
+    assert payload["simulation"]["streams"] == {"s": []}
+    assert payload_text[index:].strip() == ""
+
+
+def test_run_cli_rejects_combined_dump_and_simulate_modes():
+    try:
+        run_cli(
+            ["--dump", "--simulate"],
+            stdin=io.StringIO("pipeline P { }"),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            compiler=lambda source: source,
+        )
+    except SystemExit as err:
+        assert err.code == 2
+    else:
+        raise AssertionError("Expected parser to reject combined output-producing flags")
+
 def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
     entities = {
         "streams": [
