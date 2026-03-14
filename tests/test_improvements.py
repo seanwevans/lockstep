@@ -213,6 +213,22 @@ def test_arg_parser_has_version():
     assert args.version is True
 
 
+def test_arg_parser_rejects_multiple_output_modes():
+    parser = build_arg_parser()
+    try:
+        parser.parse_args(["--dump", "--simulate"])
+    except SystemExit as err:
+        assert err.code == 2
+    else:
+        raise AssertionError("Expected parser to reject multiple output-producing flags")
+
+
+def test_arg_parser_has_report():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--report"])
+    assert args.report is True
+
+
 # ---------------------------------------------------------------------------
 # LSP hover
 # ---------------------------------------------------------------------------

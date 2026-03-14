@@ -1,4 +1,5 @@
 from lockstep_compiler.lsp import (
+    build_analysis_context,
     build_struct_member_index,
     find_member_definition,
     provide_bind_completion_items,
@@ -147,3 +148,58 @@ def test_hover_resolves_variable_and_callable_symbols_with_tricky_formatting():
     assert shader_hover == "(shader) `shader Apply(...)`"
     assert filter_hover == "(filter) `filter Post(...)`"
     assert pure_hover == "(pure) `pure blend(...)`"
+def test_large_source_member_definition_matches_default_and_context_path():
+    struct_count = 50
+    shader_count = 60
+    struct_defs = [
+        f"struct Vec{i} {{ float x; float y; float z; }};" for i in range(struct_count)
+    ]
+    shader_defs = [
+        f"shader S{i}(in Vec{i % struct_count} pos, out Vec{i % struct_count} out_pos) {{ out_pos.y = pos.y; }}"
+        for i in range(shader_count)
+    ]
+    source = "\n".join([*struct_defs, *shader_defs])
+
+    target_line = struct_count + shader_count - 1
+    target_column = shader_defs[-1].index("pos.y") + 1
+
+    expected = find_member_definition(source, target_line, target_column)
+
+    context = build_analysis_context(source)
+    actual = find_member_definition(
+        source,
+        target_line,
+        target_column,
+        analysis_context=context,
+    )
+
+    assert expected is not None
+    assert actual == expected
+
+
+def test_large_source_hover_matches_default_and_context_path():
+    source = "\n".join(
+        [
+            "struct Payload { float value; int id; };",
+            *[
+                f"shader Step{i}(in Payload p, out Payload out_p) {{ out_p.value = p.value; }}"
+                for i in range(120)
+            ],
+        ]
+    )
+
+    target_line = 120
+    target_column = source.splitlines()[target_line].index("p.value") + 2
+
+    expected = provide_hover_info(source, target_line, target_column)
+
+    context = build_analysis_context(source)
+    actual = provide_hover_info(
+        source,
+        target_line,
+        target_column,
+        analysis_context=context,
+    )
+
+    assert expected == "(field) `Payload.value: float`"
+    assert actual == expected

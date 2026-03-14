@@ -48,3 +48,35 @@ def test_run_cli_reports_missing_library_file(tmp_path):
 
     assert exit_code == 1
     assert f"Unable to read '{missing}': file not found." in stderr.getvalue()
+
+
+def test_run_cli_reports_library_file_in_diagnostics(tmp_path):
+    library = tmp_path / "bad.lock"
+    library.write_text("@", encoding="utf-8")
+    stderr = io.StringIO()
+
+    exit_code = run_cli(
+        ["--lib", str(library)],
+        stdin=io.StringIO("pipeline Main { bind { } }"),
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert f"{library}:1:" in stderr.getvalue()
+
+
+def test_run_cli_reports_stdin_file_in_diagnostics(tmp_path):
+    library = tmp_path / "math.lock"
+    library.write_text("struct Vec { float x; };", encoding="utf-8")
+    stderr = io.StringIO()
+
+    exit_code = run_cli(
+        ["--lib", str(library)],
+        stdin=io.StringIO("pipeline Main {"),
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "<stdin>:1:" in stderr.getvalue()

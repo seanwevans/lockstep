@@ -10,6 +10,7 @@ class LockstepDiagnostic:
     line: int
     column: int
     hint: str | None = None
+    source_file: str | None = None
 
 
 @dataclass
@@ -70,11 +71,12 @@ def normalize_diagnostics(
 ) -> list[LockstepDiagnostic]:
     """Deduplicate and deterministically sort diagnostics."""
 
-    deduped: dict[tuple[str, str, int, int], LockstepDiagnostic] = {}
+    deduped: dict[tuple[str, str, str | None, int, int], LockstepDiagnostic] = {}
     for diagnostic in diagnostics:
         key = (
             diagnostic.code,
             diagnostic.message,
+            diagnostic.source_file,
             diagnostic.line,
             diagnostic.column,
         )
@@ -84,6 +86,7 @@ def normalize_diagnostics(
     return sorted(
         deduped.values(),
         key=lambda diagnostic: (
+            diagnostic.source_file or "",
             diagnostic.line,
             diagnostic.column,
             _SEVERITY_PRIORITY.get(diagnostic.severity, 99),
