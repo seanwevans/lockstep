@@ -10,6 +10,15 @@ import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
+from lockstep_compiler.ast import (
+    AstAssignStmt,
+    AstExprBinary,
+    AstExprCall,
+    AstExprLiteral,
+    AstExprVar,
+    AstReturnStmt,
+    AstVarDeclStmt,
+)
 import pytest
 
 
@@ -105,14 +114,49 @@ def test_emit_llvm_ir_generates_expected_declarations():
                     ],
                 }
             ],
-            "shaders": [{"name": "ApplyGravity"}],
-            "filters": [{"name": "Cull"}],
+            "shaders": [{"name": "ApplyGravity", "body_ast": []}],
+            "filters": [{"name": "Cull", "body_ast": []}],
             "pure_functions": [
                 {"name": "step", "return_type": "float", "params": [{"name": "edge", "type": "float"}, {"name": "x", "type": "float"}], "intrinsic": True},
                 {"name": "mix", "return_type": "float", "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}, {"name": "t", "type": "float"}], "intrinsic": True},
                 {"name": "clamp", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "min_value", "type": "float"}, {"name": "max_value", "type": "float"}], "intrinsic": True},
                 {"name": "max", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "y", "type": "float"}], "intrinsic": True},
-                {"name": "demo", "return_type": "float", "params": [], "body": ["return clamp(max(mix(0.0, 1.0, step(0.5, 1.0)), 0.25), 0.0, 1.0);"]},
+                {
+                    "name": "demo",
+                    "return_type": "float",
+                    "params": [],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCall(
+                                name="clamp",
+                                args=(
+                                    AstExprCall(
+                                        name="max",
+                                        args=(
+                                            AstExprCall(
+                                                name="mix",
+                                                args=(
+                                                    AstExprLiteral(kind="float", value="0.0"),
+                                                    AstExprLiteral(kind="float", value="1.0"),
+                                                    AstExprCall(
+                                                        name="step",
+                                                        args=(
+                                                            AstExprLiteral(kind="float", value="0.5"),
+                                                            AstExprLiteral(kind="float", value="1.0"),
+                                                        ),
+                                                    ),
+                                                ),
+                                            ),
+                                            AstExprLiteral(kind="float", value="0.25"),
+                                        ),
+                                    ),
+                                    AstExprLiteral(kind="float", value="0.0"),
+                                    AstExprLiteral(kind="float", value="1.0"),
+                                ),
+                            )
+                        )
+                    ],
+                },
             ],
             "streams": [{"name": "raw_positions", "type": "Vec3"}],
             "accumulators": [{"name": "energy", "type": "float"}],
@@ -152,7 +196,14 @@ def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
                     "name": "set_and_get_x",
                     "return_type": "float",
                     "params": [],
-                    "body": ["Vec3 v;", "v.x = 1.0;", "return v.x;"],
+                    "body_ast": [
+                        AstVarDeclStmt(declared_type="Vec3", name="v", initializer=None),
+                        AstAssignStmt(
+                            target=("v", "x"),
+                            value=AstExprLiteral(kind="float", value="1.0"),
+                        ),
+                        AstReturnStmt(value=AstExprVar(path=("v", "x"))),
+                    ],
                 }
             ],
             "shaders": [],
@@ -320,7 +371,7 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
                         {"modifier": "out", "type": "float", "name": "out"},
                         {"modifier": "uniform", "type": "float", "name": "dt"},
                     ],
-                    "body": [],
+                    "body_ast": [],
                 }
             ],
             "filters": [],
@@ -358,7 +409,15 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
                     "name": "sum_ints",
                     "return_type": "int",
                     "params": [{"type": "int", "name": "v"}],
-                    "body": ["return v + 1;"],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprBinary(
+                                op="+",
+                                left=AstExprVar(path=("v",)),
+                                right=AstExprLiteral(kind="int", value="1"),
+                            )
+                        )
+                    ],
                 }
             ],
             "shaders": [],
@@ -412,7 +471,15 @@ def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
                         "name": "bad_mix",
                         "return_type": "float",
                         "params": [],
-                        "body": ["return 1 + 1.0;"],
+                        "body_ast": [
+                            AstReturnStmt(
+                                value=AstExprBinary(
+                                    op="+",
+                                    left=AstExprLiteral(kind="int", value="1"),
+                                    right=AstExprLiteral(kind="float", value="1.0"),
+                                )
+                            )
+                        ],
                     }
                 ],
                 "shaders": [],
@@ -572,7 +639,12 @@ def test_emit_llvm_ir_raises_on_undefined_variable_reference():
         emit_llvm_ir(
             {
                 "pure_functions": [
-                    {"name": "demo", "return_type": "float", "params": [], "body": ["return missing;"]}
+                    {
+                        "name": "demo",
+                        "return_type": "float",
+                        "params": [],
+                        "body_ast": [AstReturnStmt(value=AstExprVar(path=("missing",)))],
+                    }
                 ],
                 "shaders": [],
                 "filters": [],
@@ -599,7 +671,17 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                         "name": "demo",
                         "return_type": "float",
                         "params": [],
-                        "body": ["return max(1, 2);"]
+                        "body_ast": [
+                            AstReturnStmt(
+                                value=AstExprCall(
+                                    name="max",
+                                    args=(
+                                        AstExprLiteral(kind="int", value="1"),
+                                        AstExprLiteral(kind="int", value="2"),
+                                    ),
+                                )
+                            )
+                        ]
                     }
                 ],
                 "shaders": [],
