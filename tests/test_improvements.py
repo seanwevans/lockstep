@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lockstep_compiler.cli import build_arg_parser, run_cli
+from lockstep_compiler.ast import AstExprCall, AstExprVar, AstReturnStmt
 from lockstep_compiler.codegen import emit_llvm_ir
 from lockstep_compiler.lsp import provide_hover_info
 from lockstep_compiler.prelude import load_intrinsics
@@ -79,7 +80,7 @@ def _entities_with_pure(name, params, body, return_type="float"):
                 "name": name,
                 "return_type": return_type,
                 "params": params,
-                "body": body,
+                "body_ast": body,
                 "intrinsic": False,
             },
             *_intrinsic_defs(),
@@ -91,7 +92,11 @@ def test_codegen_min_intrinsic():
     entities = _entities_with_pure(
         "test_min",
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
-        ["return min(a, b);"],
+        [
+            AstReturnStmt(
+                value=AstExprCall(name="min", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",))))
+            )
+        ],
     )
     ir_text = emit_llvm_ir(entities)
     assert "llvm.minnum.f32" in ir_text
@@ -101,7 +106,11 @@ def test_codegen_max_intrinsic():
     entities = _entities_with_pure(
         "test_max",
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
-        ["return max(a, b);"],
+        [
+            AstReturnStmt(
+                value=AstExprCall(name="max", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",))))
+            )
+        ],
     )
     ir_text = emit_llvm_ir(entities)
     assert "llvm.maxnum.f32" in ir_text
@@ -111,7 +120,7 @@ def test_codegen_abs_intrinsic():
     entities = _entities_with_pure(
         "test_abs",
         [{"type": "float", "name": "x"}],
-        ["return abs(x);"],
+        [AstReturnStmt(value=AstExprCall(name="abs", args=(AstExprVar(path=("x",)),)))],
     )
     ir_text = emit_llvm_ir(entities)
     assert "llvm.fabs.f32" in ir_text
@@ -121,7 +130,7 @@ def test_codegen_sign_intrinsic():
     entities = _entities_with_pure(
         "test_sign",
         [{"type": "float", "name": "x"}],
-        ["return sign(x);"],
+        [AstReturnStmt(value=AstExprCall(name="sign", args=(AstExprVar(path=("x",)),)))],
     )
     ir_text = emit_llvm_ir(entities)
     assert "sign_pos" in ir_text or "sign" in ir_text
@@ -135,7 +144,14 @@ def test_codegen_smoothstep_intrinsic():
             {"type": "float", "name": "e1"},
             {"type": "float", "name": "x"},
         ],
-        ["return smoothstep(e0, e1, x);"],
+        [
+            AstReturnStmt(
+                value=AstExprCall(
+                    name="smoothstep",
+                    args=(AstExprVar(path=("e0",)), AstExprVar(path=("e1",)), AstExprVar(path=("x",))),
+                )
+            )
+        ],
     )
     ir_text = emit_llvm_ir(entities)
     assert "smoothstep" in ir_text

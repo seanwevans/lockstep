@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from typing import Any
 
 from llvmlite import ir
@@ -38,135 +36,6 @@ class CodegenError(RuntimeError):
 
 def _type_name(value: AstType | str) -> str:
     return value.name if isinstance(value, AstType) else value
-
-
-def _tokenize_expr(expr: str) -> list[str]:
-    token_pattern = r"\s*(<<|>>|==|!=|<=|>=|&&|\|\||[()\-+*/%,<>!&|^]|[A-Za-z_][A-Za-z0-9_\.]*|\d+\.\d+|\d+|true|false)"
-    return [token for token in re.findall(token_pattern, expr) if token.strip()]
-
-
-@dataclass
-class _ExprParser:
-    tokens: list[str]
-    index: int = 0
-
-    def _peek(self) -> str | None:
-        return self.tokens[self.index] if self.index < len(self.tokens) else None
-
-    def _take(self, token: str | None = None) -> str:
-        current = self._peek()
-        if current is None:
-            raise ValueError("unexpected end of expression")
-        if token is not None and current != token:
-            raise ValueError(f"expected '{token}' but got '{current}'")
-        self.index += 1
-        return current
-
-    def parse(self):
-        return self._parse_or()
-
-    def _parse_or(self):
-        node = self._parse_and()
-        while self._peek() == "||":
-            op = self._take()
-            node = ("bin", op, node, self._parse_and())
-        return node
-
-    def _parse_and(self):
-        node = self._parse_bitor()
-        while self._peek() == "&&":
-            op = self._take()
-            node = ("bin", op, node, self._parse_bitor())
-        return node
-
-    def _parse_bitor(self):
-        node = self._parse_bitxor()
-        while self._peek() == "|":
-            op = self._take()
-            node = ("bin", op, node, self._parse_bitxor())
-        return node
-
-    def _parse_bitxor(self):
-        node = self._parse_bitand()
-        while self._peek() == "^":
-            op = self._take()
-            node = ("bin", op, node, self._parse_bitand())
-        return node
-
-    def _parse_bitand(self):
-        node = self._parse_equality()
-        while self._peek() == "&":
-            op = self._take()
-            node = ("bin", op, node, self._parse_equality())
-        return node
-
-    def _parse_equality(self):
-        node = self._parse_rel()
-        while self._peek() in {"==", "!="}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_rel())
-        return node
-
-    def _parse_rel(self):
-        node = self._parse_shift()
-        while self._peek() in {"<", "<=", ">", ">="}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_shift())
-        return node
-
-    def _parse_shift(self):
-        node = self._parse_add()
-        while self._peek() in {"<<", ">>"}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_add())
-        return node
-
-    def _parse_add(self):
-        node = self._parse_mul()
-        while self._peek() in {"+", "-"}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_mul())
-        return node
-
-    def _parse_mul(self):
-        node = self._parse_unary()
-        while self._peek() in {"*", "/", "%"}:
-            op = self._take()
-            node = ("bin", op, node, self._parse_unary())
-        return node
-
-    def _parse_unary(self):
-        if self._peek() in {"-", "!"}:
-            op = self._take()
-            return ("un", op, self._parse_unary())
-        return self._parse_primary()
-
-    def _parse_primary(self):
-        token = self._peek()
-        if token == "(":
-            self._take("(")
-            node = self._parse_or()
-            self._take(")")
-            return node
-        token = self._take()
-        if re.match(r"\d+\.\d+", token):
-            return ("float", float(token))
-        if re.match(r"\d+", token):
-            return ("int", int(token))
-        if token in {"true", "false"}:
-            return ("bool", token == "true")
-        if self._peek() == "(":
-            self._take("(")
-            args = []
-            if self._peek() != ")":
-                while True:
-                    args.append(self._parse_or())
-                    if self._peek() != ",":
-                        break
-                    self._take(",")
-            self._take(")")
-            return ("call", token, args)
-        return ("var", token)
 
 
 class _FunctionLowerer:
@@ -395,10 +264,6 @@ class _FunctionLowerer:
             return self._extract_field_path(base_value, parts[1:])
         self._compiler_error(f"undefined variable '{parts[0]}'")
 
-    def _parse_expr(self, expr: str):
-        parser = _ExprParser(_tokenize_expr(expr))
-        return parser.parse()
-
     def _lower_call(self, name: str, args: list[ir.Value]) -> ir.Value:
         if name in self.intrinsic_names:
             lowered_intrinsic = self._lower_intrinsic_call(name, args)
@@ -413,23 +278,6 @@ class _FunctionLowerer:
             coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
             return self.builder.call(callee, coerced, name=f"call_{name}")
         self._compiler_error(f"unknown function '{name}'")
-
-    @staticmethod
-    def _normalize_expr_node(node) -> "AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall":
-        """Convert legacy tuple-based expression nodes to typed AST nodes."""
-        if isinstance(node, (AstExprLiteral, AstExprVar, AstExprUnary, AstExprBinary, AstExprCall)):
-            return node
-        kind = node[0]
-        if kind in {"float", "int", "bool"}:
-            return AstExprLiteral(kind=kind, value=str(node[1]))
-        if kind == "var":
-            return AstExprVar(path=tuple(node[1].split(".")))
-        if kind == "un":
-            return AstExprUnary(op=node[1], operand=node[2])
-        if kind == "call":
-            return AstExprCall(name=node[1], args=tuple(node[2]))
-        # "bin" — binary operation
-        return AstExprBinary(op=node[1], left=node[2], right=node[3])
 
     def _lower_binary_op(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if op in {"+", "-", "*", "/", "%"}:
@@ -456,8 +304,7 @@ class _FunctionLowerer:
             return self.builder.or_(lhs, rhs)
         self._compiler_error(f"unsupported binary operator '{op}'")
 
-    def _lower_expr(self, node):
-        node = self._normalize_expr_node(node)
+    def _lower_expr(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall):
 
         if isinstance(node, AstExprLiteral):
             if node.kind == "float":
@@ -474,7 +321,8 @@ class _FunctionLowerer:
             return self.builder.not_(operand)
         if isinstance(node, AstExprCall):
             return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
-        # AstExprBinary
+        if not isinstance(node, AstExprBinary):
+            self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
         return self._lower_binary_op(node.op, lhs, rhs)
 
@@ -493,7 +341,7 @@ class _FunctionLowerer:
         updated = self._insert_field_path(current, field_path, value)
         self.builder.store(updated, self.locals[key])
 
-    def _lower_statement(self, statement: str | AstStatement, return_type: ir.Type):
+    def _lower_statement(self, statement: AstStatement, return_type: ir.Type):
         if isinstance(statement, AstReturnStmt):
             value = self._lower_expr(statement.value)
             if isinstance(return_type, ir.VoidType):
@@ -520,37 +368,9 @@ class _FunctionLowerer:
                 self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
             return
 
-        statement = statement.strip()
-        if statement.startswith("return"):
-            expr = statement[len("return") :].strip().rstrip(";")
-            value = self._lower_expr(self._parse_expr(expr))
-            if isinstance(return_type, ir.VoidType):
-                self.builder.ret_void()
-            else:
-                self.builder.ret(self._coerce_value_to_type(value, return_type))
-            return
+        self._compiler_error(f"unsupported statement node '{type(statement).__name__}'")
 
-        if "=" in statement:
-            lhs, rhs = statement.rstrip(";").split("=", 1)
-            lhs = lhs.strip()
-            rhs = rhs.strip()
-            lhs_parts = lhs.split()
-            name = lhs_parts[-1]
-            self._lower_assignment(name, self._lower_expr(self._parse_expr(rhs)))
-            return
-
-        if statement.endswith(";"):
-            maybe_decl = statement[:-1].split()
-            if maybe_decl:
-                declared_type = maybe_decl[0] if len(maybe_decl) > 1 else "float"
-                key = _sanitize_symbol(maybe_decl[-1].replace(".", "_"))
-                if key not in self.locals:
-                    llvm_type = self._llvm_type(declared_type, self.known_structs)
-                    slot = self.builder.alloca(llvm_type, name=key)
-                    self.locals[key] = slot
-                    self.builder.store(ir.Constant(llvm_type, None), slot)
-
-    def lower_function(self, fn: ir.Function, statements: list[str | AstStatement], return_type: ir.Type):
+    def lower_function(self, fn: ir.Function, statements: list[AstStatement], return_type: ir.Type):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
@@ -577,6 +397,16 @@ def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -
     if isinstance(program_or_entities, AstProgram):
         return ast_to_entities(program_or_entities)
     return program_or_entities
+
+
+def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatement]:
+    body_ast = entity.get("body_ast")
+    if body_ast is None:
+        name = entity.get("name", "<unknown>")
+        raise CodegenError(
+            f"{entity_kind} '{name}' is missing body_ast; string-based bodies are no longer supported"
+        )
+    return body_ast
 
 
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
@@ -675,15 +505,15 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
         if pure.get("intrinsic"):
             continue
-        lowerer.lower_function(fn, pure.get("body_ast", pure.get("body", [])), fn.function_type.return_type)
+        lowerer.lower_function(fn, _ast_body_for(pure, entity_kind="pure function"), fn.function_type.return_type)
 
     for shader in shaders:
         fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
-        lowerer.lower_function(fn, shader.get("body_ast", shader.get("body", [])), ir.VoidType())
+        lowerer.lower_function(fn, _ast_body_for(shader, entity_kind="shader"), ir.VoidType())
 
     for flt in filters:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
-        lowerer.lower_function(fn, flt.get("body_ast", flt.get("body", [])), ir.VoidType())
+        lowerer.lower_function(fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType())
 
     arena_fields: list[tuple[str, str, ir.Type]] = []
     stream_slots: dict[str, int] = {}
