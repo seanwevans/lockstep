@@ -111,11 +111,13 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         source = stdin.read()
 
     library_sources = []
+    library_source_files = []
     for library_path in args.lib:
         library_source = _read_source_file(Path(library_path), stderr=stderr)
         if library_source is None:
             return 1
         library_sources.append(library_source)
+        library_source_files.append(str(Path(library_path)))
 
     if args.format:
         print(format_lockstep_source(source), end="", file=stdout)
@@ -135,6 +137,8 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
 
     supports_verbose = False
     supports_library_sources = False
+    supports_source_file = False
+    supports_library_source_files = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -151,12 +155,26 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             or parameter.name == "library_sources"
             for parameter in signature.parameters.values()
         )
+        supports_source_file = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "source_file"
+            for parameter in signature.parameters.values()
+        )
+        supports_library_source_files = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "library_source_files"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs = {}
     if supports_verbose:
         compile_kwargs["verbose"] = False
     if supports_library_sources:
         compile_kwargs["library_sources"] = library_sources
+    if supports_source_file:
+        compile_kwargs["source_file"] = str(source_path) if args.path else "<stdin>"
+    if supports_library_source_files:
+        compile_kwargs["library_source_files"] = library_source_files
 
     try:
         if compile_kwargs:
@@ -171,7 +189,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             file=stderr,
         )
         for error in err.errors:
-            print(f"line {error.line}:{error.column} {error.message}", file=stderr)
+            if error.source_file:
+                print(f"{error.source_file}:{error.line}:{error.column} {error.message}", file=stderr)
+            else:
+                print(f"line {error.line}:{error.column} {error.message}", file=stderr)
         if args.debug:
             if err.diagnostics:
                 print("diagnostics:", file=stderr)
@@ -185,6 +206,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
                                 "line": diagnostic.line,
                                 "column": diagnostic.column,
                                 "hint": diagnostic.hint,
+                                "source_file": diagnostic.source_file,
                             }
                             for diagnostic in err.diagnostics
                         ],
