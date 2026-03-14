@@ -115,6 +115,22 @@ def test_run_cli_simulate_reads_input_file(tmp_path):
     assert payload["streams"]["s"] == [1, 2, 3]
 
 
+def test_run_cli_rejects_simulate_input_without_simulate(tmp_path):
+    input_file = tmp_path / "sim-input.json"
+    input_file.write_text('{"streams": {"s": [1]}}', encoding="utf-8")
+
+    stderr = io.StringIO()
+    exit_code = run_cli(
+        ["--simulate-input", str(input_file)],
+        stdin=io.StringIO("pipeline P { }"),
+        stdout=io.StringIO(),
+        stderr=stderr,
+        compiler=lambda _source: {},
+    )
+
+    assert exit_code == 2
+    assert "--simulate-input requires --simulate" in stderr.getvalue()
+
 
 def test_run_cli_report_prints_single_json_payload_with_entities_and_simulation():
     def fake_compiler(_source):
