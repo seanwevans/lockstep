@@ -39,7 +39,7 @@ def optimize_bind_routes(
     filter_names: set[str],
     bind_routes_ir: list[dict] | None = None,
 ) -> dict[str, list]:
-    """Fuse adjacent shader/filter bind routes that shuttle temporary SoA streams."""
+    """Build a bind DAG, eliminate dead kernels, and fuse fusible subgraphs."""
 
     if bind_routes_ir:
         parsed_routes = []
@@ -73,54 +73,128 @@ def optimize_bind_routes(
         live.discard(parsed.target)
         live.update(parsed.args)
 
+    last_definition_index: dict[str, int] = {}
+    for idx, parsed in enumerate(parsed_routes):
+        if parsed is None:
+            continue
+        last_definition_index[parsed.target] = idx
+
+    # Dead-code elimination over kernel routes: drop kernels whose target value
+    # is never consumed, unless they explicitly read/accumulate their target.
+    active_kernel_indices: set[int] = set()
+    for idx, parsed in enumerate(parsed_routes):
+        if parsed is None or parsed.callee not in valid_kernel_names:
+            continue
+        if parsed.target in live_after_route[idx] or last_definition_index.get(parsed.target) == idx:
+            active_kernel_indices.add(idx)
+
+    # Build producer/consumer links between active kernels.
+    producer_by_symbol: dict[str, int] = {}
+    deps: dict[int, set[int]] = {idx: set() for idx in active_kernel_indices}
+    consumers: dict[int, set[int]] = {idx: set() for idx in active_kernel_indices}
+    for idx, parsed in enumerate(parsed_routes):
+        if idx not in active_kernel_indices or parsed is None:
+            continue
+        for arg in parsed.args:
+            producer = producer_by_symbol.get(arg)
+            if producer is not None:
+                deps[idx].add(producer)
+                consumers[producer].add(idx)
+        producer_by_symbol[parsed.target] = idx
+
     fused_groups: list[dict[str, object]] = []
+    fused_replacement_at: dict[int, str] = {}
+    removed_indices: set[int] = set()
+
+    # Segment kernel DAGs by non-kernel barriers so serialization order is stable.
+    segment: list[int] = []
+
+    def flush_segment() -> None:
+        if not segment:
+            return
+        segment_set = set(segment)
+        sinks = [idx for idx in segment if not (consumers[idx] & segment_set)]
+        taken: set[int] = set()
+        for sink_idx in sinks:
+            if sink_idx in taken:
+                continue
+
+            group = {sink_idx}
+            worklist = [sink_idx]
+            while worklist:
+                current = worklist.pop()
+                for dep in deps[current] & segment_set:
+                    if dep in group:
+                        continue
+                    group.add(dep)
+                    worklist.append(dep)
+
+            # Fusion requires closed internal dataflow for intermediates.
+            closure_ok = True
+            for idx in group:
+                if idx == sink_idx:
+                    continue
+                if consumers[idx] - group:
+                    closure_ok = False
+                    break
+                if parsed_routes[idx].target in live_after_route[sink_idx]:
+                    closure_ok = False
+                    break
+            if not closure_ok or len(group) <= 1:
+                continue
+
+            ordered_nodes = sorted(group)
+            entry_args: list[str] = []
+            produced_so_far: set[str] = set()
+            first_idx = ordered_nodes[0]
+            for idx in ordered_nodes:
+                route = parsed_routes[idx]
+                for arg in route.args:
+                    if arg in produced_so_far:
+                        continue
+                    if arg == route.target and idx != first_idx:
+                        continue
+                    if arg not in entry_args:
+                        entry_args.append(arg)
+                produced_so_far.add(route.target)
+
+            fused_groups.append(
+                {
+                    "nodes": [parsed_routes[idx].callee for idx in ordered_nodes],
+                    "entry_args": entry_args,
+                    "output": parsed_routes[sink_idx].target,
+                    "eliminated_intermediates": [
+                        parsed_routes[idx].target for idx in ordered_nodes if idx != sink_idx
+                    ],
+                    "source_routes": [parsed_routes[idx].raw for idx in ordered_nodes],
+                }
+            )
+            fused_replacement_at[sink_idx] = (
+                f"{parsed_routes[sink_idx].target} = FUSED["
+                f"{' -> '.join(parsed_routes[idx].callee for idx in ordered_nodes)}];"
+            )
+            removed_indices.update(set(ordered_nodes) - {sink_idx})
+            taken.update(group)
+
+        segment.clear()
+
+    for idx, parsed in enumerate(parsed_routes):
+        is_active_kernel = idx in active_kernel_indices and parsed is not None
+        if is_active_kernel:
+            segment.append(idx)
+            continue
+        flush_segment()
+    flush_segment()
+
     optimized_bind_routes: list[str] = []
-    idx = 0
-
-    while idx < len(bind_routes):
-        current = parsed_routes[idx]
-        if current is None or current.callee not in valid_kernel_names:
-            optimized_bind_routes.append(bind_routes[idx])
-            idx += 1
+    for idx, route in enumerate(bind_routes):
+        parsed = parsed_routes[idx]
+        if parsed is not None and parsed.callee in valid_kernel_names and idx not in active_kernel_indices:
             continue
-
-        chain = [current]
-        chain_end = idx
-
-        while chain_end + 1 < len(bind_routes):
-            nxt = parsed_routes[chain_end + 1]
-            prev = chain[-1]
-            if nxt is None or nxt.callee not in valid_kernel_names:
-                break
-            if prev.target not in nxt.args:
-                break
-            # The stream produced by `prev` is only fuseable when its value is
-            # dead after `nxt`, i.e. its lifetime is strictly contained by the
-            # adjacent kernels.
-            if prev.target in live_after_route[chain_end + 1]:
-                break
-            chain.append(nxt)
-            chain_end += 1
-
-        if len(chain) == 1:
-            optimized_bind_routes.append(bind_routes[idx])
-            idx += 1
+        if idx in removed_indices:
             continue
-
-        fused_groups.append(
-            {
-                "nodes": [route.callee for route in chain],
-                "entry_args": list(chain[0].args),
-                "output": chain[-1].target,
-                "eliminated_intermediates": [route.target for route in chain[:-1]],
-                "source_routes": [route.raw for route in chain],
-            }
-        )
-
-        optimized_bind_routes.append(
-            f"{chain[-1].target} = FUSED[{ ' -> '.join(route.callee for route in chain) }];"
-        )
-        idx = chain_end + 1
+        replacement = fused_replacement_at.get(idx)
+        optimized_bind_routes.append(replacement if replacement is not None else route)
 
     return {
         "optimized_bind_routes": optimized_bind_routes,
