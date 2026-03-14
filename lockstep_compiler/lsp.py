@@ -315,7 +315,23 @@ def _infer_variable_types_from_regex(source: str) -> dict[str, str]:
         inferred.setdefault(name, declared_type)
 
     for declared_type, name in _TYPED_NAME_RE.findall(source):
-        if declared_type in {"return", "if", "for", "while", "bind", "stream", "uniform", "shader", "filter", "pure", "struct", "pipeline"}:
+        if declared_type in {
+            "return",
+            "if",
+            "for",
+            "while",
+            "bind",
+            "stream",
+            "uniform",
+            "in",
+            "out",
+            "accum",
+            "shader",
+            "filter",
+            "pure",
+            "struct",
+            "pipeline",
+        }:
             continue
         inferred.setdefault(name, declared_type)
     return inferred
