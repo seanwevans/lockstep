@@ -93,6 +93,13 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
 
+    if args.simulate_input and not args.simulate:
+        print(
+            "usage error: --simulate-input requires --simulate.",
+            file=stderr,
+        )
+        return 2
+
     if args.version:
         from importlib.metadata import version as _pkg_version, PackageNotFoundError
         try:
