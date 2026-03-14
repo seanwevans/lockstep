@@ -33,6 +33,7 @@ _SHADER_DEF_RE = re.compile(r"\bshader\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _PURE_DEF_RE = re.compile(
     r"\bpure\s+[A-Za-z_][A-Za-z0-9_]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+_FILTER_DEF_RE = re.compile(r"\bfilter\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _BIND_BLOCK_RE = re.compile(r"\bbind\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE)
 _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -116,6 +117,113 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
     """Index struct field declarations with source locations (0-based)."""
 
+    entities, _ = compile_for_lsp(source)
+    if entities.get("structs"):
+        return _build_struct_member_index_from_entities(source, entities)
+
+    return _build_struct_member_index_from_regex(source)
+
+
+def _mask_comments(source: str) -> str:
+    """Replace comment contents with spaces while preserving offsets."""
+
+    chars = list(source)
+    index = 0
+    while index < len(chars):
+        if chars[index] == "/" and index + 1 < len(chars):
+            if chars[index + 1] == "/":
+                chars[index] = " "
+                chars[index + 1] = " "
+                index += 2
+                while index < len(chars) and chars[index] != "\n":
+                    chars[index] = " "
+                    index += 1
+                continue
+            if chars[index + 1] == "*":
+                chars[index] = " "
+                chars[index + 1] = " "
+                index += 2
+                while index + 1 < len(chars):
+                    if chars[index] == "*" and chars[index + 1] == "/":
+                        chars[index] = " "
+                        chars[index + 1] = " "
+                        index += 2
+                        break
+                    if chars[index] != "\n":
+                        chars[index] = " "
+                    index += 1
+                continue
+        index += 1
+    return "".join(chars)
+
+
+def _offset_to_line_column(source: str, offset: int) -> tuple[int, int]:
+    line = source.count("\n", 0, offset)
+    line_start = source.rfind("\n", 0, offset)
+    if line_start == -1:
+        return line, offset
+    return line, offset - line_start - 1
+
+
+def _find_matching_brace(source: str, brace_index: int) -> int:
+    depth = 0
+    for idx in range(brace_index, len(source)):
+        token = source[idx]
+        if token == "{":
+            depth += 1
+        elif token == "}":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return -1
+
+
+def _build_struct_member_index_from_entities(
+    source: str,
+    entities: dict[str, Any],
+) -> dict[str, dict[str, MemberDefinition]]:
+    masked = _mask_comments(source)
+    index: dict[str, dict[str, MemberDefinition]] = {}
+
+    for struct in entities.get("structs", []):
+        struct_name = struct.get("name")
+        if not struct_name:
+            continue
+        field_names = [field.get("name") for field in struct.get("fields", []) if field.get("name")]
+        struct_match = re.search(rf"\bstruct\s+{re.escape(struct_name)}\b", masked)
+        if not struct_match:
+            continue
+
+        open_brace = masked.find("{", struct_match.end())
+        if open_brace == -1:
+            continue
+        close_brace = _find_matching_brace(masked, open_brace)
+        if close_brace == -1:
+            continue
+
+        struct_fields: dict[str, MemberDefinition] = {}
+        body = masked[open_brace + 1 : close_brace]
+        body_start = open_brace + 1
+        for field_name in field_names:
+            field_match = re.search(rf"\b{re.escape(field_name)}\b\s*;", body)
+            if not field_match:
+                continue
+            field_offset = body_start + field_match.start()
+            line, column = _offset_to_line_column(source, field_offset)
+            struct_fields[field_name] = MemberDefinition(
+                struct_name=struct_name,
+                field_name=field_name,
+                line=line,
+                column=column,
+            )
+        index[struct_name] = struct_fields
+
+    return index
+
+
+def _build_struct_member_index_from_regex(source: str) -> dict[str, dict[str, MemberDefinition]]:
+    """Fallback indexer used when compilation cannot provide entities."""
+
     index: dict[str, dict[str, MemberDefinition]] = {}
 
     for struct_match in _STRUCT_RE.finditer(source):
@@ -130,12 +238,7 @@ def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefiniti
         for field_match in _FIELD_RE.finditer(body):
             field_name = field_match.group(2)
             absolute_offset = body_start + field_match.start(2)
-            line = source.count("\n", 0, absolute_offset)
-            line_start = source.rfind("\n", 0, absolute_offset)
-            if line_start == -1:
-                column = absolute_offset
-            else:
-                column = absolute_offset - line_start - 1
+            line, column = _offset_to_line_column(source, absolute_offset)
             index[struct_name][field_name] = MemberDefinition(
                 struct_name=struct_name,
                 field_name=field_name,
@@ -149,12 +252,70 @@ def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefiniti
 def infer_variable_types(source: str) -> dict[str, str]:
     """Best-effort type inference for names declared as `<Type> <name>`."""
 
+    entities, _ = compile_for_lsp(source)
+    if entities:
+        return _infer_variable_types_from_entities(entities)
+
+    return _infer_variable_types_from_regex(source)
+
+
+def _expr_inferred_type(expr: Any, known_types: dict[str, str]) -> str | None:
+    path = getattr(expr, "path", None)
+    if path:
+        return known_types.get(path[0])
+
+    literal_kind = getattr(expr, "kind", None)
+    if literal_kind == "number":
+        value = getattr(expr, "value", "")
+        return "float" if "." in value else "int"
+    if literal_kind == "boolean":
+        return "bool"
+
+    return None
+
+
+def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, str]:
+    inferred: dict[str, str] = {}
+
+    for kernel in [*entities.get("shaders", []), *entities.get("filters", [])]:
+        for param in kernel.get("params", []):
+            name = param.get("name")
+            declared_type = param.get("type")
+            if name and declared_type:
+                inferred.setdefault(name, declared_type)
+
+        for stmt in kernel.get("body_ast", []):
+            name = getattr(stmt, "name", None)
+            if not name:
+                continue
+            declared_type = getattr(stmt, "declared_type", None)
+            if declared_type is not None:
+                inferred.setdefault(name, str(declared_type))
+                continue
+            initializer = getattr(stmt, "initializer", None)
+            initializer_type = _expr_inferred_type(initializer, inferred) if initializer else None
+            if initializer_type:
+                inferred.setdefault(name, initializer_type)
+
+    for pure in entities.get("pure_functions", []):
+        for param in pure.get("params", []):
+            name = param.get("name")
+            declared_type = param.get("type")
+            if name and declared_type:
+                inferred.setdefault(name, declared_type)
+
+    return inferred
+
+
+def _infer_variable_types_from_regex(source: str) -> dict[str, str]:
+    """Fallback inference used when compilation cannot provide entities."""
+
     inferred: dict[str, str] = {}
     for declared_type, name in _PARAM_RE.findall(source):
         inferred.setdefault(name, declared_type)
 
     for declared_type, name in _TYPED_NAME_RE.findall(source):
-        if declared_type in {"return", "if", "for", "while", "bind", "stream", "uniform"}:
+        if declared_type in {"return", "if", "for", "while", "bind", "stream", "uniform", "shader", "filter", "pure", "struct", "pipeline"}:
             continue
         inferred.setdefault(name, declared_type)
     return inferred
@@ -360,18 +521,34 @@ def provide_hover_info(
         if name in variable_types:
             return f"(variable) `{name}: {variable_types[name]}`"
 
-        # Check if it's a struct name
-        for struct_match in _STRUCT_RE.finditer(source):
-            if struct_match.group(1) == name:
+        entities, _ = compile_for_lsp(source)
+        if entities:
+            if any(struct.get("name") == name for struct in entities.get("structs", [])):
                 return f"(struct) `struct {name}`"
-
-        # Check shaders/filters/pure functions
-        for shader_match in _SHADER_DEF_RE.finditer(source):
-            if shader_match.group(1) == name:
+            if any(shader.get("name") == name for shader in entities.get("shaders", [])):
                 return f"(shader) `shader {name}(...)`"
-        for pure_match in _PURE_DEF_RE.finditer(source):
-            if pure_match.group(1) == name:
+            if any(filter_decl.get("name") == name for filter_decl in entities.get("filters", [])):
+                return f"(filter) `filter {name}(...)`"
+            if any(
+                pure.get("name") == name and not pure.get("intrinsic")
+                for pure in entities.get("pure_functions", [])
+            ):
                 return f"(pure) `pure {name}(...)`"
+        else:
+            # Regex fallback only when compile failed hard.
+            for struct_match in _STRUCT_RE.finditer(source):
+                if struct_match.group(1) == name:
+                    return f"(struct) `struct {name}`"
+
+            for shader_match in _SHADER_DEF_RE.finditer(source):
+                if shader_match.group(1) == name:
+                    return f"(shader) `shader {name}(...)`"
+            for filter_match in _FILTER_DEF_RE.finditer(source):
+                if filter_match.group(1) == name:
+                    return f"(filter) `filter {name}(...)`"
+            for pure_match in _PURE_DEF_RE.finditer(source):
+                if pure_match.group(1) == name:
+                    return f"(pure) `pure {name}(...)`"
         return None
 
     return None
