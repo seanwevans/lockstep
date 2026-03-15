@@ -10,15 +10,15 @@ int main(void) {
 
     struct Lockstep_Arena* arena = (struct Lockstep_Arena*)arena_bytes;
 
-    arena->stream_particles.pos = 10.0f;
-    arena->stream_particles.vel = 2.0f;
-    arena->uniform_dt = 0.5f;
+    arena->stream_particles_pos = 10.0f;
+    arena->stream_particles_vel = 2.0f;
+    arena->uniform_dt_value = 0.5f;
 
     Lockstep_Tick(arena);
 
     printf("After tick: pos=%.2f vel=%.2f dt=%.2f\n",
-           arena->stream_particles.pos,
-           arena->stream_particles.vel,
-           arena->uniform_dt);
+           arena->stream_particles_pos,
+           arena->stream_particles_vel,
+           arena->uniform_dt_value);
     return 0;
 }

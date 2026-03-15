@@ -794,6 +794,62 @@ def test_emit_llvm_ir_lowers_select_builtin_for_structs():
     )
 
     assert 'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"' in llvm_ir
+def test_emit_llvm_ir_defaults_target_triple_and_simd_width_for_fold_reduce():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'target triple = "x86_64-unknown-linux-gnu"' in llvm_ir
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+
+
+def test_emit_llvm_ir_uses_default_simd_width_when_target_triple_is_unknown():
+    llvm_ir = emit_llvm_ir(
+        {
+            "target_triple": "mystery-unknown-none",
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'target triple = "mystery-unknown-none"' in llvm_ir
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+
 
 def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     llvm_ir = emit_llvm_ir(
@@ -820,8 +876,9 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
-    assert 'store float %"fold_reduce", float* %"uniform_total_ptr"' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert 'store float %"fold_reduce"' in llvm_ir
 
 
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
@@ -983,6 +1040,39 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
 
 
+def test_emit_c_header_exposes_nested_leaf_offsets_for_soa_layout():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Inner",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                },
+                {
+                    "name": "Outer",
+                    "fields": [
+                        {"type": "Inner", "name": "pos"},
+                        {"type": "float", "name": "mass"},
+                    ],
+                },
+            ],
+            "streams": [{"name": "particles", "type": "Outer"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float stream_particles_pos_x;" in header
+    assert "float stream_particles_pos_y;" in header
+    assert "float stream_particles_mass;" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_Y 4" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_MASS 8" in header
+
+
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     header = emit_c_header(
         {
@@ -1132,3 +1222,84 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                 "bind_routes": [],
             }
         )
+
+
+def test_compile_lockstep_enforces_source_size_limit():
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { bind { } }",
+            frontend_limits=lockstep_compiler.FrontendLimits(max_source_bytes=8),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK003"
+
+
+def test_compile_lockstep_enforces_expression_nesting_limit():
+    source = """
+shader S(in float v) {
+    float x = (((((((v)))))));
+}
+pipeline P {
+    stream<float,1> input;
+    bind {
+        input = S(input);
+    }
+}
+"""
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            source,
+            frontend_limits=lockstep_compiler.FrontendLimits(max_expression_nesting=2),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK005"
+
+
+def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._stream = stream
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            self._stream.LT(1)
+            return "TREE"
+
+    class StubVisitor:
+        def visit(self, _tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monotonic_values = iter([0.0, 0.002])
+    monkeypatch.setattr(compiler_module.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { bind { } }",
+            frontend_limits=lockstep_compiler.FrontendLimits(parse_timeout_ms=1),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK004"

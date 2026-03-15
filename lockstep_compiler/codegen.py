@@ -19,6 +19,7 @@ from .ast import (
     AstVarDeclStmt,
     ast_to_entities,
 )
+from .arena_layout import build_arena_layout
 from .utils import sanitize_symbol as _sanitize_symbol
 
 
@@ -550,6 +551,18 @@ def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatem
     return body_ast
 
 
+def _simd_width_for_target_triple(target_triple: str | None) -> int:
+    normalized = (target_triple or "").lower()
+    arch = normalized.split("-", maxsplit=1)[0]
+    if arch in {"x86_64", "amd64"}:
+        return 8
+    if arch in {"x86", "i386", "i486", "i586", "i686"}:
+        return 4
+    if arch in {"aarch64", "arm64", "arm", "armv7", "wasm32", "wasm64"}:
+        return 4
+    return 8
+
+
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
@@ -568,6 +581,10 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     context = ir.Context()
     module = ir.Module(name="lockstep", context=context)
     module.source_filename = "lockstep"
+    target_triple = entities.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple.strip():
+        target_triple = "x86_64-unknown-linux-gnu"
+    module.triple = target_triple
     known_structs: dict[str, ir.IdentifiedStructType] = {}
     struct_fields: dict[str, list[dict[str, str]]] = {}
 
@@ -692,35 +709,25 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType()
         )
 
-    arena_fields: list[tuple[str, str, ir.Type]] = []
-    stream_slots: dict[str, int] = {}
+    layout = build_arena_layout(entities)
+
+    stream_slots: dict[str, int] = {stream["name"]: idx for idx, stream in enumerate(streams)}
     stream_capacities: dict[str, int] = {}
     for stream in streams:
-        stream_slots[stream["name"]] = len(arena_fields)
-        arena_fields.append(
-            (
-                "stream",
-                stream["name"],
-                lowerer._llvm_type(stream["type"], known_structs),
-            )
-        )
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_slots: dict[str, int] = {}
+    accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
+    uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
+
+    leaf_offsets: dict[tuple[str, str, tuple[str, ...]], int] = {
+        (leaf.kind, leaf.binding_name, leaf.path): leaf.offset for leaf in layout.leaves
+    }
+    binding_declared_types: dict[tuple[str, str], str] = {}
+    for stream in streams:
+        binding_declared_types[("stream", stream["name"])] = stream["type"]
     for accum in accumulators:
-        accum_slots[accum["name"]] = len(arena_fields)
-        arena_fields.append(
-            ("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs))
-        )
-    uniform_slots: dict[str, int] = {}
+        binding_declared_types[("accum", accum["name"])] = accum["type"]
     for uniform in uniforms:
-        uniform_slots[uniform["name"]] = len(arena_fields)
-        arena_fields.append(
-            (
-                "uniform",
-                uniform["name"],
-                lowerer._llvm_type(uniform["type"], known_structs),
-            )
-        )
+        binding_declared_types[("uniform", uniform["name"])] = uniform["type"]
 
     kernel_signatures = {
         shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
@@ -733,12 +740,10 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         }
     )
 
-    arena_slots: dict[tuple[str, str], int] = {
-        (kind, name): index for index, (kind, name, _) in enumerate(arena_fields)
-    }
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
-    if arena_struct_ty.is_opaque and arena_fields:
-        arena_struct_ty.set_body(*[field_type for _, _, field_type in arena_fields])
+    arena_bytes_ty = ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
+    if arena_struct_ty.is_opaque:
+        arena_struct_ty.set_body(arena_bytes_ty)
 
     tick = ir.Function(
         module,
@@ -750,34 +755,78 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    simd_width = 8
+    simd_width = _simd_width_for_target_triple(module.triple)
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
         return ir.Constant(llvm_type, None)
 
-    def _load_tick_param(kind: str, name: str, field_type: ir.Type) -> ir.Value:
-        field_index = arena_slots.get((kind, name))
-        if field_index is None:
-            return _zero_value(field_type)
-        field_ptr = tick_builder.gep(
+    def _leaf_ptr(kind: str, name: str, path: tuple[str, ...], leaf_type: ir.Type) -> ir.Value | None:
+        offset = leaf_offsets.get((kind, name, path))
+        if offset is None:
+            return None
+        raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
-            name=f"{kind}_{_sanitize_symbol(name)}_ptr",
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), offset)],
+            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
-        return tick_builder.load(field_ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
+        return tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
 
-    def _store_arena_slot(field_index: int, value: ir.Value):
-        if field_index < 0 or field_index >= len(arena_fields):
+    def _load_value(
+        kind: str,
+        name: str,
+        value_type: ir.Type,
+        declared_type: str,
+        path: tuple[str, ...] = (),
+    ) -> ir.Value:
+        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+            aggregate = ir.Constant(value_type, ir.Undefined)
+            fields = struct_fields.get(declared_type, [])
+            for index, element_type in enumerate(value_type.elements):
+                field = fields[index] if index < len(fields) else {}
+                child_name = str(field.get("name", f"field{index}"))
+                child_type = str(field.get("type", "float"))
+                field_value = _load_value(
+                    kind,
+                    name,
+                    element_type,
+                    child_type,
+                    path + (child_name,),
+                )
+                aggregate = tick_builder.insert_value(aggregate, field_value, index)
+            return aggregate
+
+        ptr = _leaf_ptr(kind, name, path, value_type)
+        if ptr is None:
+            return _zero_value(value_type)
+        return tick_builder.load(ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
+
+    def _store_value(
+        kind: str,
+        name: str,
+        value: ir.Value,
+        declared_type: str,
+        path: tuple[str, ...] = (),
+    ):
+        value_type = value.type
+        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+            fields = struct_fields.get(declared_type, [])
+            for index, element_type in enumerate(value_type.elements):
+                part = tick_builder.extract_value(value, index)
+                field = fields[index] if index < len(fields) else {}
+                child_name = str(field.get("name", f"field{index}"))
+                child_type = str(field.get("type", "float"))
+                _store_value(kind, name, part, child_type, path + (child_name,))
             return
-        kind, name, _ = arena_fields[field_index]
-        field_ptr = tick_builder.gep(
-            arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
-            name=f"{kind}_{_sanitize_symbol(name)}_ptr",
-        )
-        tick_builder.store(value, field_ptr)
+        ptr = _leaf_ptr(kind, name, path, value_type)
+        if ptr is None:
+            return
+        tick_builder.store(value, ptr)
+
+    def _load_tick_param(kind: str, name: str, field_type: ir.Type) -> ir.Value:
+        declared_type = binding_declared_types.get((kind, name), "float")
+        return _load_value(kind, name, field_type, declared_type)
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)
@@ -946,16 +995,13 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
                 source_name = str(route.get("source", ""))
                 uniform_name = str(route.get("uniform_name", ""))
                 operator = str(route.get("operator", ""))
-                source_slot = accum_slots.get(source_name)
-                uniform_slot = uniform_slots.get(uniform_name)
-                if source_slot is None or uniform_slot is None:
+                if source_name not in accum_slots or uniform_name not in uniform_slots:
                     continue
                 uniform_type_name = str(route.get("uniform_type", "float"))
                 uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                accum_kind, accum_name, _ = arena_fields[source_slot]
-                accum_value = _load_tick_param(accum_kind, accum_name, uniform_type)
+                accum_value = _load_tick_param("accum", source_name, uniform_type)
                 reduced = _reduce_fold(operator, accum_value, uniform_type)
-                _store_arena_slot(uniform_slot, reduced)
+                _store_value("uniform", uniform_name, reduced, uniform_type_name)
                 continue
             asm_ty = ir.FunctionType(ir.VoidType(), [])
             escaped = (
