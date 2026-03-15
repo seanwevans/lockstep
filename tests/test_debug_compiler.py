@@ -2293,7 +2293,7 @@ def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_mod
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
             code="LCK424",
-            message="Operator '+' mixes int and float operands without an explicit cast.",
+            message="Operator '+' mixes numeric operand types without an explicit cast.",
             line=0,
             column=0,
             hint="Use explicit casts so numeric widening is intentional and target-compatible.",
@@ -2400,7 +2400,7 @@ def test_semantic_validator_reports_invalid_bitwise_operand_types(
         debug_compiler_module.LockstepDiagnostic(
             severity="error",
             code="LCK420",
-            message="Operator '|' expects int operand type(s), but got [int, bool].",
+            message="Operator '|' expects integer operand type(s), but got [int, bool].",
             line=0,
             column=0,
             hint="Adjust operand types so they match the operator semantics.",

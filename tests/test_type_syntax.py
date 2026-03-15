@@ -112,6 +112,29 @@ pipeline Main {
     assert "c\"asset://textures/noise\\00\"" in result.llvm_ir
 
 
+def test_uint_and_double_are_supported_as_primitive_declared_types():
+    source = """
+pure uint advance(uint value) {
+    return value + uint(1);
+}
+
+pure double amplify(double value) {
+    return value * double(2.0);
+}
+
+pipeline Main {
+    uniform uint frame = uint(0);
+    uniform double exposure = double(1.0);
+    bind { }
+}
+"""
+
+    result = compile_lockstep(source, verbose=False)
+
+    assert all(diag.severity != "error" for diag in result.diagnostics)
+    assert any(uniform["type"] == "uint" for uniform in result.entities["uniforms"])
+    assert any(uniform["type"] == "double" for uniform in result.entities["uniforms"])
+    
 def test_import_dependency_file_is_prepended_and_types_are_resolved(tmp_path):
     dependency = tmp_path / "types.lock"
     dependency.write_text(

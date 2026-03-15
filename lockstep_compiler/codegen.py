@@ -197,10 +197,10 @@ class _FunctionLowerer:
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
 
-        if isinstance(target_type, ir.FloatType) and isinstance(value.type, ir.IntType):
+        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(value.type, ir.IntType):
             return self.builder.sitofp(value, target_type)
 
-        if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.FloatType):
+        if isinstance(target_type, ir.IntType) and isinstance(value.type, (ir.FloatType, ir.DoubleType)):
             return self.builder.fptosi(value, target_type)
 
         if isinstance(target_type, ir.FloatType) and isinstance(
@@ -260,7 +260,7 @@ class _FunctionLowerer:
         return ir.IntType(8).as_pointer()
 
     def _emit_numeric_unary_minus(self, value: ir.Value) -> ir.Value:
-        if isinstance(value.type, ir.FloatType):
+        if isinstance(value.type, (ir.FloatType, ir.DoubleType)):
             return self.builder.fsub(ir.Constant(value.type, 0.0), value)
         if isinstance(value.type, ir.IntType):
             return self.builder.sub(ir.Constant(value.type, 0), value)
@@ -272,7 +272,7 @@ class _FunctionLowerer:
                 f"operator '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'"
             )
 
-        if isinstance(lhs.type, ir.FloatType):
+        if isinstance(lhs.type, (ir.FloatType, ir.DoubleType)):
             return {
                 "+": self.builder.fadd,
                 "-": self.builder.fsub,
@@ -325,7 +325,7 @@ class _FunctionLowerer:
             )
 
         rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
-        if isinstance(lhs.type, ir.FloatType):
+        if isinstance(lhs.type, (ir.FloatType, ir.DoubleType)):
             return self.builder.fcmp_ordered(rel_map[op], lhs, rhs)
         if isinstance(lhs.type, ir.IntType):
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
