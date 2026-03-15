@@ -708,6 +708,92 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
+
+
+def test_emit_llvm_ir_lowers_select_builtin_for_integers():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "pick",
+                    "return_type": "int",
+                    "params": [
+                        {"type": "bool", "name": "condition"},
+                        {"type": "int", "name": "a"},
+                        {"type": "int", "name": "b"},
+                    ],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCall(
+                                name="select",
+                                args=(
+                                    AstExprVar(path=("condition",)),
+                                    AstExprVar(path=("a",)),
+                                    AstExprVar(path=("b",)),
+                                ),
+                            )
+                        )
+                    ],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert 'i1 %"condition_val", i32 %"a_val", i32 %"b_val"' in llvm_ir
+
+
+def test_emit_llvm_ir_lowers_select_builtin_for_structs():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [
+                {
+                    "name": "Pair",
+                    "fields": [
+                        {"type": "int", "name": "left"},
+                        {"type": "int", "name": "right"},
+                    ],
+                }
+            ],
+            "pure_functions": [
+                {
+                    "name": "pick_pair",
+                    "return_type": "Pair",
+                    "params": [
+                        {"type": "bool", "name": "condition"},
+                        {"type": "Pair", "name": "a"},
+                        {"type": "Pair", "name": "b"},
+                    ],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCall(
+                                name="select",
+                                args=(
+                                    AstExprVar(path=("condition",)),
+                                    AstExprVar(path=("a",)),
+                                    AstExprVar(path=("b",)),
+                                ),
+                            )
+                        )
+                    ],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert 'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"' in llvm_ir
 def test_emit_llvm_ir_defaults_target_triple_and_simd_width_for_fold_reduce():
     llvm_ir = emit_llvm_ir(
         {

@@ -794,6 +794,9 @@ def build_semantic_validator(base_visitor_cls):
             def _is_cast_function_name(name: str) -> bool:
                 return name in {"int", "float", "double", "uint", "bool"}
 
+            def _is_select_builtin(name: str) -> bool:
+                return name == "select"
+
             def _child_text(index: int) -> str | None:
                 if not hasattr(ctx, "getChild"):
                     return None
@@ -1081,6 +1084,58 @@ def build_semantic_validator(base_visitor_cls):
                             )
                             return None
                         return function_name
+                    if _is_select_builtin(function_name):
+                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                        if len(args) != 3:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    f"Built-in 'select(...)' expects 3 arguments, but got {len(args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Use `select(condition, when_true, when_false)`.",
+                            )
+                            return None
+
+                        condition_type = self._resolve_expr_type(args[0])
+                        true_type = self._resolve_expr_type(args[1])
+                        false_type = self._resolve_expr_type(args[2])
+                        if condition_type is not None and condition_type != "bool":
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_type_mismatch"
+                                ],
+                                message=(
+                                    "Type mismatch for built-in 'select' condition: "
+                                    f"expected bool, got {condition_type}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass a boolean condition as the first argument.",
+                            )
+                            return None
+
+                        if true_type is not None and false_type is not None and true_type != false_type:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_type_mismatch"
+                                ],
+                                message=(
+                                    "Type mismatch for built-in 'select' value arguments: "
+                                    f"expected matching types, got {true_type} and {false_type}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass true/false values with the same type.",
+                            )
+                            return None
+
+                        if true_type is not None:
+                            return true_type
+                        return false_type
                     function_signature = self.pure_functions.get(function_name)
                     if function_signature is not None:
                         return function_signature.return_type
@@ -1495,6 +1550,54 @@ def build_semantic_validator(base_visitor_cls):
                                 ctx=ctx,
                                 hint="Pass exactly one expression to a cast.",
                             )
+                    elif callee_name == "select":
+                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                        if len(args) != 3:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    f"Built-in 'select(...)' expects 3 arguments, but got {len(args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Use `select(condition, when_true, when_false)`.",
+                            )
+                        else:
+                            condition_type = self._resolve_expr_type(args[0])
+                            true_type = self._resolve_expr_type(args[1])
+                            false_type = self._resolve_expr_type(args[2])
+                            if condition_type is not None and condition_type != "bool":
+                                self._add_diagnostic(
+                                    severity="error",
+                                    code=SEMANTIC_DIAGNOSTIC_CODES[
+                                        "pure_argument_type_mismatch"
+                                    ],
+                                    message=(
+                                        "Type mismatch for built-in 'select' condition: "
+                                        f"expected bool, got {condition_type}."
+                                    ),
+                                    ctx=ctx,
+                                    hint="Pass a boolean condition as the first argument.",
+                                )
+                            if (
+                                true_type is not None
+                                and false_type is not None
+                                and true_type != false_type
+                            ):
+                                self._add_diagnostic(
+                                    severity="error",
+                                    code=SEMANTIC_DIAGNOSTIC_CODES[
+                                        "pure_argument_type_mismatch"
+                                    ],
+                                    message=(
+                                        "Type mismatch for built-in 'select' value arguments: "
+                                        f"expected matching types, got {true_type} and {false_type}."
+                                    ),
+                                    ctx=ctx,
+                                    hint="Pass true/false values with the same type.",
+                                )
                     else:
                         self._type_check_pure_call(ctx)
                 return self.visitChildren(ctx)

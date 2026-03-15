@@ -1617,6 +1617,97 @@ def test_semantic_validator_accepts_intrinsic_pure_call(debug_compiler_module):
     assert validator.diagnostics == []
 
 
+
+
+def test_semantic_validator_accepts_select_builtin_for_matching_integer_values(
+    debug_compiler_module,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    call_ctx = _ctx(
+        start_line=41,
+        start_col=3,
+        ID=lambda: _token("select"),
+        exprList=lambda: _ctx(
+            expr=lambda: [
+                _ctx(declared_type="bool"),
+                _ctx(declared_type="int"),
+                _ctx(declared_type="int"),
+            ]
+        ),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == []
+
+
+def test_semantic_validator_reports_select_builtin_condition_type_mismatch(
+    debug_compiler_module,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    call_ctx = _ctx(
+        start_line=42,
+        start_col=3,
+        ID=lambda: _token("select"),
+        exprList=lambda: _ctx(
+            expr=lambda: [
+                _ctx(declared_type="int"),
+                _ctx(declared_type="int"),
+                _ctx(declared_type="int"),
+            ]
+        ),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK412",
+            message="Type mismatch for built-in 'select' condition: expected bool, got int.",
+            line=42,
+            column=3,
+            hint="Pass a boolean condition as the first argument.",
+        )
+    ]
+
+
+def test_semantic_validator_reports_select_builtin_value_type_mismatch(
+    debug_compiler_module,
+):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+
+    call_ctx = _ctx(
+        start_line=43,
+        start_col=3,
+        ID=lambda: _token("select"),
+        exprList=lambda: _ctx(
+            expr=lambda: [
+                _ctx(declared_type="bool"),
+                _ctx(declared_type="int"),
+                _ctx(declared_type="float"),
+            ]
+        ),
+    )
+
+    validator.visitPrimaryExpr(call_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK412",
+            message=(
+                "Type mismatch for built-in 'select' value arguments: "
+                "expected matching types, got int and float."
+            ),
+            line=43,
+            column=3,
+            hint="Pass true/false values with the same type.",
+        )
+    ]
+
 def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
