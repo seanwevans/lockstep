@@ -43,7 +43,7 @@ def build_semantic_validator(base_visitor_cls):
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
-            self._primitive_types = {"int", "float", "bool", "string"}
+            self._primitive_types = {"int", "uint", "float", "double", "bool", "string"}
             self._current_pure_function: SemanticPureFunctionContext | None = None
             self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
@@ -835,17 +835,18 @@ def build_semantic_validator(base_visitor_cls):
                     for operand_type in operand_types
                     if operand_type is not None
                 ]
-                if any(operand_type not in {"int", "float"} for operand_type in known):
+                numeric_types = {"int", "uint", "float", "double"}
+                if any(operand_type not in numeric_types for operand_type in known):
                     _report_operand_error(operator, "numeric", operand_types)
                     return None
                 if len(known) != len(operand_contexts):
                     return None
-                if "int" in known and "float" in known:
+                if len(set(known)) > 1:
                     self._add_diagnostic(
                         severity="error",
                         code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
                         message=(
-                            f"Operator '{operator}' mixes int and float operands without an explicit cast."
+                            f"Operator '{operator}' mixes numeric operand types without an explicit cast."
                         ),
                         ctx=ctx,
                         hint="Use explicit casts so numeric widening is intentional and target-compatible.",
@@ -880,12 +881,12 @@ def build_semantic_validator(base_visitor_cls):
                     for operand_type in operand_types
                     if operand_type is not None
                 ]
-                if any(operand_type != "int" for operand_type in known):
-                    _report_operand_error(operator, "int", operand_types)
+                if any(operand_type not in {"int", "uint"} for operand_type in known):
+                    _report_operand_error(operator, "integer", operand_types)
                     return None
                 if len(known) != len(operand_contexts):
                     return None
-                return "int"
+                return known[0] if known else None
 
             if hasattr(ctx, "logicalAndExpr") and callable(ctx.logicalAndExpr):
                 operands = _as_list(ctx.logicalAndExpr())
@@ -934,7 +935,7 @@ def build_semantic_validator(base_visitor_cls):
                         if operand_type is not None
                     ]
                     if any(
-                        operand_type not in {"int", "float", "bool"}
+                        operand_type not in {"int", "uint", "float", "double", "bool"}
                         for operand_type in known
                     ):
                         operator = _child_text(1) or "=="
@@ -963,7 +964,7 @@ def build_semantic_validator(base_visitor_cls):
                         if operand_type is not None
                     ]
                     if any(
-                        operand_type not in {"int", "float", "bool"}
+                        operand_type not in {"int", "uint", "float", "double", "bool"}
                         for operand_type in known
                     ):
                         _report_operand_error(operator, "comparable", operand_types)
@@ -1015,7 +1016,9 @@ def build_semantic_validator(base_visitor_cls):
                 if operator == "-":
                     if operand_type is not None and operand_type not in {
                         "int",
+                        "uint",
                         "float",
+                        "double",
                     }:
                         _report_operand_error(operator, "numeric", [operand_type])
                         return None
