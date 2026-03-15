@@ -536,6 +536,18 @@ def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatem
     return body_ast
 
 
+def _simd_width_for_target_triple(target_triple: str | None) -> int:
+    normalized = (target_triple or "").lower()
+    arch = normalized.split("-", maxsplit=1)[0]
+    if arch in {"x86_64", "amd64"}:
+        return 8
+    if arch in {"x86", "i386", "i486", "i586", "i686"}:
+        return 4
+    if arch in {"aarch64", "arm64", "arm", "armv7", "wasm32", "wasm64"}:
+        return 4
+    return 8
+
+
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
@@ -554,6 +566,10 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     context = ir.Context()
     module = ir.Module(name="lockstep", context=context)
     module.source_filename = "lockstep"
+    target_triple = entities.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple.strip():
+        target_triple = "x86_64-unknown-linux-gnu"
+    module.triple = target_triple
     known_structs: dict[str, ir.IdentifiedStructType] = {}
     struct_fields: dict[str, list[dict[str, str]]] = {}
 
@@ -736,7 +752,7 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    simd_width = 8
+    simd_width = _simd_width_for_target_triple(module.triple)
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):

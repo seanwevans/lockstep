@@ -708,6 +708,63 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
+def test_emit_llvm_ir_defaults_target_triple_and_simd_width_for_fold_reduce():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'target triple = "x86_64-unknown-linux-gnu"' in llvm_ir
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+
+
+def test_emit_llvm_ir_uses_default_simd_width_when_target_triple_is_unknown():
+    llvm_ir = emit_llvm_ir(
+        {
+            "target_triple": "mystery-unknown-none",
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        }
+    )
+
+    assert 'target triple = "mystery-unknown-none"' in llvm_ir
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+
+
 def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     llvm_ir = emit_llvm_ir(
         {
