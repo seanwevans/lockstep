@@ -1,5 +1,7 @@
 import functools
+import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
@@ -22,6 +24,10 @@ from .visitors import build_debug_visitor, validate_semantics as _validate_seman
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
+_DEPENDENCY_DECL_PATTERN = re.compile(
+    r'^\s*(?:import|#include)\s+"((?:[^"\\]|\\.)+)"\s*;\s*$',
+    re.MULTILINE,
+)
 
 
 def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> PureFunctionEntity:
@@ -107,6 +113,107 @@ def _build_combined_source(
         if index < len(all_sources) - 1:
             current_line += 1
     return "\n\n".join(all_sources), mapping
+
+
+def _decode_dependency_path(path_literal: str) -> str:
+    return bytes(path_literal, "utf-8").decode("unicode_escape")
+
+
+def _dependency_parse_error(
+    *,
+    message: str,
+    source_file: str,
+    line: int = 1,
+) -> LockstepCompileError:
+    diagnostic = LockstepDiagnostic(
+        severity="error",
+        code="LCK002",
+        message=message,
+        line=line,
+        column=0,
+        source_file=source_file,
+        hint="Fix dependency declarations before compilation can continue.",
+    )
+    raise LockstepCompileError(
+        [diagnostic],
+        diagnostics=[diagnostic],
+        phase="parse",
+        source_file=source_file,
+    )
+
+
+def _extract_dependency_references(source_code: str) -> list[tuple[str, int]]:
+    dependencies: list[tuple[str, int]] = []
+    for match in _DEPENDENCY_DECL_PATTERN.finditer(source_code):
+        path_literal = match.group(1)
+        line = source_code.count("\n", 0, match.start()) + 1
+        dependencies.append((_decode_dependency_path(path_literal), line))
+    return dependencies
+
+
+def _resolve_dependency_sources(
+    source_code: str,
+    *,
+    source_file: str,
+) -> tuple[list[str], list[str]]:
+    if source_file.startswith("<") and source_file.endswith(">"):
+        base_directory = Path.cwd()
+    else:
+        base_directory = Path(source_file).resolve().parent
+
+    visited: set[Path] = set()
+    in_stack: list[Path] = []
+    ordered_sources: list[str] = []
+    ordered_source_files: list[str] = []
+
+    def _resolve_reference(reference: str, parent_file: str) -> Path:
+        candidate = Path(reference)
+        if candidate.is_absolute():
+            return candidate.resolve()
+        if parent_file.startswith("<") and parent_file.endswith(">"):
+            return (base_directory / candidate).resolve()
+        return (Path(parent_file).resolve().parent / candidate).resolve()
+
+    def _walk(current_source: str, current_file: str) -> None:
+        for reference, line in _extract_dependency_references(current_source):
+            dependency_path = _resolve_reference(reference, current_file)
+            if dependency_path in in_stack:
+                cycle_chain = [*in_stack, dependency_path]
+                cycle_text = " -> ".join(str(path) for path in cycle_chain)
+                _dependency_parse_error(
+                    message=(
+                        f"Circular dependency detected while resolving '{reference}': "
+                        f"{cycle_text}"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
+
+            if dependency_path in visited:
+                continue
+
+            try:
+                dependency_source = dependency_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                _dependency_parse_error(
+                    message=(
+                        f"Unable to resolve dependency '{reference}' from "
+                        f"'{current_file}': {exc}"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
+
+            in_stack.append(dependency_path)
+            _walk(dependency_source, str(dependency_path))
+            in_stack.pop()
+
+            visited.add(dependency_path)
+            ordered_sources.append(dependency_source)
+            ordered_source_files.append(str(dependency_path))
+
+    _walk(source_code, source_file)
+    return ordered_sources, ordered_source_files
 
 
 def _remap_diagnostic(
@@ -318,11 +425,21 @@ def compile_lockstep(
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
 ) -> LockstepCompileResult:
+    resolved_library_sources: list[str] = list(library_sources or [])
+    resolved_library_source_files: list[str] = list(library_source_files or [])
+
+    dependency_sources, dependency_source_files = _resolve_dependency_sources(
+        source_code,
+        source_file=source_file,
+    )
+    resolved_library_sources.extend(dependency_sources)
+    resolved_library_source_files.extend(dependency_source_files)
+
     source_code, source_map = _build_combined_source(
         source_code,
         source_file=source_file,
-        library_sources=library_sources,
-        library_source_files=library_source_files,
+        library_sources=resolved_library_sources,
+        library_source_files=resolved_library_source_files,
     )
 
     if lexer_cls is None or parser_cls is None or visitor_cls is None:
