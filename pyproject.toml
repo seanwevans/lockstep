@@ -10,6 +10,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-cov",
+    "mypy",
 ]
 lsp = [
     "pygls",
@@ -37,6 +38,15 @@ omit = [
 
 [tool.coverage.report]
 show_missing = true
+
+[tool.mypy]
+strict = true
+files = [
+    "lockstep_compiler/models.py",
+    "lockstep_compiler/utils.py",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
