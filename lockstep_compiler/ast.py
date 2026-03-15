@@ -16,7 +16,7 @@ class AstType:
 def _normalize_type(value: AstType | str) -> AstType:
     if isinstance(value, AstType):
         return value
-    kind = "primitive" if value in {"int", "float", "bool", "uint", "double"} else "named"
+    kind = "primitive" if value in {"int", "float", "bool", "uint", "double", "string"} else "named"
     return AstType(name=value, kind=kind)
 
 
@@ -367,6 +367,10 @@ class AstBuilder(_AstBuilderMixin):
         bool_token = self._call(ctx, "BOOL")
         if bool_token is not None:
             return AstExprLiteral(kind="bool", value=bool_token.getText())
+
+        string_token = self._call(ctx, "STRING")
+        if string_token is not None:
+            return AstExprLiteral(kind="string", value=string_token.getText())
 
         raise ValueError(f"unsupported expression node: {ctx.__class__.__name__}")
 

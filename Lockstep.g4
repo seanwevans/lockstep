@@ -3,11 +3,17 @@ grammar Lockstep;
 program: declaration* EOF;
 
 declaration
-    : structDecl
+    : dependencyDecl
+    | structDecl
     | pureDecl
     | shaderDecl
     | filterDecl
     | pipelineDecl
+    ;
+
+dependencyDecl
+    : 'import' STRING ';'
+    | INCLUDE_DIRECTIVE STRING ';'
     ;
 
 structDecl: 'struct' ID '{' structMember* '}' ';';
@@ -85,6 +91,7 @@ primaryExpr
     | INT
     | FLOAT
     | BOOL
+    | STRING
     ;
 
 exprList: expr (',' expr)*;
@@ -96,7 +103,9 @@ typeSuffix
     ;
 
 BOOL: 'true' | 'false';
+INCLUDE_DIRECTIVE: '#include';
 ID: [a-zA-Z_][a-zA-Z0-9_]*;
+STRING: '"' ( ~["\\\r\n] | '\\' . )* '"';
 FLOAT
     : [0-9]+ '.' [0-9]* EXPONENT?
     | '.' [0-9]+ EXPONENT?
@@ -106,4 +115,4 @@ INT: [0-9]+;
 
 fragment EXPONENT: [eE] [+-]? [0-9]+;
 WS: [ \t\r\n]+ -> skip;
-COMMENT: '//' ~[\r\n]* -> skip;
+COMMENT: '//' ~[\r\n]* -> channel(HIDDEN);
