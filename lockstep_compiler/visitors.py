@@ -1,4 +1,5 @@
 from difflib import get_close_matches
+from dataclasses import dataclass
 from typing import Any
 
 from .prelude import load_intrinsics
@@ -46,6 +47,25 @@ SEMANTIC_DIAGNOSTIC_CODES = {
     "implicit_numeric_widening": "LCK424",
     "use_before_definition": "LCK425",
 }
+
+
+@dataclass
+class ScopedSymbolData:
+    symbol: SemanticSymbol
+    usage_count: int
+    declaration_ctx: Any
+    is_assigned: bool
+
+
+class Scope:
+    def __init__(self):
+        self.symbols: dict[str, ScopedSymbolData] = {}
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.symbols
+
+    def __getitem__(self, name: str) -> SemanticSymbol:
+        return self.symbols[name].symbol
 
 
 def build_debug_visitor(base_visitor_cls):
@@ -331,10 +351,7 @@ def build_semantic_validator(base_visitor_cls):
 
         def __init__(self):
             self.diagnostics: list[LockstepDiagnostic] = []
-            self.scopes: list[dict[str, SemanticSymbol]] = []
-            self.scope_usages: list[dict[str, int]] = []
-            self.scope_declaration_ctxs: list[dict[str, Any]] = []
-            self.scope_assignments: list[dict[str, bool]] = []
+            self.scopes: list[Scope] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
             self.pure_functions: dict[str, dict[str, Any]] = {
@@ -363,32 +380,25 @@ def build_semantic_validator(base_visitor_cls):
             self.diagnostics.append(LockstepDiagnostic(severity, code, message, line, column, hint))
 
         def _push_scope(self):
-            self.scopes.append({})
-            self.scope_usages.append({})
-            self.scope_declaration_ctxs.append({})
-            self.scope_assignments.append({})
+            self.scopes.append(Scope())
 
         def _pop_scope(self):
             if self.scopes:
                 scope = self.scopes[-1]
-                usage = self.scope_usages[-1]
-                declaration_ctxs = self.scope_declaration_ctxs[-1]
-                for name, symbol in scope.items():
+                for name, scoped_symbol_data in scope.symbols.items():
+                    symbol = scoped_symbol_data.symbol
                     if symbol.kind != "local":
                         continue
-                    if usage.get(name, 0) > 0:
+                    if scoped_symbol_data.usage_count > 0:
                         continue
                     self._add_diagnostic(
                         severity="warning",
                         code=SEMANTIC_DIAGNOSTIC_CODES["unused_symbol"],
                         message=f"Local variable '{name}' is declared but never used.",
-                        ctx=declaration_ctxs.get(name),
+                        ctx=scoped_symbol_data.declaration_ctx,
                         hint="Remove unused variables or use them in an expression/assignment.",
                     )
                 self.scopes.pop()
-                self.scope_usages.pop()
-                self.scope_declaration_ctxs.pop()
-                self.scope_assignments.pop()
 
         def _declare(
             self,
@@ -403,7 +413,7 @@ def build_semantic_validator(base_visitor_cls):
             if not self.scopes:
                 self._push_scope()
             current_scope = self.scopes[-1]
-            if name in current_scope:
+            if name in current_scope.symbols:
                 self._add_diagnostic(
                     severity="error",
                     code=duplicate_code,
@@ -412,38 +422,40 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Rename one declaration or move it to a different scope.",
                 )
                 return False
-            current_scope[name] = SemanticSymbol(name=name, declared_type=declared_type, kind=kind)
-            self.scope_usages[-1][name] = 0
-            self.scope_declaration_ctxs[-1][name] = ctx
-            self.scope_assignments[-1][name] = assigned
+            current_scope.symbols[name] = ScopedSymbolData(
+                symbol=SemanticSymbol(name=name, declared_type=declared_type, kind=kind),
+                usage_count=0,
+                declaration_ctx=ctx,
+                is_assigned=assigned,
+            )
             return True
 
         def _set_symbol_assigned(self, name: str):
-            for scope, assignments in zip(reversed(self.scopes), reversed(self.scope_assignments)):
-                if name in scope:
-                    assignments[name] = True
+            for scope in reversed(self.scopes):
+                if name in scope.symbols:
+                    scope.symbols[name].is_assigned = True
                     return
 
         def _is_symbol_assigned(self, name: str) -> bool:
-            for scope, assignments in zip(reversed(self.scopes), reversed(self.scope_assignments)):
-                if name in scope:
-                    return assignments.get(name, False)
+            for scope in reversed(self.scopes):
+                if name in scope.symbols:
+                    return scope.symbols[name].is_assigned
             return False
 
         def _mark_symbol_used(self, name: str):
-            for scope, usage in zip(reversed(self.scopes), reversed(self.scope_usages)):
-                if name in scope:
-                    usage[name] = usage.get(name, 0) + 1
+            for scope in reversed(self.scopes):
+                if name in scope.symbols:
+                    scope.symbols[name].usage_count += 1
                     return
 
         def _lookup(self, name: str) -> SemanticSymbol | None:
             for scope in reversed(self.scopes):
-                if name in scope:
-                    return scope[name]
+                if name in scope.symbols:
+                    return scope.symbols[name].symbol
             return None
 
         def _declared_in_current_scope(self, name: str) -> bool:
-            return bool(self.scopes and name in self.scopes[-1])
+            return bool(self.scopes and name in self.scopes[-1].symbols)
 
         def _known_types(self) -> set[str]:
             return self._primitive_types | set(self.structs.keys())
