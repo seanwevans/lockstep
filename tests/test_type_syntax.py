@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import textwrap
 
 import pytest
 
@@ -76,7 +77,14 @@ pipeline Main {
     assert "no viable alternative" in exc_info.value.errors[0].message
 
 
-def test_dependency_declarations_and_string_literals_compile_successfully():
+def test_dependency_declarations_and_string_literals_compile_successfully(tmp_path):
+    core_dir = tmp_path / "core"
+    runtime_dir = tmp_path / "runtime"
+    core_dir.mkdir()
+    runtime_dir.mkdir()
+    (core_dir / "math.lock").write_text("\n", encoding="utf-8")
+    (runtime_dir / "platform.lock").write_text("\n", encoding="utf-8")
+
     source = """
 import "core/math.lock";
 #include "runtime/platform.lock";
@@ -92,9 +100,56 @@ pipeline Main {
 }
 """
 
-    result = compile_lockstep(source, verbose=False)
+    result = compile_lockstep(
+        source,
+        verbose=False,
+        source_file=str(tmp_path / "main.lock"),
+    )
 
     assert all(diag.severity != "error" for diag in result.diagnostics)
     assert any(uniform["type"] == "string" for uniform in result.entities["uniforms"])
     assert "private unnamed_addr constant" in result.llvm_ir
     assert "c\"asset://textures/noise\\00\"" in result.llvm_ir
+
+
+def test_import_dependency_file_is_prepended_and_types_are_resolved(tmp_path):
+    dependency = tmp_path / "types.lock"
+    dependency.write_text(
+        textwrap.dedent(
+            """
+            struct Particle {
+                float mass;
+            };
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    source = f'''
+import "{dependency.name}";
+
+pipeline Main {{
+    uniform Particle item;
+    bind {{ }}
+}}
+'''
+
+    result = compile_lockstep(source, verbose=False, source_file=str(tmp_path / "main.lock"))
+
+    assert all(diag.severity != "error" for diag in result.diagnostics)
+    assert any(struct["name"] == "Particle" for struct in result.entities["structs"])
+
+
+def test_circular_imports_raise_compile_error(tmp_path):
+    file_a = tmp_path / "a.lock"
+    file_b = tmp_path / "b.lock"
+    file_a.write_text('import "b.lock";\n', encoding="utf-8")
+    file_b.write_text('import "a.lock";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(file_a.read_text(encoding="utf-8"), verbose=False, source_file=str(file_a))
+
+    assert exc_info.value.phase == "parse"
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK002"]
+    assert "Circular dependency detected" in exc_info.value.errors[0].message
