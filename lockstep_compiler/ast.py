@@ -62,7 +62,16 @@ class AstExprCall:
     args: tuple["AstExpr", ...]
 
 
-AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall
+@dataclass(frozen=True)
+class AstExprCast:
+    target_type: AstType
+    value: "AstExpr"
+
+    def __post_init__(self):
+        object.__setattr__(self, "target_type", _normalize_type(self.target_type))
+
+
+AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast
 
 
 @dataclass(frozen=True)
@@ -316,6 +325,11 @@ class AstBuilder(_AstBuilderMixin):
     def visitUnaryExpr(self, ctx: Any):
         nested = self._call(ctx, "unaryExpr")
         if nested is not None:
+            if ctx.getChildCount() >= 4 and ctx.getChild(0).getText() == "(" and ctx.getChild(2).getText() == ")":
+                return AstExprCast(
+                    target_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                    value=self.visit(nested),
+                )
             return AstExprUnary(op=ctx.getChild(0).getText(), operand=self.visit(nested))
         return self.visit(self._call(ctx, "primaryExpr"))
 
@@ -330,7 +344,12 @@ class AstBuilder(_AstBuilderMixin):
             args = ()
             if expr_list is not None:
                 args = tuple(self.visit(child) for child in self._call(expr_list, "expr", []) or [])
-            return AstExprCall(name=id_token.getText(), args=args)
+            callee_name = id_token.getText()
+            if callee_name in {"int", "float", "double", "uint", "bool"}:
+                if len(args) != 1:
+                    raise ValueError(f"cast '{callee_name}(...)' expects exactly one argument")
+                return AstExprCast(target_type=self._resolve_type(callee_name), value=args[0])
+            return AstExprCall(name=callee_name, args=args)
 
         lvalue = self._call(ctx, "lvalue")
         if lvalue is not None:
@@ -548,6 +567,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             return f"{expr.op}{_expr_to_text(expr.operand)}"
         if isinstance(expr, AstExprBinary):
             return f"({_expr_to_text(expr.left)} {expr.op} {_expr_to_text(expr.right)})"
+        if isinstance(expr, AstExprCast):
+            return f"({_type_name(expr.target_type)}){_expr_to_text(expr.value)}"
         return f"{expr.name}({', '.join(_expr_to_text(arg) for arg in expr.args)})"
 
     def _statement_to_text(statement: AstStatement) -> str:

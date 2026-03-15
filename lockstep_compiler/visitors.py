@@ -1033,6 +1033,9 @@ def build_semantic_validator(base_visitor_cls):
                     return []
                 return value if isinstance(value, list) else [value]
 
+            def _is_cast_function_name(name: str) -> bool:
+                return name in {"int", "float", "double", "uint", "bool"}
+
             def _child_text(index: int) -> str | None:
                 if not hasattr(ctx, "getChild"):
                     return None
@@ -1186,6 +1189,15 @@ def build_semantic_validator(base_visitor_cls):
             if hasattr(ctx, "unaryExpr") and callable(ctx.unaryExpr) and ctx.unaryExpr() is not None:
                 operator = _child_text(0) or ""
                 operand_type = self._resolve_expr_type(ctx.unaryExpr())
+                type_name_ctx = ctx.typeName() if hasattr(ctx, "typeName") and callable(ctx.typeName) else None
+                if type_name_ctx is not None and _child_text(0) == "(":
+                    cast_target = type_name_ctx.getText()
+                    self._validate_declared_type(
+                        cast_target,
+                        type_name_ctx,
+                        SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+                    )
+                    return cast_target
                 if operator == "-":
                     if operand_type is not None and operand_type not in {"int", "float"}:
                         _report_operand_error(operator, "numeric", [operand_type])
@@ -1214,6 +1226,21 @@ def build_semantic_validator(base_visitor_cls):
             if hasattr(ctx, "ID") and callable(ctx.ID) and ctx.ID() is not None:
                 if hasattr(ctx, "exprList") and callable(ctx.exprList) and ctx.exprList() is not None:
                     function_name = ctx.ID().getText()
+                    args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                    if _is_cast_function_name(function_name):
+                        if len(args) != 1:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                                message=(
+                                    f"Cast '{function_name}(...)' expects 1 argument, "
+                                    f"but got {len(args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass exactly one expression to a cast.",
+                            )
+                            return None
+                        return function_name
                     function_signature = self.pure_functions.get(function_name)
                     if function_signature is not None:
                         return function_signature["return_type"]
@@ -1536,7 +1563,21 @@ def build_semantic_validator(base_visitor_cls):
                 if ctx.exprList() is None:
                     self._check_expression_identifier(ctx.ID().getText(), ctx)
                 else:
-                    self._type_check_pure_call(ctx)
+                    callee_name = ctx.ID().getText()
+                    if callee_name in {"int", "float", "double", "uint", "bool"}:
+                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                        if len(args) != 1:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                                message=(
+                                    f"Cast '{callee_name}(...)' expects 1 argument, but got {len(args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass exactly one expression to a cast.",
+                            )
+                    else:
+                        self._type_check_pure_call(ctx)
                 return self.visitChildren(ctx)
             return self.visitChildren(ctx)
 

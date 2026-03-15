@@ -14,6 +14,7 @@ from lockstep_compiler.ast import (
     AstAssignStmt,
     AstExprBinary,
     AstExprCall,
+    AstExprCast,
     AstExprLiteral,
     AstExprVar,
     AstReturnStmt,
@@ -491,6 +492,72 @@ def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
             }
         )
 
+
+
+def test_compile_lockstep_supports_c_and_function_style_cast_syntax():
+    result = compiler_module.compile_lockstep(
+        """
+        pure float cast_demo(int x) {
+            return (float)x + float(x);
+        }
+        pipeline Main {
+            bind { }
+        }
+        """,
+        verbose=False,
+    )
+
+    return_expr = result.ast.pure_functions[0].body[0].value
+    assert isinstance(return_expr, AstExprBinary)
+    assert isinstance(return_expr.left, AstExprCast)
+    assert return_expr.left.target_type.name == "float"
+    assert isinstance(return_expr.right, AstExprCast)
+    assert return_expr.right.target_type.name == "float"
+
+
+def test_emit_llvm_ir_lowers_explicit_numeric_casts_to_llvm_conversions():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "widen",
+                    "return_type": "float",
+                    "params": [{"modifier": "in", "type": "int", "name": "x"}],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCast(
+                                target_type="float",
+                                value=AstExprVar(path=("x",)),
+                            )
+                        )
+                    ],
+                },
+                {
+                    "name": "narrow",
+                    "return_type": "int",
+                    "params": [{"modifier": "in", "type": "float", "name": "x"}],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCast(
+                                target_type="int",
+                                value=AstExprVar(path=("x",)),
+                            )
+                        )
+                    ],
+                },
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "sitofp i32" in llvm_ir
+    assert "fptosi float" in llvm_ir
 
 def test_compile_lockstep_builds_structured_statement_ast():
     from lockstep_compiler.ast import AstExprBinary, AstExprVar, AstReturnStmt
