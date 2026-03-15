@@ -73,7 +73,11 @@ relExpr: shiftExpr (('<' | '<=' | '>' | '>=') shiftExpr)*;
 shiftExpr: addExpr (('<<' | '>>') addExpr)*;
 addExpr: mulExpr (('+' | '-') mulExpr)*;
 mulExpr: unaryExpr (('*' | '/' | '%') unaryExpr)*;
-unaryExpr: ('-' | '!') unaryExpr | primaryExpr;
+unaryExpr
+    : ('-' | '!') unaryExpr
+    | '(' typeName ')' unaryExpr
+    | primaryExpr
+    ;
 primaryExpr
     : '(' expr ')'
     | ID '(' exprList? ')'

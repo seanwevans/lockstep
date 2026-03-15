@@ -8,6 +8,7 @@ from .ast import (
     AstAssignStmt,
     AstExprBinary,
     AstExprCall,
+    AstExprCast,
     AstExprLiteral,
     AstExprUnary,
     AstExprVar,
@@ -175,11 +176,27 @@ class _FunctionLowerer:
     def _coerce_value_to_type(self, value: ir.Value, target_type: ir.Type) -> ir.Value:
         if value.type == target_type:
             return value
+
         if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.IntType):
             if value.type.width < target_type.width:
+                if value.type.width == 1:
+                    return self.builder.zext(value, target_type)
                 return self.builder.sext(value, target_type)
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
+
+        if isinstance(target_type, ir.FloatType) and isinstance(value.type, ir.IntType):
+            return self.builder.sitofp(value, target_type)
+
+        if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.FloatType):
+            return self.builder.fptosi(value, target_type)
+
+        if isinstance(target_type, ir.FloatType) and isinstance(value.type, ir.DoubleType):
+            return self.builder.fptrunc(value, target_type)
+
+        if isinstance(target_type, ir.DoubleType) and isinstance(value.type, ir.FloatType):
+            return self.builder.fpext(value, target_type)
+
         self._compiler_error(f"cannot coerce value of type '{value.type}' to '{target_type}'")
 
     def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
@@ -304,7 +321,7 @@ class _FunctionLowerer:
             return self.builder.or_(lhs, rhs)
         self._compiler_error(f"unsupported binary operator '{op}'")
 
-    def _lower_expr(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall):
+    def _lower_expr(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast):
 
         if isinstance(node, AstExprLiteral):
             if node.kind == "float":
@@ -321,6 +338,9 @@ class _FunctionLowerer:
             return self.builder.not_(operand)
         if isinstance(node, AstExprCall):
             return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
+        if isinstance(node, AstExprCast):
+            target_type = self._llvm_type(_type_name(node.target_type), self.known_structs)
+            return self._coerce_value_to_type(self._lower_expr(node.value), target_type)
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
