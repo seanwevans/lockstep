@@ -790,8 +790,9 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
-    assert 'store float %"fold_reduce", float* %"uniform_total_ptr"' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert 'store float %"fold_reduce"' in llvm_ir
 
 
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
@@ -951,6 +952,39 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
     assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
+
+
+def test_emit_c_header_exposes_nested_leaf_offsets_for_soa_layout():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Inner",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                },
+                {
+                    "name": "Outer",
+                    "fields": [
+                        {"type": "Inner", "name": "pos"},
+                        {"type": "float", "name": "mass"},
+                    ],
+                },
+            ],
+            "streams": [{"name": "particles", "type": "Outer"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float stream_particles_pos_x;" in header
+    assert "float stream_particles_pos_y;" in header
+    assert "float stream_particles_mass;" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_Y 4" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_MASS 8" in header
 
 
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
