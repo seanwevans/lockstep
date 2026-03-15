@@ -1,0 +1,12 @@
+struct Particle {
+    float pos;
+    float vel;
+};
+
+pipeline Demo {
+    stream<Particle, 4> particles;
+    uniform float dt = 0.5;
+
+    bind {
+    }
+}
