@@ -112,6 +112,124 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert 'define void @"Lockstep_Tick"()' in result.llvm_ir
 
 
+def test_compile_lockstep_falls_back_to_legacy_flow_on_typed_ast_type_error(
+    monkeypatch,
+):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    class StubDebugVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = []
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.bind_routes_ir = []
+            self.diagnostics = []
+
+        def visit(self, tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monkeypatch.setattr(
+        compiler_module,
+        "build_program_ast",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TypeError("stub incompatibility")
+        ),
+    )
+
+    result = lockstep_compiler.compile_lockstep(
+        "pipeline P { }",
+        verbose=False,
+        semantic_validator=lambda _tree: [],
+        token_stream_cls=lambda lexer: object(),
+        debug_visitor_cls=StubDebugVisitor,
+    )
+
+    assert result.ast is None
+    assert result.entities["streams"] == []
+
+
+def test_compile_lockstep_surfaces_typed_ast_builder_bugs(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monkeypatch.setattr(
+        compiler_module,
+        "build_program_ast",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyError("missing key")),
+    )
+
+    with pytest.raises(KeyError, match="missing key"):
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { }",
+            verbose=False,
+            semantic_validator=lambda _tree: [],
+            token_stream_cls=lambda lexer: object(),
+        )
+
+
 def test_emit_llvm_ir_generates_expected_declarations():
     llvm_ir = emit_llvm_ir(
         {
