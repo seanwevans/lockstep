@@ -104,6 +104,8 @@ def emit_c_header(
 
     arena_fields: list[tuple[str, str, str]] = []
     for stream in entities.get("streams", []):
+        arena_fields.append(("dim", f"stream_{stream['name']}", "uint"))
+    for stream in entities.get("streams", []):
         arena_fields.append(("stream", stream["name"], stream["type"]))
     for accumulator in entities.get("accumulators", []):
         arena_fields.append(("accum", accumulator["name"], accumulator["type"]))
@@ -168,6 +170,7 @@ def emit_c_header(
         stream_capacity = (
             int(stream.get("capacity", 0)) if stream.get("capacity") is not None else 0
         )
+        lines.append(f"#define LOCKSTEP_DIM_STREAM_{stream_name} {stream_capacity}")
         lines.append(
             f"#define LOCKSTEP_CAPACITY_STREAM_{stream_name} {stream_capacity}"
         )

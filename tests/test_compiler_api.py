@@ -343,7 +343,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define void @"filter_Cull"()' in llvm_ir
     assert (
-        'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
+        'define void @"Lockstep_Tick"(i32* %"dim_stream_raw_positions", %"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
         in llvm_ir
     )
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
@@ -629,7 +629,7 @@ def test_emit_llvm_ir_accepts_ast_program_input():
     )
 
     assert "route_ApplyGravity_cond" in llvm_ir
-    assert 'icmp slt i32 %"idx", 2' in llvm_ir
+    assert 'icmp slt i32 %"idx", %"trip_count_or_one"' in llvm_ir
 
 
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
@@ -669,7 +669,8 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     )
 
     assert "route_ApplyGravity_cond" in llvm_ir
-    assert 'icmp slt i32 %"idx", 4' in llvm_ir
+    assert 'load i32, i32* %"dim_stream_inp"' in llvm_ir
+    assert 'icmp slt i32 %"idx", %"trip_count_or_one"' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
 
 
@@ -886,10 +887,11 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "#ifndef LOCKSTEP_GENERATED_H" in header
     assert "struct Lockstep_Vec3" in header
     assert "struct Lockstep_Arena" in header
-    assert "#define LOCKSTEP_ARENA_BYTES 20" in header
-    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 0" in header
-    assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
-    assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 24" in header
+    assert "#define LOCKSTEP_OFFSET_DIM_STREAM_RAW_POSITIONS 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 4" in header
+    assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 16" in header
+    assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 20" in header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
 
 
@@ -904,6 +906,7 @@ def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
 
     assert "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES" in header
     assert "#include <stdio.h>" in header
+    assert "#define LOCKSTEP_DIM_STREAM_OUTPUT_STREAM 16" in header
     assert "#define LOCKSTEP_CAPACITY_STREAM_OUTPUT_STREAM 16" in header
     assert "#ifndef LOCKSTEP_SATURATED_WRITE_LOG" in header
     assert (
@@ -974,7 +977,7 @@ def test_compile_result_includes_c_header(monkeypatch):
         debug_visitor_cls=StubDebugVisitor,
     )
 
-    assert "#define LOCKSTEP_ARENA_BYTES 4" in result.c_header
+    assert "#define LOCKSTEP_ARENA_BYTES 8" in result.c_header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in result.c_header
 
 

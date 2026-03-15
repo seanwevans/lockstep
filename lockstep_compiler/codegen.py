@@ -679,17 +679,19 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     arena_fields: list[tuple[str, str, ir.Type]] = []
     stream_slots: dict[str, int] = {}
-    stream_capacities: dict[str, int] = {}
+    stream_default_capacities: dict[str, int] = {}
     for stream in streams:
-        stream_slots[stream["name"]] = len(arena_fields)
+        stream_name = stream["name"]
+        arena_fields.append(("dim", f"stream_{stream_name}", ir.IntType(32)))
+        stream_slots[stream_name] = len(arena_fields)
         arena_fields.append(
             (
                 "stream",
-                stream["name"],
+                stream_name,
                 lowerer._llvm_type(stream["type"], known_structs),
             )
         )
-        stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
+        stream_default_capacities[stream_name] = int(stream.get("capacity", 0))
     accum_slots: dict[str, int] = {}
     for accum in accumulators:
         accum_slots[accum["name"]] = len(arena_fields)
@@ -720,6 +722,7 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_arg_specs: list[tuple[str, str, ir.Type, bool]] = []
     for stream in streams:
+        tick_arg_specs.append(("dim", f"stream_{stream['name']}", ir.IntType(32), False))
         tick_arg_specs.append(
             (
                 "stream",
@@ -883,18 +886,46 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         params = signature.get("params", []) if isinstance(signature, dict) else []
         arg_names = route.get("args") if isinstance(route.get("args"), list) else []
 
-        trip_count = 0
+        trip_count_value = ir.Constant(ir.IntType(32), 0)
+
+        def _accumulate_trip_count(stream_name: str):
+            nonlocal trip_count_value
+            default_capacity = stream_default_capacities.get(stream_name, 0)
+            dim_value = _load_tick_param("dim", f"stream_{stream_name}", ir.IntType(32))
+            dim_is_positive = tick_builder.icmp_signed(
+                ">", dim_value, ir.Constant(ir.IntType(32), 0), name="stream_dim_positive"
+            )
+            stream_count = tick_builder.select(
+                dim_is_positive,
+                dim_value,
+                ir.Constant(ir.IntType(32), default_capacity),
+                name="stream_trip_count",
+            )
+            is_larger = tick_builder.icmp_signed(
+                ">", stream_count, trip_count_value, name="stream_trip_count_gt"
+            )
+            trip_count_value = tick_builder.select(
+                is_larger, stream_count, trip_count_value, name="trip_count_max"
+            )
+
         for index, arg_name in enumerate(arg_names):
             if index >= len(params):
                 break
             modifier = params[index].get("modifier")
-            if modifier == "in" and arg_name in stream_capacities:
-                trip_count = max(trip_count, stream_capacities[arg_name])
+            if modifier == "in" and arg_name in stream_default_capacities:
+                _accumulate_trip_count(arg_name)
         target = route.get("target")
-        if isinstance(target, str) and target in stream_capacities:
-            trip_count = max(trip_count, stream_capacities[target])
-        if trip_count <= 0:
-            trip_count = 1
+        if isinstance(target, str) and target in stream_default_capacities:
+            _accumulate_trip_count(target)
+        has_trip_count = tick_builder.icmp_signed(
+            ">", trip_count_value, ir.Constant(ir.IntType(32), 0), name="has_trip_count"
+        )
+        trip_count_value = tick_builder.select(
+            has_trip_count,
+            trip_count_value,
+            ir.Constant(ir.IntType(32), 1),
+            name="trip_count_or_one",
+        )
 
         index_ptr = tick_builder.alloca(
             ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx"
@@ -915,7 +946,7 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         tick_builder.position_at_end(loop_cond)
         current = tick_builder.load(index_ptr, name="idx")
         cond = tick_builder.icmp_signed(
-            "<", current, ir.Constant(ir.IntType(32), trip_count), name="route_active"
+            "<", current, trip_count_value, name="route_active"
         )
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
