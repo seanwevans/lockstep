@@ -186,7 +186,11 @@ def _compile_lockstep_with_dependencies(
             typed_ast = None
 
     semantic_validator = semantic_validator or (
-        lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
+        lambda parse_tree, typed_ast=None: validate_semantics(
+            parse_tree,
+            visitor_cls,
+            typed_ast=typed_ast,
+        )
     )
     try:
         semantic_diagnostics = normalize_diagnostics(
@@ -298,10 +302,10 @@ def load_default_parser_classes() -> tuple[Any, Any, Any]:
     return LockstepLexer, LockstepParser, LockstepVisitor
 
 
-def validate_semantics(parse_tree: Any, visitor_cls=None):
+def validate_semantics(parse_tree: Any, visitor_cls=None, typed_ast=None):
     if visitor_cls is None:
         _, _, visitor_cls = load_default_parser_classes()
-    return _validate_semantics(parse_tree, visitor_cls)
+    return _validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
 
 
 def compile_lockstep(

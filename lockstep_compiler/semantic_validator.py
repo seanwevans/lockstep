@@ -15,6 +15,14 @@ from .models import (
     SemanticStructField,
     SemanticSymbol,
 )
+from .ast import (
+    AstFoldBindRoute,
+    AstKernelBindRoute,
+    AstLocation,
+    AstPipelineDecl,
+    AstProgram,
+    AstStructDecl,
+)
 from .visitor_common import SEMANTIC_DIAGNOSTIC_CODES, Scope, ScopedSymbolData
 
 
@@ -47,10 +55,206 @@ def build_semantic_validator(base_visitor_cls):
             self._current_pure_function: SemanticPureFunctionContext | None = None
             self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
+            self._declaration_checks_from_typed_ast = False
 
         def _line_col(self, ctx) -> tuple[int, int]:
+            if isinstance(ctx, AstLocation):
+                return (ctx.line, ctx.column)
             token = getattr(ctx, "start", None)
-            return (getattr(token, "line", 0), getattr(token, "column", 0))
+            if token is not None:
+                return (getattr(token, "line", 0), getattr(token, "column", 0))
+            if hasattr(ctx, "line") and hasattr(ctx, "column"):
+                return (getattr(ctx, "line", 0), getattr(ctx, "column", 0))
+            return (0, 0)
+
+        def _validate_struct_decl_ast(self, struct_decl: AstStructDecl):
+            if struct_decl.name in self.structs:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                    message=f"Duplicate struct declaration for '{struct_decl.name}'.",
+                    ctx=struct_decl.location,
+                    hint="Rename one struct declaration to keep type names unique.",
+                )
+                return
+
+            fields: dict[str, SemanticStructField] = {}
+            seen_field_names: set[str] = set()
+            for field in struct_decl.fields:
+                if field.name in seen_field_names:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                        message=(
+                            f"Struct '{struct_decl.name}' has duplicate field declaration "
+                            f"'{field.name}'."
+                        ),
+                        ctx=field.location,
+                        hint="Rename or remove duplicate struct member declarations.",
+                    )
+                    continue
+                seen_field_names.add(field.name)
+                fields[field.name] = SemanticStructField(
+                    name=field.name,
+                    declared_type=field.declared_type.name,
+                )
+            self.structs[struct_decl.name] = fields
+
+        def _validate_fold_bind_route_ast(
+            self,
+            route: AstFoldBindRoute,
+            pipeline: AstPipelineDecl,
+        ):
+            declared_type = route.uniform_type.name
+            self._validate_declared_type(
+                declared_type,
+                pipeline.location,
+                SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+            )
+
+            self._declare(
+                route.uniform_name,
+                declared_type,
+                pipeline.location,
+                duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                kind="uniform",
+            )
+
+            if route.operator not in {"sum", "avg", "min", "max"}:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
+                    message=f"Unsupported fold operator '{route.operator}'.",
+                    ctx=pipeline.location,
+                    hint="Use a valid fold operator such as sum, avg, min, or max.",
+                )
+                return
+
+            fold_source_symbol = self._lookup(route.source)
+            if fold_source_symbol is None:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                    message=f"Fold source accumulator '{route.source}' is undefined.",
+                    ctx=pipeline.location,
+                    hint="Declare an accumulator and use it as the fold source.",
+                )
+            elif fold_source_symbol.kind != "accumulator":
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                    message=(
+                        f"Fold source '{route.source}' must reference an accumulator, "
+                        f"got {fold_source_symbol.kind}."
+                    ),
+                    ctx=pipeline.location,
+                    hint="Use an accumulator as the input to fold.",
+                )
+            elif fold_source_symbol.declared_type != declared_type:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
+                    message=(
+                        f"Fold target '{route.uniform_name}' has type {declared_type}, but fold source "
+                        f"'{route.source}' has accumulator type {fold_source_symbol.declared_type}."
+                    ),
+                    ctx=pipeline.location,
+                    hint="Match the folded uniform type to the accumulator type.",
+                )
+            else:
+                self._mark_symbol_used(route.source)
+                if self._pipeline_bind_usage_stack:
+                    self._pipeline_bind_usage_stack[-1].add(route.source)
+
+        def _validate_pipeline_decl_ast(self, pipeline: AstPipelineDecl):
+            self._pipeline_resource_stack.append({})
+            self._pipeline_bind_usage_stack.append(set())
+            self._push_scope()
+
+            for stream in pipeline.streams:
+                declared_type = stream.declared_type.name
+                self._validate_declared_type(declared_type, stream.location, "LCK310")
+                self._declare(
+                    stream.name,
+                    declared_type,
+                    stream.location,
+                    duplicate_code="LCK306",
+                    kind="stream",
+                )
+                self._pipeline_resource_stack[-1][stream.name] = SemanticPipelineResource(
+                    kind="stream",
+                    declaration_ctx=stream.location,
+                )
+
+            for accumulator in pipeline.accumulators:
+                declared_type = accumulator.declared_type.name
+                self._validate_declared_type(
+                    declared_type,
+                    accumulator.location,
+                    "LCK310",
+                )
+                self._declare(
+                    accumulator.name,
+                    declared_type,
+                    accumulator.location,
+                    duplicate_code="LCK306",
+                    kind="accumulator",
+                )
+                self._pipeline_resource_stack[-1][
+                    accumulator.name
+                ] = SemanticPipelineResource(
+                    kind="accumulator",
+                    declaration_ctx=accumulator.location,
+                )
+
+            for uniform in pipeline.uniforms:
+                declared_type = uniform.declared_type.name
+                self._validate_declared_type(declared_type, uniform.location, "LCK310")
+                self._declare(
+                    uniform.name,
+                    declared_type,
+                    uniform.location,
+                    duplicate_code="LCK306",
+                    kind="uniform",
+                )
+                self._pipeline_resource_stack[-1][uniform.name] = SemanticPipelineResource(
+                    kind="uniform",
+                    declaration_ctx=uniform.location,
+                )
+
+            for route in pipeline.bind_routes:
+                if isinstance(route, AstKernelBindRoute):
+                    self._type_check_bind_call(
+                        pipeline.location,
+                        route.target,
+                        route.kernel,
+                        list(route.args),
+                    )
+                    continue
+                self._validate_fold_bind_route_ast(route, pipeline)
+
+            self._pop_scope()
+            declared_resources = self._pipeline_resource_stack.pop()
+            bind_used_resources = self._pipeline_bind_usage_stack.pop()
+            for resource_name, resource in declared_resources.items():
+                if resource_name in bind_used_resources:
+                    continue
+                self._add_diagnostic(
+                    severity="warning",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unbound_pipeline_resource"],
+                    message=(
+                        f"Pipeline {resource.kind} '{resource_name}' is declared but not used in the bind block."
+                    ),
+                    ctx=resource.declaration_ctx,
+                    hint="Reference every declared stream/accumulator in at least one bind statement.",
+                )
+
+        def _validate_typed_ast_declarations(self, typed_ast: AstProgram):
+            self._declaration_checks_from_typed_ast = True
+            for struct_decl in typed_ast.structs:
+                self._validate_struct_decl_ast(struct_decl)
+            for pipeline in typed_ast.pipelines:
+                self._validate_pipeline_decl_ast(pipeline)
 
         def _add_diagnostic(
             self,
@@ -624,6 +828,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStructDecl(self, ctx):
+            if self._declaration_checks_from_typed_ast:
+                return self.visitChildren(ctx)
             struct_name = ctx.ID().getText()
             if struct_name in self.structs:
                 self._add_diagnostic(
@@ -1300,6 +1506,8 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitPipelineDecl(self, ctx):
+            if self._declaration_checks_from_typed_ast:
+                return self.visitChildren(ctx)
             self._pipeline_resource_stack.append({})
             self._pipeline_bind_usage_stack.append(set())
             self._push_scope()
@@ -1323,6 +1531,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStreamDecl(self, ctx):
+            if self._declaration_checks_from_typed_ast:
+                return self.visitChildren(ctx)
             self._validate_declared_type(
                 ctx.typeName().getText(), ctx.typeName(), "LCK310"
             )
@@ -1341,6 +1551,8 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
+            if self._declaration_checks_from_typed_ast:
+                return self.visitChildren(ctx)
             self._validate_declared_type(
                 ctx.typeName().getText(), ctx.typeName(), "LCK310"
             )
@@ -1360,6 +1572,26 @@ def build_semantic_validator(base_visitor_cls):
 
         def visitUniformDecl(self, ctx):
             declared_type = ctx.typeName().getText()
+            if self._declaration_checks_from_typed_ast:
+                has_initializer = (
+                    hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+                )
+                if has_initializer:
+                    initializer_type = self._resolve_expr_type(ctx.expr())
+                    if initializer_type is not None and initializer_type != declared_type:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "uniform_initializer_type_mismatch"
+                            ],
+                            message=(
+                                f"Type mismatch in uniform initializer for '{ctx.ID().getText()}': "
+                                f"expected {declared_type}, got {initializer_type}."
+                            ),
+                            ctx=ctx,
+                            hint="Use an initializer expression with the same type as the declared uniform.",
+                        )
+                return self.visitChildren(ctx)
             self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
             self._declare(
                 ctx.ID().getText(),
@@ -1395,6 +1627,8 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitBindStmt(self, ctx):
+            if self._declaration_checks_from_typed_ast:
+                return self.visitChildren(ctx)
             id_tokens = ctx.ID()
             if ctx.argList() is not None:
                 target_name = id_tokens[0].getText()
@@ -1501,13 +1735,19 @@ def build_semantic_validator(base_visitor_cls):
             self._resolve_lvalue_type(ctx)
             return self.visitChildren(ctx)
 
-        def validate(self, tree):
+        def validate(self, tree, typed_ast: AstProgram | None = None):
+            if typed_ast is not None:
+                self._validate_typed_ast_declarations(typed_ast)
             self.visit(tree)
             return self.diagnostics
 
     return LockstepSemanticValidator
 
 
-def validate_semantics(parse_tree: Any, visitor_cls) -> list[LockstepDiagnostic]:
+def validate_semantics(
+    parse_tree: Any,
+    visitor_cls,
+    typed_ast: AstProgram | None = None,
+) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()
-    return validator.validate(parse_tree)
+    return validator.validate(parse_tree, typed_ast=typed_ast)
