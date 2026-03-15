@@ -2,6 +2,12 @@ from difflib import get_close_matches
 from typing import Any
 
 from .prelude import load_intrinsics
+from .ast import (
+    AstKernelBindRoute,
+    AstFoldBindRoute,
+    AstLocation,
+    AstProgram,
+)
 
 from .models import (
     LockstepDiagnostic,
@@ -47,10 +53,224 @@ def build_semantic_validator(base_visitor_cls):
             self._current_pure_function: SemanticPureFunctionContext | None = None
             self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
+            self._skip_parse_tree_declaration_checks = False
 
         def _line_col(self, ctx) -> tuple[int, int]:
+            if isinstance(ctx, AstLocation):
+                return (ctx.line, ctx.column)
+            if hasattr(ctx, "line") and hasattr(ctx, "column"):
+                return (getattr(ctx, "line", 0), getattr(ctx, "column", 0))
             token = getattr(ctx, "start", None)
             return (getattr(token, "line", 0), getattr(token, "column", 0))
+
+        @staticmethod
+        def _type_to_name(type_ref) -> str:
+            return getattr(type_ref, "name", str(type_ref))
+
+        def _record_ast_kernel_signatures(self, typed_ast: AstProgram):
+            for shader in typed_ast.shaders:
+                params = [
+                    SemanticKernelParam(
+                        name=param.name,
+                        declared_type=self._type_to_name(param.declared_type),
+                        modifier=param.modifier,
+                    )
+                    for param in shader.params
+                ]
+                if shader.name not in self.shaders:
+                    self.shaders[shader.name] = params
+            for filter_decl in typed_ast.filters:
+                params = [
+                    SemanticKernelParam(
+                        name=param.name,
+                        declared_type=self._type_to_name(param.declared_type),
+                        modifier=param.modifier,
+                    )
+                    for param in filter_decl.params
+                ]
+                if filter_decl.name not in self.filters:
+                    self.filters[filter_decl.name] = params
+
+        def _validate_ast_structs(self, typed_ast: AstProgram):
+            for struct in typed_ast.structs:
+                if struct.name in self.structs:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                        message=f"Duplicate struct declaration for '{struct.name}'.",
+                        ctx=struct.location,
+                        hint="Rename one struct declaration to keep type names unique.",
+                    )
+                    continue
+
+                fields: dict[str, SemanticStructField] = {}
+                seen_field_names: set[str] = set()
+                for field in struct.fields:
+                    field_name = field.name
+                    if field_name in seen_field_names:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                            message=(
+                                f"Struct '{struct.name}' has duplicate field declaration "
+                                f"'{field_name}'."
+                            ),
+                            ctx=field.location,
+                            hint="Rename or remove duplicate struct member declarations.",
+                        )
+                        continue
+                    seen_field_names.add(field_name)
+                    declared_type = self._type_to_name(field.declared_type)
+                    self._validate_declared_type(
+                        declared_type,
+                        field.location,
+                        SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+                    )
+                    fields[field_name] = SemanticStructField(
+                        name=field_name,
+                        declared_type=declared_type,
+                    )
+                self.structs[struct.name] = fields
+
+        def _validate_ast_pipeline_decl(self, pipeline):
+            self._push_scope()
+            declared_resources: dict[str, SemanticPipelineResource] = {}
+            used_resources: set[str] = set()
+
+            def _declare_resource(name: str, declared_type: str, kind: str, location):
+                self._validate_declared_type(declared_type, location, "LCK310")
+                self._declare(
+                    name,
+                    declared_type,
+                    location,
+                    duplicate_code="LCK306",
+                    kind=kind,
+                )
+                declared_resources[name] = SemanticPipelineResource(
+                    kind=kind,
+                    declaration_ctx=location,
+                )
+
+            for stream in pipeline.streams:
+                _declare_resource(
+                    stream.name,
+                    self._type_to_name(stream.declared_type),
+                    "stream",
+                    stream.location,
+                )
+            for accum in pipeline.accumulators:
+                _declare_resource(
+                    accum.name,
+                    self._type_to_name(accum.declared_type),
+                    "accumulator",
+                    accum.location,
+                )
+            for uniform in pipeline.uniforms:
+                _declare_resource(
+                    uniform.name,
+                    self._type_to_name(uniform.declared_type),
+                    "uniform",
+                    uniform.location,
+                )
+
+            for route in pipeline.bind_routes:
+                route_ctx = getattr(route, "location", pipeline.location)
+                if isinstance(route, AstKernelBindRoute):
+                    self._type_check_bind_call(
+                        route_ctx,
+                        route.target,
+                        route.kernel,
+                        list(route.args),
+                    )
+                    used_resources.add(route.target)
+                    used_resources.update(route.args)
+                    continue
+
+                if not isinstance(route, AstFoldBindRoute):
+                    continue
+
+                fold_target = route.uniform_name
+                fold_operator = route.operator
+                fold_source = route.source
+                declared_type = self._type_to_name(route.uniform_type)
+
+                self._validate_declared_type(
+                    declared_type,
+                    route_ctx,
+                    SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+                )
+
+                self._declare(
+                    fold_target,
+                    declared_type,
+                    route_ctx,
+                    duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                    kind="uniform",
+                )
+
+                if fold_operator not in {"sum", "avg", "min", "max"}:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
+                        message=f"Unsupported fold operator '{fold_operator}'.",
+                        ctx=route_ctx,
+                        hint="Use a valid fold operator such as sum, avg, min, or max.",
+                    )
+                    continue
+
+                fold_source_symbol = self._lookup(fold_source)
+                if fold_source_symbol is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                        message=f"Fold source accumulator '{fold_source}' is undefined.",
+                        ctx=route_ctx,
+                        hint="Declare an accumulator and use it as the fold source.",
+                    )
+                elif fold_source_symbol.kind != "accumulator":
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                        message=(
+                            f"Fold source '{fold_source}' must reference an accumulator, "
+                            f"got {fold_source_symbol.kind}."
+                        ),
+                        ctx=route_ctx,
+                        hint="Use an accumulator as the input to fold.",
+                    )
+                elif fold_source_symbol.declared_type != declared_type:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
+                        message=(
+                            f"Fold target '{fold_target}' has type {declared_type}, but fold source "
+                            f"'{fold_source}' has accumulator type {fold_source_symbol.declared_type}."
+                        ),
+                        ctx=route_ctx,
+                        hint="Match the folded uniform type to the accumulator type.",
+                    )
+                else:
+                    used_resources.add(fold_source)
+
+            for resource_name, resource in declared_resources.items():
+                if resource_name in used_resources:
+                    continue
+                self._add_diagnostic(
+                    severity="warning",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["unbound_pipeline_resource"],
+                    message=(
+                        f"Pipeline {resource.kind} '{resource_name}' is declared but not used in the bind block."
+                    ),
+                    ctx=resource.declaration_ctx,
+                    hint="Reference every declared stream/accumulator in at least one bind statement.",
+                )
+            self._pop_scope()
+
+        def _validate_non_expression_decls_on_ast(self, typed_ast: AstProgram):
+            self._record_ast_kernel_signatures(typed_ast)
+            self._validate_ast_structs(typed_ast)
+            for pipeline in typed_ast.pipelines:
+                self._validate_ast_pipeline_decl(pipeline)
 
         def _add_diagnostic(
             self,
@@ -609,7 +829,11 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitShaderDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.shaders)
+            if self._skip_parse_tree_declaration_checks:
+                name = ctx.ID().getText()
+                params = self.shaders.get(name, [])
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.shaders)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -624,6 +848,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStructDecl(self, ctx):
+            if self._skip_parse_tree_declaration_checks:
+                return self.visitChildren(ctx)
             struct_name = ctx.ID().getText()
             if struct_name in self.structs:
                 self._add_diagnostic(
@@ -659,7 +885,11 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitFilterDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.filters)
+            if self._skip_parse_tree_declaration_checks:
+                name = ctx.ID().getText()
+                params = self.filters.get(name, [])
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.filters)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -1303,6 +1533,11 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitPipelineDecl(self, ctx):
+            if self._skip_parse_tree_declaration_checks:
+                self._push_scope()
+                result = self.visitChildren(ctx)
+                self._pop_scope()
+                return result
             self._pipeline_resource_stack.append({})
             self._pipeline_bind_usage_stack.append(set())
             self._push_scope()
@@ -1326,6 +1561,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStreamDecl(self, ctx):
+            if self._skip_parse_tree_declaration_checks:
+                return self.visitChildren(ctx)
             self._validate_declared_type(
                 ctx.typeName().getText(), ctx.typeName(), "LCK310"
             )
@@ -1344,6 +1581,8 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
+            if self._skip_parse_tree_declaration_checks:
+                return self.visitChildren(ctx)
             self._validate_declared_type(
                 ctx.typeName().getText(), ctx.typeName(), "LCK310"
             )
@@ -1398,6 +1637,8 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitBindStmt(self, ctx):
+            if self._skip_parse_tree_declaration_checks:
+                return self.visitChildren(ctx)
             id_tokens = ctx.ID()
             if ctx.argList() is not None:
                 target_name = id_tokens[0].getText()
@@ -1504,7 +1745,10 @@ def build_semantic_validator(base_visitor_cls):
             self._resolve_lvalue_type(ctx)
             return self.visitChildren(ctx)
 
-        def validate(self, tree):
+        def validate(self, tree, *, typed_ast: AstProgram | None = None):
+            if typed_ast is not None:
+                self._validate_non_expression_decls_on_ast(typed_ast)
+                self._skip_parse_tree_declaration_checks = True
             self.visit(tree)
             return self.diagnostics
 
@@ -1515,4 +1759,4 @@ def validate_semantics(
     parse_tree: Any, visitor_cls, *, typed_ast=None
 ) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()
-    return validator.validate(parse_tree)
+    return validator.validate(parse_tree, typed_ast=typed_ast)

@@ -198,6 +198,7 @@ class AstKernelBindRoute:
     kernel: str
     args: tuple[str, ...]
     route: str
+    location: AstLocation = AstLocation()
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,7 @@ class AstFoldBindRoute:
     operator: str
     source: str
     route: str
+    location: AstLocation = AstLocation()
 
     def __post_init__(self):
         object.__setattr__(self, "uniform_type", _normalize_type(self.uniform_type))
@@ -620,6 +622,7 @@ class AstBuilder(_AstBuilderMixin):
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
                         route=route_text,
+                        location=self._location(bind_stmt),
                     )
                 )
                 continue
@@ -631,6 +634,7 @@ class AstBuilder(_AstBuilderMixin):
                         kernel=id_tokens[1].getText(),
                         args=tuple(token.getText() for token in id_tokens[2:]),
                         route=route_text,
+                        location=self._location(bind_stmt),
                     )
                 )
         return self.visitChildren(ctx)
