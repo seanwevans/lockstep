@@ -1045,3 +1045,84 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                 "bind_routes": [],
             }
         )
+
+
+def test_compile_lockstep_enforces_source_size_limit():
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { bind { } }",
+            frontend_limits=lockstep_compiler.FrontendLimits(max_source_bytes=8),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK003"
+
+
+def test_compile_lockstep_enforces_expression_nesting_limit():
+    source = """
+shader S(in float v) {
+    float x = (((((((v)))))));
+}
+pipeline P {
+    stream<float,1> input;
+    bind {
+        input = S(input);
+    }
+}
+"""
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            source,
+            frontend_limits=lockstep_compiler.FrontendLimits(max_expression_nesting=2),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK005"
+
+
+def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._stream = stream
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            self._stream.LT(1)
+            return "TREE"
+
+    class StubVisitor:
+        def visit(self, _tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monotonic_values = iter([0.0, 0.002])
+    monkeypatch.setattr(compiler_module.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { bind { } }",
+            frontend_limits=lockstep_compiler.FrontendLimits(parse_timeout_ms=1),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert exc_info.value.errors[0].code == "LCK004"
