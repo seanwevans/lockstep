@@ -53,7 +53,8 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
             return "TREE"
 
     class StubVisitor:
-        pass
+        def visit(self, _tree):
+            return None
 
     class StubDebugVisitor:
         def __init__(self, verbose=True):
@@ -81,7 +82,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     result = lockstep_compiler.compile_lockstep(
         "pipeline P { }",
         verbose=False,
-        semantic_validator=lambda _tree: [],
+        semantic_validator=lambda _tree, **_kwargs: [],
         token_stream_cls=lambda lexer: object(),
         debug_visitor_cls=StubDebugVisitor,
     )
@@ -109,10 +110,10 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert 'define void @"Lockstep_Tick"()' in result.llvm_ir
+    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in result.llvm_ir
 
 
-def test_compile_lockstep_falls_back_to_legacy_flow_on_typed_ast_type_error(
+def test_compile_lockstep_surfaces_typed_ast_type_error_without_legacy_fallback(
     monkeypatch,
 ):
     class StubLexer:
@@ -139,7 +140,8 @@ def test_compile_lockstep_falls_back_to_legacy_flow_on_typed_ast_type_error(
             return "TREE"
 
     class StubVisitor:
-        pass
+        def visit(self, _tree):
+            return None
 
     class StubDebugVisitor:
         def __init__(self, verbose=True):
@@ -171,16 +173,14 @@ def test_compile_lockstep_falls_back_to_legacy_flow_on_typed_ast_type_error(
         ),
     )
 
-    result = lockstep_compiler.compile_lockstep(
-        "pipeline P { }",
-        verbose=False,
-        semantic_validator=lambda _tree: [],
-        token_stream_cls=lambda lexer: object(),
-        debug_visitor_cls=StubDebugVisitor,
-    )
-
-    assert result.ast is None
-    assert result.entities["streams"] == []
+    with pytest.raises(TypeError, match="stub incompatibility"):
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { }",
+            verbose=False,
+            semantic_validator=lambda _tree, **_kwargs: [],
+            token_stream_cls=lambda lexer: object(),
+            debug_visitor_cls=StubDebugVisitor,
+        )
 
 
 def test_compile_lockstep_surfaces_typed_ast_builder_bugs(monkeypatch):
@@ -208,7 +208,8 @@ def test_compile_lockstep_surfaces_typed_ast_builder_bugs(monkeypatch):
             return "TREE"
 
     class StubVisitor:
-        pass
+        def visit(self, _tree):
+            return None
 
     monkeypatch.setattr(
         compiler_module,
@@ -225,7 +226,7 @@ def test_compile_lockstep_surfaces_typed_ast_builder_bugs(monkeypatch):
         lockstep_compiler.compile_lockstep(
             "pipeline P { }",
             verbose=False,
-            semantic_validator=lambda _tree: [],
+            semantic_validator=lambda _tree, **_kwargs: [],
             token_stream_cls=lambda lexer: object(),
         )
 
@@ -343,7 +344,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define void @"filter_Cull"()' in llvm_ir
     assert (
-        'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
         in llvm_ir
     )
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
@@ -525,7 +526,8 @@ def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
             return "TREE"
 
     class StubVisitor:
-        pass
+        def visit(self, _tree):
+            return None
 
     class StubDebugVisitor:
         def __init__(self, verbose=True):
@@ -570,7 +572,7 @@ def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
             "pipeline Main { bind { } }",
             source_file="main.lock",
             verbose=False,
-            semantic_validator=lambda _tree: [],
+            semantic_validator=lambda _tree, **_kwargs: [],
             token_stream_cls=lambda lexer: object(),
             debug_visitor_cls=StubDebugVisitor,
         )
@@ -580,7 +582,7 @@ def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
     assert [diag.code for diag in error.errors] == ["LCK501"]
     assert error.errors[0].message == "undefined variable 'missing'"
     assert error.errors[0].source_file == "main.lock"
-    assert {diag.code for diag in error.diagnostics} == {"LCK421", "LCK501"}
+    assert {diag.code for diag in error.diagnostics} == {"LCK501"}
 
 
 def test_emit_llvm_ir_accepts_ast_program_input():
@@ -731,7 +733,8 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
+    assert 'store float %"fold_reduce", float* %"uniform_total_ptr"' in llvm_ir
 
 
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
@@ -941,7 +944,8 @@ def test_compile_result_includes_c_header(monkeypatch):
             return "TREE"
 
     class StubVisitor:
-        pass
+        def visit(self, _tree):
+            return None
 
     class StubDebugVisitor:
         def __init__(self, verbose=True):
@@ -969,12 +973,12 @@ def test_compile_result_includes_c_header(monkeypatch):
     result = lockstep_compiler.compile_lockstep(
         "pipeline P { }",
         verbose=False,
-        semantic_validator=lambda _tree: [],
+        semantic_validator=lambda _tree, **_kwargs: [],
         token_stream_cls=lambda lexer: object(),
         debug_visitor_cls=StubDebugVisitor,
     )
 
-    assert "#define LOCKSTEP_ARENA_BYTES 4" in result.c_header
+    assert "#define LOCKSTEP_ARENA_BYTES 0" in result.c_header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in result.c_header
 
 

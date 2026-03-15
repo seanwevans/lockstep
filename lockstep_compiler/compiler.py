@@ -1,74 +1,60 @@
 import functools
+import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
 
-from .ast import ast_to_entities, build_program_ast
+from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, ast_to_entities, build_program_ast
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import (
-    IntrinsicSignature,
     LockstepCompileResult,
     LockstepDiagnostic,
-    PureFunctionEntity,
-    PureFunctionParamEntity,
     normalize_diagnostics,
 )
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
-from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
+from .visitors import validate_semantics as _validate_semantics
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
+_DEPENDENCY_DECL_PATTERN = re.compile(
+    r'^\s*(?:import|#include)\s+"((?:[^"\\]|\\.)+)"\s*;\s*$',
+    re.MULTILINE,
+)
 
 
-def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> PureFunctionEntity:
-    return PureFunctionEntity(
-        name=intrinsic.name,
-        return_type=intrinsic.return_type,
-        params=tuple(
-            PureFunctionParamEntity(type=param.type_name, name=param.name)
-            for param in intrinsic.params
-        ),
-        body=(),
-        intrinsic=True,
+def _merge_intrinsic_pure_functions_into_ast(program: AstProgram) -> AstProgram:
+    existing_names = {pure.name for pure in program.pure_functions}
+    intrinsic_decls = tuple(
+        AstPureDecl(
+            name=intrinsic.name,
+            return_type=AstType(name=intrinsic.return_type, kind="primitive"),
+            params=tuple(
+                AstKernelParam(
+                    modifier="value",
+                    declared_type=AstType(name=param.type_name, kind="primitive"),
+                    name=param.name,
+                )
+                for param in intrinsic.params
+            ),
+            intrinsic=True,
+        )
+        for intrinsic in load_intrinsics().values()
+        if intrinsic.name not in existing_names
     )
-
-
-def _pure_function_name(entity: dict[str, Any] | PureFunctionEntity) -> str | None:
-    if isinstance(entity, PureFunctionEntity):
-        return entity.name
-    if isinstance(entity, dict):
-        value = entity.get("name")
-        return value if isinstance(value, str) else None
-    return None
-
-
-def _normalize_pure_function_entity(
-    entity: dict[str, Any] | PureFunctionEntity,
-) -> dict[str, Any] | PureFunctionEntity:
-    if isinstance(entity, PureFunctionEntity):
-        return entity
-    if isinstance(entity, dict):
-        return entity
-    return {}
-
-
-def _merge_intrinsic_pure_functions(
-    pure_functions: list[dict[str, Any] | PureFunctionEntity],
-) -> list[dict[str, Any] | PureFunctionEntity]:
-    merged: dict[str, dict[str, Any] | PureFunctionEntity] = {}
-    for pure_function in pure_functions:
-        normalized = _normalize_pure_function_entity(pure_function)
-        name = _pure_function_name(normalized)
-        if name is not None:
-            merged[name] = normalized
-    for name, intrinsic in load_intrinsics().items():
-        if name not in merged:
-            merged[name] = _intrinsic_to_entity(intrinsic)
-    return list(merged.values())
+    if not intrinsic_decls:
+        return program
+    return AstProgram(
+        structs=program.structs,
+        shaders=program.shaders,
+        filters=program.filters,
+        pure_functions=(*program.pure_functions, *intrinsic_decls),
+        pipelines=program.pipelines,
+    )
 
 
 def _line_count(source: str) -> int:
@@ -107,6 +93,107 @@ def _build_combined_source(
         if index < len(all_sources) - 1:
             current_line += 1
     return "\n\n".join(all_sources), mapping
+
+
+def _decode_dependency_path(path_literal: str) -> str:
+    return bytes(path_literal, "utf-8").decode("unicode_escape")
+
+
+def _dependency_parse_error(
+    *,
+    message: str,
+    source_file: str,
+    line: int = 1,
+) -> LockstepCompileError:
+    diagnostic = LockstepDiagnostic(
+        severity="error",
+        code="LCK002",
+        message=message,
+        line=line,
+        column=0,
+        source_file=source_file,
+        hint="Fix dependency declarations before compilation can continue.",
+    )
+    raise LockstepCompileError(
+        [diagnostic],
+        diagnostics=[diagnostic],
+        phase="parse",
+        source_file=source_file,
+    )
+
+
+def _extract_dependency_references(source_code: str) -> list[tuple[str, int]]:
+    dependencies: list[tuple[str, int]] = []
+    for match in _DEPENDENCY_DECL_PATTERN.finditer(source_code):
+        path_literal = match.group(1)
+        line = source_code.count("\n", 0, match.start()) + 1
+        dependencies.append((_decode_dependency_path(path_literal), line))
+    return dependencies
+
+
+def _resolve_dependency_sources(
+    source_code: str,
+    *,
+    source_file: str,
+) -> tuple[list[str], list[str]]:
+    if source_file.startswith("<") and source_file.endswith(">"):
+        base_directory = Path.cwd()
+    else:
+        base_directory = Path(source_file).resolve().parent
+
+    visited: set[Path] = set()
+    in_stack: list[Path] = []
+    ordered_sources: list[str] = []
+    ordered_source_files: list[str] = []
+
+    def _resolve_reference(reference: str, parent_file: str) -> Path:
+        candidate = Path(reference)
+        if candidate.is_absolute():
+            return candidate.resolve()
+        if parent_file.startswith("<") and parent_file.endswith(">"):
+            return (base_directory / candidate).resolve()
+        return (Path(parent_file).resolve().parent / candidate).resolve()
+
+    def _walk(current_source: str, current_file: str) -> None:
+        for reference, line in _extract_dependency_references(current_source):
+            dependency_path = _resolve_reference(reference, current_file)
+            if dependency_path in in_stack:
+                cycle_chain = [*in_stack, dependency_path]
+                cycle_text = " -> ".join(str(path) for path in cycle_chain)
+                _dependency_parse_error(
+                    message=(
+                        f"Circular dependency detected while resolving '{reference}': "
+                        f"{cycle_text}"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
+
+            if dependency_path in visited:
+                continue
+
+            try:
+                dependency_source = dependency_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                _dependency_parse_error(
+                    message=(
+                        f"Unable to resolve dependency '{reference}' from "
+                        f"'{current_file}': {exc}"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
+
+            in_stack.append(dependency_path)
+            _walk(dependency_source, str(dependency_path))
+            in_stack.pop()
+
+            visited.add(dependency_path)
+            ordered_sources.append(dependency_source)
+            ordered_source_files.append(str(dependency_path))
+
+    _walk(source_code, source_file)
+    return ordered_sources, ordered_source_files
 
 
 def _remap_diagnostic(
@@ -177,16 +264,14 @@ def _compile_lockstep_with_dependencies(
             source_file=parse_errors[0].source_file if parse_errors else source_file,
         )
 
-    typed_ast = None
-    if debug_visitor_cls is None:
-        try:
-            typed_ast = build_program_ast(tree, visitor_cls)
-        except TypeError:
-            # Keep the legacy parse-tree visitor flow for parser stubs used by unit tests.
-            typed_ast = None
+    typed_ast = _merge_intrinsic_pure_functions_into_ast(
+        build_program_ast(tree, visitor_cls)
+    )
 
     semantic_validator = semantic_validator or (
-        lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
+        lambda parse_tree, *, typed_ast: validate_semantics(
+            parse_tree, visitor_cls, typed_ast=typed_ast
+        )
     )
     try:
         semantic_diagnostics = normalize_diagnostics(
@@ -208,41 +293,9 @@ def _compile_lockstep_with_dependencies(
             source_file=semantic_errors[0].source_file,
         )
 
-    debug_diagnostics = []
-    entities = None
-    if typed_ast is not None:
-        entities = ast_to_entities(typed_ast)
-    else:
-        debug_visitor_cls = debug_visitor_cls or build_debug_visitor(visitor_cls)
-        visitor = debug_visitor_cls(verbose=verbose)
-        visitor.visit(tree)
-        debug_diagnostics = _remap_diagnostics(
-            visitor.diagnostics,
-            source_map=source_map,
-            default_source_file=source_file,
-        )
-        entities = {
-            "structs": visitor.structs,
-            "shaders": visitor.shaders,
-            "filters": visitor.filters,
-            "pure_functions": visitor.pure_functions,
-            "streams": visitor.streams,
-            "accumulators": visitor.accumulators,
-            "uniforms": visitor.uniforms,
-            "bind_routes": visitor.bind_routes,
-            "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
-        }
+    entities = ast_to_entities(typed_ast)
 
-    entities["pure_functions"] = [
-        pure_function.to_dict()
-        if isinstance(pure_function, PureFunctionEntity)
-        else pure_function
-        for pure_function in _merge_intrinsic_pure_functions(
-            entities.get("pure_functions", [])
-        )
-    ]
-
-    all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *debug_diagnostics])
+    all_diagnostics = normalize_diagnostics(semantic_diagnostics)
     bind_optimization = optimize_bind_routes(
         entities["bind_routes"],
         shader_names={shader["name"] for shader in entities["shaders"]},
@@ -256,7 +309,7 @@ def _compile_lockstep_with_dependencies(
     }
 
     try:
-        llvm_ir = emit_llvm_ir(typed_ast or entities)
+        llvm_ir = emit_llvm_ir(typed_ast)
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
@@ -279,7 +332,7 @@ def _compile_lockstep_with_dependencies(
         entities=entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
-        c_header=emit_c_header(typed_ast or entities),
+        c_header=emit_c_header(typed_ast),
         diagnostics=all_diagnostics,
     )
 
@@ -298,10 +351,10 @@ def load_default_parser_classes() -> tuple[Any, Any, Any]:
     return LockstepLexer, LockstepParser, LockstepVisitor
 
 
-def validate_semantics(parse_tree: Any, visitor_cls=None):
+def validate_semantics(parse_tree: Any, visitor_cls=None, *, typed_ast=None):
     if visitor_cls is None:
         _, _, visitor_cls = load_default_parser_classes()
-    return _validate_semantics(parse_tree, visitor_cls)
+    return _validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
 
 
 def compile_lockstep(
@@ -318,11 +371,21 @@ def compile_lockstep(
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
 ) -> LockstepCompileResult:
+    resolved_library_sources: list[str] = list(library_sources or [])
+    resolved_library_source_files: list[str] = list(library_source_files or [])
+
+    dependency_sources, dependency_source_files = _resolve_dependency_sources(
+        source_code,
+        source_file=source_file,
+    )
+    resolved_library_sources.extend(dependency_sources)
+    resolved_library_source_files.extend(dependency_source_files)
+
     source_code, source_map = _build_combined_source(
         source_code,
         source_file=source_file,
-        library_sources=library_sources,
-        library_source_files=library_source_files,
+        library_sources=resolved_library_sources,
+        library_source_files=resolved_library_source_files,
     )
 
     if lexer_cls is None or parser_cls is None or visitor_cls is None:

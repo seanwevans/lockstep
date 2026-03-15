@@ -145,6 +145,7 @@ class AstPureDecl:
     return_type: AstType
     params: tuple[AstKernelParam, ...] = ()
     body: tuple[AstStatement, ...] = ()
+    intrinsic: bool = False
     location: AstLocation = AstLocation()
 
     def __post_init__(self):
@@ -792,6 +793,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 ],
                 "body": [_statement_to_text(statement) for statement in pure.body],
                 "body_ast": list(pure.body),
+                "intrinsic": pure.intrinsic,
             }
             for pure in program.pure_functions
         ],

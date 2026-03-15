@@ -1511,6 +1511,8 @@ def build_semantic_validator(base_visitor_cls):
     return LockstepSemanticValidator
 
 
-def validate_semantics(parse_tree: Any, visitor_cls) -> list[LockstepDiagnostic]:
+def validate_semantics(
+    parse_tree: Any, visitor_cls, *, typed_ast=None
+) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()
     return validator.validate(parse_tree)

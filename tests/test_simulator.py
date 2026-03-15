@@ -332,8 +332,8 @@ def test_fold_values_uses_jit_reduce_for_sum_and_avg(monkeypatch):
 
 def test_jit_numeric_reduce_falls_back_to_python_sum_on_error(monkeypatch):
     monkeypatch.setattr(
-        "lockstep_compiler.simulator._jit_reduce_callable",
-        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        "lockstep_compiler.simulator._run_reduce_subprocess",
+        lambda _values: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
     assert (
