@@ -2,8 +2,8 @@
 name = "Lockstep"
 version = "0.1.0"
 dependencies = [
-    "antlr4-python3-runtime",
-    "llvmlite",
+    "antlr4-python3-runtime>=4.13,<4.14",
+    "llvmlite>=0.43,<0.44",
 ]
 
 [project.optional-dependencies]
