@@ -11,6 +11,7 @@ test = [
     "pytest",
     "pytest-cov",
     "mypy",
+    "hypothesis",
 ]
 lsp = [
     "pygls",

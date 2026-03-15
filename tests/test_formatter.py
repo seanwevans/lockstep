@@ -1,3 +1,6 @@
+from antlr4 import CommonTokenStream, InputStream
+
+from generated.parser.LockstepLexer import LockstepLexer
 from lockstep_compiler.formatter import format_lockstep_source
 
 
@@ -35,3 +38,14 @@ def test_format_lockstep_source_uses_lexer_tokens_for_nested_expressions():
         "    return next;\n"
         "}\n"
     )
+
+
+def test_lexer_preserves_line_comments_in_token_stream():
+    source = "// keep me\npipeline Main { bind { } }\n"
+
+    lexer = LockstepLexer(InputStream(source))
+    stream = CommonTokenStream(lexer)
+    stream.fill()
+
+    comments = [token.text for token in stream.tokens if token.text and token.text.startswith("//")]
+    assert comments == ["// keep me"]

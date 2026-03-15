@@ -26,6 +26,15 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#dependencyDecl.
+    def enterDependencyDecl(self, ctx:LockstepParser.DependencyDeclContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#dependencyDecl.
+    def exitDependencyDecl(self, ctx:LockstepParser.DependencyDeclContext):
+        pass
+
+
     # Enter a parse tree produced by LockstepParser#structDecl.
     def enterStructDecl(self, ctx:LockstepParser.StructDeclContext):
         pass
