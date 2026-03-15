@@ -94,6 +94,8 @@ The compiler generates a C-compatible header for the Host application (C/C++, Ru
 3. **Prime:** Host writes initial data into the SoA offsets provided by the header.
 4. **Tick:** Host calls `Lockstep_Tick()` to execute the pipeline.
 
+See [`examples/`](examples/) for a minimal end-to-end host app in C (`examples/minimal_host.c`) that includes a generated header, allocates arena memory, primes initial data, and calls `Lockstep_Tick`.
+
 ---
 
 ## 6. Compiler Frontend Usage
