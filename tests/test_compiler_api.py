@@ -90,7 +90,16 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["structs"] == []
     assert result.entities["shaders"] == []
     assert result.entities["filters"] == []
-    assert {fn["name"] for fn in result.entities["pure_functions"]} == {"step", "mix", "clamp", "max", "min", "abs", "sign", "smoothstep"}
+    assert {fn["name"] for fn in result.entities["pure_functions"]} == {
+        "step",
+        "mix",
+        "clamp",
+        "max",
+        "min",
+        "abs",
+        "sign",
+        "smoothstep",
+    }
     assert result.entities["streams"] == []
     assert result.entities["accumulators"] == []
     assert result.entities["uniforms"] == []
@@ -119,10 +128,44 @@ def test_emit_llvm_ir_generates_expected_declarations():
             "shaders": [{"name": "ApplyGravity", "body_ast": []}],
             "filters": [{"name": "Cull", "body_ast": []}],
             "pure_functions": [
-                {"name": "step", "return_type": "float", "params": [{"name": "edge", "type": "float"}, {"name": "x", "type": "float"}], "intrinsic": True},
-                {"name": "mix", "return_type": "float", "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}, {"name": "t", "type": "float"}], "intrinsic": True},
-                {"name": "clamp", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "min_value", "type": "float"}, {"name": "max_value", "type": "float"}], "intrinsic": True},
-                {"name": "max", "return_type": "float", "params": [{"name": "x", "type": "float"}, {"name": "y", "type": "float"}], "intrinsic": True},
+                {
+                    "name": "step",
+                    "return_type": "float",
+                    "params": [
+                        {"name": "edge", "type": "float"},
+                        {"name": "x", "type": "float"},
+                    ],
+                    "intrinsic": True,
+                },
+                {
+                    "name": "mix",
+                    "return_type": "float",
+                    "params": [
+                        {"name": "a", "type": "float"},
+                        {"name": "b", "type": "float"},
+                        {"name": "t", "type": "float"},
+                    ],
+                    "intrinsic": True,
+                },
+                {
+                    "name": "clamp",
+                    "return_type": "float",
+                    "params": [
+                        {"name": "x", "type": "float"},
+                        {"name": "min_value", "type": "float"},
+                        {"name": "max_value", "type": "float"},
+                    ],
+                    "intrinsic": True,
+                },
+                {
+                    "name": "max",
+                    "return_type": "float",
+                    "params": [
+                        {"name": "x", "type": "float"},
+                        {"name": "y", "type": "float"},
+                    ],
+                    "intrinsic": True,
+                },
                 {
                     "name": "demo",
                     "return_type": "float",
@@ -138,13 +181,23 @@ def test_emit_llvm_ir_generates_expected_declarations():
                                             AstExprCall(
                                                 name="mix",
                                                 args=(
-                                                    AstExprLiteral(kind="float", value="0.0"),
-                                                    AstExprLiteral(kind="float", value="1.0"),
+                                                    AstExprLiteral(
+                                                        kind="float", value="0.0"
+                                                    ),
+                                                    AstExprLiteral(
+                                                        kind="float", value="1.0"
+                                                    ),
                                                     AstExprCall(
                                                         name="step",
                                                         args=(
-                                                            AstExprLiteral(kind="float", value="0.5"),
-                                                            AstExprLiteral(kind="float", value="1.0"),
+                                                            AstExprLiteral(
+                                                                kind="float",
+                                                                value="0.5",
+                                                            ),
+                                                            AstExprLiteral(
+                                                                kind="float",
+                                                                value="1.0",
+                                                            ),
                                                         ),
                                                     ),
                                                 ),
@@ -167,12 +220,15 @@ def test_emit_llvm_ir_generates_expected_declarations():
         }
     )
 
-    assert "%\"struct.Vec3\" = type {float, float, float}" in llvm_ir
-    assert "define float @\"pure_demo\"()" in llvm_ir
-    assert "define void @\"shader_ApplyGravity\"()" in llvm_ir
-    assert "define void @\"filter_Cull\"()" in llvm_ir
-    assert 'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")' in llvm_ir
-    assert '; bind: out = ApplyGravity(inp, out, energy, dt);' in llvm_ir
+    assert '%"struct.Vec3" = type {float, float, float}' in llvm_ir
+    assert 'define float @"pure_demo"()' in llvm_ir
+    assert 'define void @"shader_ApplyGravity"()' in llvm_ir
+    assert 'define void @"filter_Cull"()' in llvm_ir
+    assert (
+        'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
+        in llvm_ir
+    )
+    assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
     assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'call float @"llvm.maxnum.f32"' in llvm_ir
@@ -199,7 +255,9 @@ def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
                     "return_type": "float",
                     "params": [],
                     "body_ast": [
-                        AstVarDeclStmt(declared_type="Vec3", name="v", initializer=None),
+                        AstVarDeclStmt(
+                            declared_type="Vec3", name="v", initializer=None
+                        ),
                         AstAssignStmt(
                             target=("v", "x"),
                             value=AstExprLiteral(kind="float", value="1.0"),
@@ -217,8 +275,8 @@ def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
         }
     )
 
-    assert "insertvalue %\"struct.Vec3\"" in llvm_ir
-    assert "extractvalue %\"struct.Vec3\"" in llvm_ir
+    assert 'insertvalue %"struct.Vec3"' in llvm_ir
+    assert 'extractvalue %"struct.Vec3"' in llvm_ir
 
 
 def test_cli_main_wires_default_compiler(monkeypatch):
@@ -270,7 +328,9 @@ def test_compile_lockstep_accepts_library_sources(monkeypatch):
         captured["kwargs"] = kwargs
         return "ok"
 
-    monkeypatch.setattr(compiler_module, "_compile_lockstep_with_dependencies", fake_compile)
+    monkeypatch.setattr(
+        compiler_module, "_compile_lockstep_with_dependencies", fake_compile
+    )
     monkeypatch.setattr(
         compiler_module,
         "_load_default_parser_classes",
@@ -279,11 +339,16 @@ def test_compile_lockstep_accepts_library_sources(monkeypatch):
 
     result = compiler_module.compile_lockstep(
         "pipeline Main { bind { } }",
-        library_sources=["struct Vec { float x; };", "pure float id(float v) { return v; }"],
+        library_sources=[
+            "struct Vec { float x; };",
+            "pure float id(float v) { return v; }",
+        ],
     )
 
     assert result == "ok"
-    assert captured["source_code"].startswith("struct Vec { float x; };\n\npure float id(float v) { return v; }")
+    assert captured["source_code"].startswith(
+        "struct Vec { float x; };\n\npure float id(float v) { return v; }"
+    )
     assert captured["source_code"].endswith("pipeline Main { bind { } }")
 
 
@@ -377,7 +442,9 @@ def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
     monkeypatch.setattr(
         compiler_module,
         "emit_llvm_ir",
-        lambda _program: (_ for _ in ()).throw(CodegenError("undefined variable 'missing'")),
+        lambda _program: (_ for _ in ()).throw(
+            CodegenError("undefined variable 'missing'")
+        ),
     )
 
     with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
@@ -397,6 +464,7 @@ def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
     assert error.errors[0].source_file == "main.lock"
     assert {diag.code for diag in error.diagnostics} == {"LCK421", "LCK501"}
 
+
 def test_emit_llvm_ir_accepts_ast_program_input():
     from lockstep_compiler.ast import (
         AstKernelBindRoute,
@@ -413,8 +481,12 @@ def test_emit_llvm_ir_accepts_ast_program_input():
                 AstKernelDecl(
                     name="ApplyGravity",
                     params=(
-                        AstKernelParam(modifier="in", declared_type="float", name="inp"),
-                        AstKernelParam(modifier="out", declared_type="float", name="out"),
+                        AstKernelParam(
+                            modifier="in", declared_type="float", name="inp"
+                        ),
+                        AstKernelParam(
+                            modifier="out", declared_type="float", name="out"
+                        ),
                     ),
                 ),
             ),
@@ -438,7 +510,7 @@ def test_emit_llvm_ir_accepts_ast_program_input():
         )
     )
 
-    assert 'route_ApplyGravity_cond' in llvm_ir
+    assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 2' in llvm_ir
 
 
@@ -478,7 +550,7 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
         }
     )
 
-    assert 'route_ApplyGravity_cond' in llvm_ir
+    assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
 
@@ -575,7 +647,6 @@ def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
         )
 
 
-
 def test_compile_lockstep_supports_c_and_function_style_cast_syntax():
     result = compiler_module.compile_lockstep(
         """
@@ -641,6 +712,7 @@ def test_emit_llvm_ir_lowers_explicit_numeric_casts_to_llvm_conversions():
     assert "sitofp i32" in llvm_ir
     assert "fptosi float" in llvm_ir
 
+
 def test_compile_lockstep_builds_structured_statement_ast():
     from lockstep_compiler.ast import AstExprBinary, AstExprVar, AstReturnStmt
 
@@ -703,8 +775,6 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
 
 
-
-
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     header = emit_c_header(
         {
@@ -715,11 +785,18 @@ def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     )
 
     assert "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES" in header
-    assert '#include <stdio.h>' in header
+    assert "#include <stdio.h>" in header
     assert "#define LOCKSTEP_CAPACITY_STREAM_OUTPUT_STREAM 16" in header
     assert "#ifndef LOCKSTEP_SATURATED_WRITE_LOG" in header
-    assert "static inline size_t Lockstep_SaturatedWriteIndex(size_t index, size_t capacity, const char* stream_name)" in header
-    assert "LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : \"<unnamed>\"" in header
+    assert (
+        "static inline size_t Lockstep_SaturatedWriteIndex(size_t index, size_t capacity, const char* stream_name)"
+        in header
+    )
+    assert (
+        'LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : "<unnamed>"'
+        in header
+    )
+
 
 def test_compile_result_includes_c_header(monkeypatch):
     class StubLexer:
@@ -792,7 +869,9 @@ def test_emit_llvm_ir_raises_on_undefined_variable_reference():
                         "name": "demo",
                         "return_type": "float",
                         "params": [],
-                        "body_ast": [AstReturnStmt(value=AstExprVar(path=("missing",)))],
+                        "body_ast": [
+                            AstReturnStmt(value=AstExprVar(path=("missing",)))
+                        ],
                     }
                 ],
                 "shaders": [],
@@ -813,7 +892,10 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                     {
                         "name": "max",
                         "return_type": "float",
-                        "params": [{"name": "a", "type": "float"}, {"name": "b", "type": "float"}],
+                        "params": [
+                            {"name": "a", "type": "float"},
+                            {"name": "b", "type": "float"},
+                        ],
                         "intrinsic": True,
                     },
                     {
@@ -830,8 +912,8 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                                     ),
                                 )
                             )
-                        ]
-                    }
+                        ],
+                    },
                 ],
                 "shaders": [],
                 "filters": [],

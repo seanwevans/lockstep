@@ -13,13 +13,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-from lockstep_compiler.models import SemanticKernelParam, SemanticStructField, SemanticSymbol
+from lockstep_compiler.models import (
+    SemanticKernelParam,
+    SemanticStructField,
+    SemanticSymbol,
+)
+
 
 @pytest.fixture
 def debug_compiler_module(monkeypatch):
     sys.modules.pop("debug_compiler", None)
     return importlib.import_module("debug_compiler")
-
 
 
 def _diagnostic(module, line, column, message, *, severity="error", code="LCK001"):
@@ -67,7 +71,9 @@ def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
     ]
 
 
-def test_compile_lockstep_uses_package_compile_function(debug_compiler_module, monkeypatch):
+def test_compile_lockstep_uses_package_compile_function(
+    debug_compiler_module, monkeypatch
+):
     captured = {}
 
     def fake_compile(source_code, *, verbose=True, **kwargs):
@@ -84,7 +90,9 @@ def test_compile_lockstep_uses_package_compile_function(debug_compiler_module, m
     assert captured == {"source_code": "pipeline P { }", "verbose": False, "kwargs": {}}
 
 
-def test_validate_semantics_uses_package_default_visitor(debug_compiler_module, monkeypatch):
+def test_validate_semantics_uses_package_default_visitor(
+    debug_compiler_module, monkeypatch
+):
     captured = {}
 
     def fake_validate(parse_tree, visitor_cls=None):
@@ -139,7 +147,9 @@ def _token(text):
 
 
 def _ctx(start_line=0, start_col=0, **kwargs):
-    return types.SimpleNamespace(start=types.SimpleNamespace(line=start_line, column=start_col), **kwargs)
+    return types.SimpleNamespace(
+        start=types.SimpleNamespace(line=start_line, column=start_col), **kwargs
+    )
 
 
 def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
@@ -174,9 +184,15 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
 
     visitor.visitProgram(object())
     visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
-    visitor.visitPureDecl(_ctx(ID=lambda: _token("add"), typeName=lambda: _token("Vec3")))
-    visitor.visitShaderDecl(_ctx(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList()))
-    visitor.visitFilterDecl(_ctx(ID=lambda: _token("OnlyActive"), paramList=lambda: _ParamList()))
+    visitor.visitPureDecl(
+        _ctx(ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+    )
+    visitor.visitShaderDecl(
+        _ctx(ID=lambda: _token("ApplyGravity"), paramList=lambda: _ParamList())
+    )
+    visitor.visitFilterDecl(
+        _ctx(ID=lambda: _token("OnlyActive"), paramList=lambda: _ParamList())
+    )
     visitor.visitPipelineDecl(_ctx(ID=lambda: _token("Physics")))
     visitor.visitStreamDecl(
         _ctx(
@@ -185,7 +201,9 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
             ID=lambda: _token("raw"),
         )
     )
-    visitor.visitAccumDecl(_ctx(typeName=lambda: _token("float"), ID=lambda: _token("energy")))
+    visitor.visitAccumDecl(
+        _ctx(typeName=lambda: _token("float"), ID=lambda: _token("energy"))
+    )
     visitor.visitUniformDecl(
         _ctx(
             typeName=lambda: _token("float"),
@@ -224,7 +242,9 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
             "body": [],
         }
     ]
-    assert visitor.pure_functions == [{"name": "add", "return_type": "Vec3", "params": [], "body": []}]
+    assert visitor.pure_functions == [
+        {"name": "add", "return_type": "Vec3", "params": [], "body": []}
+    ]
     assert visitor.streams == [{"name": "raw", "type": "Vec3", "capacity": "1000"}]
     assert visitor.accumulators == [{"name": "energy", "type": "float"}]
     assert visitor.uniforms == [{"name": "dt", "type": "float", "initializer": "0.016"}]
@@ -238,18 +258,44 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitPureDecl(
-        _ctx(start_line=4, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+        _ctx(
+            start_line=4,
+            start_col=1,
+            ID=lambda: _token("add"),
+            typeName=lambda: _token("Vec3"),
+        )
     )
     visitor.visitPureDecl(
-        _ctx(start_line=5, start_col=1, ID=lambda: _token("add"), typeName=lambda: _token("Vec3"))
+        _ctx(
+            start_line=5,
+            start_col=1,
+            ID=lambda: _token("add"),
+            typeName=lambda: _token("Vec3"),
+        )
     )
-    visitor.visitFilterDecl(_ctx(start_line=6, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
-    visitor.visitFilterDecl(_ctx(start_line=7, start_col=1, ID=lambda: _token("f"), paramList=lambda: None))
-    visitor.visitUniformDecl(
-        _ctx(start_line=8, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+    visitor.visitFilterDecl(
+        _ctx(start_line=6, start_col=1, ID=lambda: _token("f"), paramList=lambda: None)
+    )
+    visitor.visitFilterDecl(
+        _ctx(start_line=7, start_col=1, ID=lambda: _token("f"), paramList=lambda: None)
     )
     visitor.visitUniformDecl(
-        _ctx(start_line=9, start_col=1, typeName=lambda: _token("float"), ID=lambda: _token("dt"), expr=lambda: None)
+        _ctx(
+            start_line=8,
+            start_col=1,
+            typeName=lambda: _token("float"),
+            ID=lambda: _token("dt"),
+            expr=lambda: None,
+        )
+    )
+    visitor.visitUniformDecl(
+        _ctx(
+            start_line=9,
+            start_col=1,
+            typeName=lambda: _token("float"),
+            ID=lambda: _token("dt"),
+            expr=lambda: None,
+        )
     )
     visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
 
@@ -358,7 +404,9 @@ def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
 
 
 def test_module_main_success_path(monkeypatch, capsys):
-    monkeypatch.setattr("lockstep_compiler.compile_lockstep", lambda *_args, **_kwargs: sentinel.ok)
+    monkeypatch.setattr(
+        "lockstep_compiler.compile_lockstep", lambda *_args, **_kwargs: sentinel.ok
+    )
     monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
@@ -520,7 +568,9 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     ]
 
 
-def test_run_cli_internal_error_default_mode_keeps_generic_message(debug_compiler_module):
+def test_run_cli_internal_error_default_mode_keeps_generic_message(
+    debug_compiler_module,
+):
     def failing_compiler(_source):
         raise RuntimeError("kaboom")
 
@@ -538,7 +588,9 @@ def test_run_cli_internal_error_default_mode_keeps_generic_message(debug_compile
     ]
 
 
-def test_run_cli_debug_mode_emits_exception_details_and_traceback(debug_compiler_module):
+def test_run_cli_debug_mode_emits_exception_details_and_traceback(
+    debug_compiler_module,
+):
     def failing_compiler(_source):
         raise debug_compiler_module.LockstepCompileError(
             [
@@ -600,7 +652,9 @@ def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_pa
     assert f"Unable to read '{missing}': file not found." in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_for_unreadable_path(debug_compiler_module, monkeypatch):
+def test_run_cli_returns_non_zero_for_unreadable_path(
+    debug_compiler_module, monkeypatch
+):
     stderr = io.StringIO()
     called = {"compiler": False}
 
@@ -736,12 +790,19 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
         ]
     }
     validator._push_scope()
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare(
+        "out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
 
     bind_ctx = _ctx(
         start_line=12,
         start_col=3,
-        ID=lambda: [_token("out_stream"), _token("Apply"), _token("missing_stream"), _token("out_stream")],
+        ID=lambda: [
+            _token("out_stream"),
+            _token("Apply"),
+            _token("missing_stream"),
+            _token("out_stream"),
+        ],
         argList=lambda: object(),
         typeName=lambda: _token("float"),
     )
@@ -773,7 +834,9 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
     }
     validator._push_scope()
     validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("acc", "int", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc", "int", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
 
     arity_ctx = _ctx(
         start_line=20,
@@ -823,10 +886,15 @@ def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_modu
     validator.visitBindStmt(bind_ctx)
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK304"]
-    assert "Fix-it: replace 'MissingKernel' with 'KnownKernel'." in validator.diagnostics[0].hint
+    assert (
+        "Fix-it: replace 'MissingKernel' with 'KnownKernel'."
+        in validator.diagnostics[0].hint
+    )
 
 
-def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(debug_compiler_module):
+def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
@@ -848,10 +916,16 @@ def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(debug_compil
 
     validator.visitBindStmt(bind_ctx)
 
-    assert [diag.code for diag in validator.diagnostics] == ["LCK309", "LCK308", "LCK305"]
+    assert [diag.code for diag in validator.diagnostics] == [
+        "LCK309",
+        "LCK308",
+        "LCK305",
+    ]
 
 
-def test_semantic_validator_reports_bind_modifier_kind_mismatches(debug_compiler_module):
+def test_semantic_validator_reports_bind_modifier_kind_mismatches(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
@@ -862,19 +936,33 @@ def test_semantic_validator_reports_bind_modifier_kind_mismatches(debug_compiler
     }
     validator._push_scope()
     validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("dt_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("dt_uniform", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+    validator._declare(
+        "dt_stream", "float", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "dt_uniform", "float", _ctx(), duplicate_code="LCK306", kind="uniform"
+    )
 
     mismatch_ctx = _ctx(
         start_line=24,
         start_col=2,
-        ID=lambda: [_token("s0"), _token("Apply"), _token("s0"), _token("dt_stream"), _token("dt_uniform")],
+        ID=lambda: [
+            _token("s0"),
+            _token("Apply"),
+            _token("s0"),
+            _token("dt_stream"),
+            _token("dt_uniform"),
+        ],
         argList=lambda: object(),
         typeName=lambda: _token("float"),
     )
     validator.visitBindStmt(mismatch_ctx)
 
-    assert [diag.code for diag in validator.diagnostics] == ["LCK309", "LCK308", "LCK308"]
+    assert [diag.code for diag in validator.diagnostics] == [
+        "LCK309",
+        "LCK308",
+        "LCK308",
+    ]
     assert "kernel has no out parameter" in validator.diagnostics[0].message
     assert "requires uniform" in validator.diagnostics[1].message
     assert "requires accum" in validator.diagnostics[2].message
@@ -889,14 +977,25 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("target_uniform", "Vec3", _ctx(), duplicate_code="LCK306", kind="uniform")
+    validator._declare(
+        "inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "target_uniform", "Vec3", _ctx(), duplicate_code="LCK306", kind="uniform"
+    )
 
     mismatch_ctx = _ctx(
         start_line=26,
         start_col=2,
-        ID=lambda: [_token("target_uniform"), _token("Apply"), _token("inp_stream"), _token("out_stream")],
+        ID=lambda: [
+            _token("target_uniform"),
+            _token("Apply"),
+            _token("inp_stream"),
+            _token("out_stream"),
+        ],
         argList=lambda: object(),
         typeName=lambda: _token("float"),
     )
@@ -907,7 +1006,9 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
     assert "must be a stream" in validator.diagnostics[1].message
 
 
-def test_semantic_validator_allows_bind_when_target_matches_out_argument(debug_compiler_module):
+def test_semantic_validator_allows_bind_when_target_matches_out_argument(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
@@ -916,13 +1017,22 @@ def test_semantic_validator_allows_bind_when_target_matches_out_argument(debug_c
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare(
+        "inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
 
     bind_ctx = _ctx(
         start_line=28,
         start_col=2,
-        ID=lambda: [_token("out_stream"), _token("Apply"), _token("inp_stream"), _token("out_stream")],
+        ID=lambda: [
+            _token("out_stream"),
+            _token("Apply"),
+            _token("inp_stream"),
+            _token("out_stream"),
+        ],
         argList=lambda: object(),
         typeName=lambda: _token("float"),
     )
@@ -931,7 +1041,9 @@ def test_semantic_validator_allows_bind_when_target_matches_out_argument(debug_c
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_compiler_module):
+def test_semantic_validator_reports_mismatched_target_and_out_argument(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
@@ -940,14 +1052,25 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_com
         ]
     }
     validator._push_scope()
-    validator._declare("inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("other_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
+    validator._declare(
+        "inp_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "out_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
+    validator._declare(
+        "other_stream", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream"
+    )
 
     bind_ctx = _ctx(
         start_line=29,
         start_col=2,
-        ID=lambda: [_token("out_stream"), _token("Apply"), _token("inp_stream"), _token("other_stream")],
+        ID=lambda: [
+            _token("out_stream"),
+            _token("Apply"),
+            _token("inp_stream"),
+            _token("other_stream"),
+        ],
         argList=lambda: object(),
         typeName=lambda: _token("float"),
     )
@@ -955,7 +1078,10 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(debug_com
 
     assert [diag.code for diag in validator.diagnostics] == ["LCK312"]
     assert "must match out argument 'other_stream'" in validator.diagnostics[0].message
-    assert "Fix-it: change the bind target to 'other_stream'" in validator.diagnostics[0].hint
+    assert (
+        "Fix-it: change the bind target to 'other_stream'"
+        in validator.diagnostics[0].hint
+    )
 
 
 def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_module):
@@ -968,7 +1094,9 @@ def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_mo
     }
     validator._push_scope()
     validator._declare("s0", "Vec3", _ctx(), duplicate_code="LCK306", kind="stream")
-    validator._declare("acc", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
 
     bind_ctx = _ctx(
         start_line=30,
@@ -987,7 +1115,12 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
 
-    duplicate_ctx = _ctx(start_line=7, start_col=1, ID=lambda: _token("energy"), typeName=lambda: _token("float"))
+    duplicate_ctx = _ctx(
+        start_line=7,
+        start_col=1,
+        ID=lambda: _token("energy"),
+        typeName=lambda: _token("float"),
+    )
     validator.visitAccumDecl(duplicate_ctx)
     validator.visitUniformDecl(duplicate_ctx)
 
@@ -1003,7 +1136,9 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     ]
 
 
-def test_semantic_validator_reports_fold_source_missing_error_code(debug_compiler_module):
+def test_semantic_validator_reports_fold_source_missing_error_code(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
 
@@ -1024,7 +1159,9 @@ def test_semantic_validator_reports_fold_source_missing_error_code(debug_compile
 def test_semantic_validator_reports_fold_source_kind_error_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
-    validator._declare("not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
+    validator._declare(
+        "not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform"
+    )
 
     non_acc_fold_ctx = _ctx(
         start_line=31,
@@ -1043,7 +1180,9 @@ def test_semantic_validator_reports_fold_source_kind_error_code(debug_compiler_m
 def test_semantic_validator_reports_fold_operator_error_code(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
-    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
 
     invalid_operator_ctx = _ctx(
         start_line=32,
@@ -1059,10 +1198,14 @@ def test_semantic_validator_reports_fold_operator_error_code(debug_compiler_modu
     assert "Unsupported fold operator 'median'" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_fold_type_mismatch_error_code(debug_compiler_module):
+def test_semantic_validator_reports_fold_type_mismatch_error_code(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
-    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
 
     mismatched_type_ctx = _ctx(
         start_line=33,
@@ -1078,10 +1221,14 @@ def test_semantic_validator_reports_fold_type_mismatch_error_code(debug_compiler
     assert "has type int" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declaration_code(debug_compiler_module):
+def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declaration_code(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
-    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
     validator._declare("u0", "float", _ctx(), duplicate_code="LCK306", kind="uniform")
 
     duplicate_fold_ctx = _ctx(
@@ -1107,9 +1254,13 @@ def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declara
     ]
 
 
-def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_compiler_module):
+def test_semantic_validator_fold_declares_target_uniform_without_scope(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
-    validator._declare("acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
 
     fold_ctx = _ctx(
         start_line=34,
@@ -1124,10 +1275,14 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(debug_com
 
     assert validator.diagnostics == []
     assert validator.scopes
-    assert validator.scopes[-1]["u1"] == SemanticSymbol(name="u1", declared_type="float", kind="uniform")
+    assert validator.scopes[-1]["u1"] == SemanticSymbol(
+        name="u1", declared_type="float", kind="uniform"
+    )
 
 
-def test_semantic_validator_records_pure_signature_from_declaration(debug_compiler_module):
+def test_semantic_validator_records_pure_signature_from_declaration(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     pure_param_list_ctx = _ctx(
@@ -1150,7 +1305,11 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
             SemanticKernelParam(name="right", declared_type="int", modifier="value"),
         ],
     }
-    assert {name for name, signature in validator.pure_functions.items() if signature.get("intrinsic")} == {
+    assert {
+        name
+        for name, signature in validator.pure_functions.items()
+        if signature.get("intrinsic")
+    } == {
         "step",
         "mix",
         "clamp",
@@ -1162,7 +1321,9 @@ def test_semantic_validator_records_pure_signature_from_declaration(debug_compil
     }
 
 
-def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(debug_compiler_module):
+def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     canonical_decl_ctx = _ctx(
@@ -1216,7 +1377,9 @@ def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(debug_
     ]
 
 
-def test_semantic_validator_reports_error_for_pure_function_without_return(debug_compiler_module):
+def test_semantic_validator_reports_error_for_pure_function_without_return(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     non_return_stmt = _ctx(start_line=40, start_col=2, returnStmt=lambda: None)
@@ -1243,7 +1406,9 @@ def test_semantic_validator_reports_error_for_pure_function_without_return(debug
     ]
 
 
-def test_semantic_validator_accepts_pure_function_with_single_return(debug_compiler_module):
+def test_semantic_validator_accepts_pure_function_with_single_return(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     return_stmt = _ctx(start_line=42, start_col=4)
@@ -1253,7 +1418,9 @@ def test_semantic_validator_accepts_pure_function_with_single_return(debug_compi
         ID=lambda: _token("blend"),
         typeName=lambda: _token("float"),
         pureParamList=lambda: None,
-        statement=lambda: [_ctx(start_line=42, start_col=4, returnStmt=lambda: return_stmt)],
+        statement=lambda: [
+            _ctx(start_line=42, start_col=4, returnStmt=lambda: return_stmt)
+        ],
     )
 
     validator.visitPureDecl(pure_decl_ctx)
@@ -1261,7 +1428,9 @@ def test_semantic_validator_accepts_pure_function_with_single_return(debug_compi
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(debug_compiler_module):
+def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     first_return_stmt = _ctx(start_line=44, start_col=4)
@@ -1370,12 +1539,18 @@ def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_modu
     ]
 
 
-def test_semantic_validator_reports_pure_call_argument_type_mismatch(debug_compiler_module):
+def test_semantic_validator_reports_pure_call_argument_type_mismatch(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.pure_functions = {
         "negate": {
             "return_type": "float",
-            "params": [SemanticKernelParam(name="value", declared_type="float", modifier="value")],
+            "params": [
+                SemanticKernelParam(
+                    name="value", declared_type="float", modifier="value"
+                )
+            ],
         }
     }
 
@@ -1416,7 +1591,9 @@ def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
         start_line=39,
         start_col=3,
         ID=lambda: _token("dot"),
-        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]),
+        exprList=lambda: _ctx(
+            expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]
+        ),
     )
 
     validator.visitPrimaryExpr(call_ctx)
@@ -1431,12 +1608,16 @@ def test_semantic_validator_accepts_intrinsic_pure_call(debug_compiler_module):
         start_line=40,
         start_col=3,
         ID=lambda: _token("step"),
-        exprList=lambda: _ctx(expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]),
+        exprList=lambda: _ctx(
+            expr=lambda: [_ctx(declared_type="float"), _ctx(declared_type="float")]
+        ),
     )
 
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == []
+
+
 def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
@@ -1463,18 +1644,28 @@ def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_
         def param(self):
             return self._params
 
-    validator.visitStructDecl(_ctx(ID=lambda: _token("Particle"), structMember=lambda: []))
-    validator.visitVarDecl(_ctx(ID=lambda: _token("entity"), typeName=lambda: _token("Particle")))
+    validator.visitStructDecl(
+        _ctx(ID=lambda: _token("Particle"), structMember=lambda: [])
+    )
+    validator.visitVarDecl(
+        _ctx(ID=lambda: _token("entity"), typeName=lambda: _token("Particle"))
+    )
     validator.visitStreamDecl(
         _ctx(ID=lambda: _token("particles"), typeName=lambda: _token("Particle"))
     )
-    validator.visitAccumDecl(_ctx(ID=lambda: _token("acc_particles"), typeName=lambda: _token("Particle")))
-    validator.visitUniformDecl(_ctx(ID=lambda: _token("u_enabled"), typeName=lambda: _token("bool")))
+    validator.visitAccumDecl(
+        _ctx(ID=lambda: _token("acc_particles"), typeName=lambda: _token("Particle"))
+    )
+    validator.visitUniformDecl(
+        _ctx(ID=lambda: _token("u_enabled"), typeName=lambda: _token("bool"))
+    )
 
     validator.visitShaderDecl(
         _ctx(
             ID=lambda: _token("Apply"),
-            paramList=lambda: _ParamList([_Param("in", "Particle", "inp"), _Param("out", "Particle", "outp")]),
+            paramList=lambda: _ParamList(
+                [_Param("in", "Particle", "inp"), _Param("out", "Particle", "outp")]
+            ),
         )
     )
     validator.visitFilterDecl(
@@ -1484,7 +1675,9 @@ def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_
         )
     )
 
-    validator._declare("acc_fold", "Particle", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_fold", "Particle", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
     validator.visitBindStmt(
         _ctx(
             ID=lambda: [_token("u_particle"), _token("acc_fold")],
@@ -1497,7 +1690,9 @@ def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compiler_module):
+def test_semantic_validator_reports_unknown_declared_type_with_hint(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     class _Param:
@@ -1524,15 +1719,37 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
             return self._params
 
     validator._push_scope()
-    validator.visitVarDecl(_ctx(start_line=60, start_col=1, ID=lambda: _token("v0"), typeName=lambda: _token("flaot")))
+    validator.visitVarDecl(
+        _ctx(
+            start_line=60,
+            start_col=1,
+            ID=lambda: _token("v0"),
+            typeName=lambda: _token("flaot"),
+        )
+    )
     validator.visitStreamDecl(
-        _ctx(start_line=61, start_col=1, ID=lambda: _token("s0"), typeName=lambda: _token("flaot"))
+        _ctx(
+            start_line=61,
+            start_col=1,
+            ID=lambda: _token("s0"),
+            typeName=lambda: _token("flaot"),
+        )
     )
     validator.visitAccumDecl(
-        _ctx(start_line=62, start_col=1, ID=lambda: _token("a0"), typeName=lambda: _token("flaot"))
+        _ctx(
+            start_line=62,
+            start_col=1,
+            ID=lambda: _token("a0"),
+            typeName=lambda: _token("flaot"),
+        )
     )
     validator.visitUniformDecl(
-        _ctx(start_line=63, start_col=1, ID=lambda: _token("u0"), typeName=lambda: _token("flaot"))
+        _ctx(
+            start_line=63,
+            start_col=1,
+            ID=lambda: _token("u0"),
+            typeName=lambda: _token("flaot"),
+        )
     )
     validator.visitShaderDecl(
         _ctx(
@@ -1550,7 +1767,9 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
             paramList=lambda: _ParamList([_Param("uniform", "flaot", "u")]),
         )
     )
-    validator._declare("acc_src", "flaot", _ctx(), duplicate_code="LCK306", kind="accumulator")
+    validator._declare(
+        "acc_src", "flaot", _ctx(), duplicate_code="LCK306", kind="accumulator"
+    )
     validator.visitBindStmt(
         _ctx(
             start_line=66,
@@ -1563,11 +1782,19 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(debug_compil
     )
 
     type_errors = [diag for diag in validator.diagnostics if diag.code == "LCK310"]
-    fold_target_errors = [diag for diag in validator.diagnostics if diag.code == "LCK404"]
+    fold_target_errors = [
+        diag for diag in validator.diagnostics if diag.code == "LCK404"
+    ]
     assert len(type_errors) == 7
     assert len(fold_target_errors) == 0
-    assert all(diag.message == "Unknown declared type 'flaot' in 'flaot'." for diag in type_errors)
-    assert any(diag.hint is not None and "Did you mean float?" in diag.hint for diag in type_errors)
+    assert all(
+        diag.message == "Unknown declared type 'flaot' in 'flaot'."
+        for diag in type_errors
+    )
+    assert any(
+        diag.hint is not None and "Did you mean float?" in diag.hint
+        for diag in type_errors
+    )
 
 
 def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
@@ -1630,7 +1857,9 @@ def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_m
     validator.visitStructDecl(nested_struct_ctx)
 
     validator._push_scope()
-    validator._declare("entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local")
+    validator._declare(
+        "entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local"
+    )
 
     lvalue_ctx = _ctx(
         start_line=50,
@@ -1649,8 +1878,18 @@ def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_
     struct_ctx = _ctx(
         ID=lambda: _token("Particle"),
         structMember=lambda: [
-            _ctx(start_line=60, start_col=6, typeName=lambda: _token("Vec3"), ID=lambda: _token("position")),
-            _ctx(start_line=61, start_col=8, typeName=lambda: _token("float"), ID=lambda: _token("position")),
+            _ctx(
+                start_line=60,
+                start_col=6,
+                typeName=lambda: _token("Vec3"),
+                ID=lambda: _token("position"),
+            ),
+            _ctx(
+                start_line=61,
+                start_col=8,
+                typeName=lambda: _token("float"),
+                ID=lambda: _token("position"),
+            ),
         ],
     )
 
@@ -1668,7 +1907,9 @@ def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_
     ]
 
 
-def test_semantic_validator_struct_decl_keeps_first_duplicate_member(debug_compiler_module):
+def test_semantic_validator_struct_decl_keeps_first_duplicate_member(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     struct_ctx = _ctx(
@@ -1738,7 +1979,9 @@ def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_m
     validator.visitStructDecl(struct_ctx)
 
     validator._push_scope()
-    validator._declare("entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local")
+    validator._declare(
+        "entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local"
+    )
 
     lvalue_ctx = _ctx(
         start_line=52,
@@ -1786,7 +2029,9 @@ def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_modu
     ]
 
 
-def test_semantic_validator_reports_var_initializer_type_mismatch(debug_compiler_module):
+def test_semantic_validator_reports_var_initializer_type_mismatch(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
     var_decl_ctx = _ctx(
@@ -1824,7 +2069,9 @@ def test_semantic_validator_infers_var_type_from_initializer(debug_compiler_modu
     validator.visitVarDecl(var_decl_ctx)
 
     assert validator.diagnostics == []
-    assert validator.scopes[-1]["mass"] == SemanticSymbol(name="mass", declared_type="float", kind="local")
+    assert validator.scopes[-1]["mass"] == SemanticSymbol(
+        name="mass", declared_type="float", kind="local"
+    )
 
 
 def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module):
@@ -1889,20 +2136,35 @@ def test_semantic_validator_reports_unbound_pipeline_resources(debug_compiler_mo
     def _visit_children(ctx):
         if ctx is pipeline_ctx:
             validator.visitStreamDecl(
-                _ctx(start_line=21, start_col=2, ID=lambda: _token("s0"), typeName=lambda: _token("float"))
+                _ctx(
+                    start_line=21,
+                    start_col=2,
+                    ID=lambda: _token("s0"),
+                    typeName=lambda: _token("float"),
+                )
             )
             validator.visitAccumDecl(
-                _ctx(start_line=22, start_col=2, ID=lambda: _token("acc"), typeName=lambda: _token("float"))
+                _ctx(
+                    start_line=22,
+                    start_col=2,
+                    ID=lambda: _token("acc"),
+                    typeName=lambda: _token("float"),
+                )
             )
         return original_visit_children(ctx)
 
     validator.visitChildren = _visit_children
     validator.visitPipelineDecl(pipeline_ctx)
 
-    assert [diagnostic.code for diagnostic in validator.diagnostics] == ["LCK422", "LCK422"]
+    assert [diagnostic.code for diagnostic in validator.diagnostics] == [
+        "LCK422",
+        "LCK422",
+    ]
 
 
-def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(debug_compiler_module):
+def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
 
@@ -1931,7 +2193,9 @@ def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(d
 def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    return_ctx = _ctx(start_line=74, start_col=5, expr=lambda: _ctx(declared_type="float"))
+    return_ctx = _ctx(
+        start_line=74, start_col=5, expr=lambda: _ctx(declared_type="float")
+    )
     pure_ctx = _ctx(
         ID=lambda: _token("compute"),
         typeName=lambda: _token("int"),
@@ -1942,7 +2206,11 @@ def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_mod
     original_visit_children = validator.visitChildren
 
     def _visit_children(ctx):
-        if hasattr(ctx, "returnStmt") and callable(ctx.returnStmt) and ctx.returnStmt() is not None:
+        if (
+            hasattr(ctx, "returnStmt")
+            and callable(ctx.returnStmt)
+            and ctx.returnStmt() is not None
+        ):
             validator.visitReturnStmt(ctx.returnStmt())
         return original_visit_children(ctx)
 
@@ -1961,7 +2229,9 @@ def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_mod
     ]
 
 
-def test_semantic_validator_accepts_matching_assignment_initializer_and_return(debug_compiler_module):
+def test_semantic_validator_accepts_matching_assignment_initializer_and_return(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("x", "int", _ctx(), duplicate_code="LCK306", kind="local")
@@ -1997,7 +2267,11 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
     original_visit_children = validator.visitChildren
 
     def _visit_children(ctx):
-        if hasattr(ctx, "returnStmt") and callable(ctx.returnStmt) and ctx.returnStmt() is not None:
+        if (
+            hasattr(ctx, "returnStmt")
+            and callable(ctx.returnStmt)
+            and ctx.returnStmt() is not None
+        ):
             validator.visitReturnStmt(ctx.returnStmt())
         return original_visit_children(ctx)
 
@@ -2010,7 +2284,10 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(d
 def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    add_ctx = _ctx(mulExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="float")], getChild=lambda i: _token("+"))
+    add_ctx = _ctx(
+        mulExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="float")],
+        getChild=lambda i: _token("+"),
+    )
 
     assert validator._resolve_expr_type(add_ctx) is None
     assert validator.diagnostics == [
@@ -2039,7 +2316,14 @@ def test_semantic_validator_reports_use_before_definition(debug_compiler_module)
         )
     )
 
-    validator.visitPrimaryExpr(_ctx(start_line=91, start_col=4, ID=lambda: _token("count"), exprList=lambda: None))
+    validator.visitPrimaryExpr(
+        _ctx(
+            start_line=91,
+            start_col=4,
+            ID=lambda: _token("count"),
+            exprList=lambda: None,
+        )
+    )
 
     assert validator.diagnostics == [
         debug_compiler_module.LockstepDiagnostic(
@@ -2077,10 +2361,14 @@ def test_semantic_validator_assignment_defines_local(debug_compiler_module):
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_invalid_logical_operand_types(debug_compiler_module):
+def test_semantic_validator_reports_invalid_logical_operand_types(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    logical_and_ctx = _ctx(bitwiseOrExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")])
+    logical_and_ctx = _ctx(
+        bitwiseOrExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")]
+    )
 
     resolved_type = validator._resolve_expr_type(logical_and_ctx)
 
@@ -2097,12 +2385,14 @@ def test_semantic_validator_reports_invalid_logical_operand_types(debug_compiler
     ]
 
 
-
-
-def test_semantic_validator_reports_invalid_bitwise_operand_types(debug_compiler_module):
+def test_semantic_validator_reports_invalid_bitwise_operand_types(
+    debug_compiler_module,
+):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    bitwise_or_ctx = _ctx(bitwiseXorExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="bool")])
+    bitwise_or_ctx = _ctx(
+        bitwiseXorExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="bool")]
+    )
 
     resolved_type = validator._resolve_expr_type(bitwise_or_ctx)
 
@@ -2122,10 +2412,13 @@ def test_semantic_validator_reports_invalid_bitwise_operand_types(debug_compiler
 def test_semantic_validator_accepts_bitwise_int_operands(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
 
-    bitwise_and_ctx = _ctx(equalityExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="int")])
+    bitwise_and_ctx = _ctx(
+        equalityExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="int")]
+    )
 
     assert validator._resolve_expr_type(bitwise_and_ctx) == "int"
     assert validator.diagnostics == []
+
 
 def test_semantic_validator_reports_invalid_unary_operand_types(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()

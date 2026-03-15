@@ -79,7 +79,16 @@ def test_unary_binds_tighter_than_multiplication(generated_parser):
     tree, _ = _parse_expr("-a*b", lexer_cls, parser_cls)
 
     add_ctx = (
-        tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].bitwiseOrExpr()[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0].relExpr()[0].shiftExpr()[0].addExpr()[0]
+        tree.logicalExpr()
+        .logicalOrExpr()
+        .logicalAndExpr()[0]
+        .bitwiseOrExpr()[0]
+        .bitwiseXorExpr()[0]
+        .bitwiseAndExpr()[0]
+        .equalityExpr()[0]
+        .relExpr()[0]
+        .shiftExpr()[0]
+        .addExpr()[0]
     )
     mul_ctx = add_ctx.mulExpr()[0]
     unary_nodes = mul_ctx.unaryExpr()
@@ -97,7 +106,21 @@ def test_bitwise_precedence_levels(generated_parser):
     and_root = tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0]
     bitor_root = and_root.bitwiseOrExpr()
     assert len(bitor_root) == 2
-    assert bitor_root[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0].relExpr()[0].shiftExpr()[0].addExpr()[0].mulExpr()[0].unaryExpr()[0].primaryExpr().lvalue().getText() == "a"
+    assert (
+        bitor_root[0]
+        .bitwiseXorExpr()[0]
+        .bitwiseAndExpr()[0]
+        .equalityExpr()[0]
+        .relExpr()[0]
+        .shiftExpr()[0]
+        .addExpr()[0]
+        .mulExpr()[0]
+        .unaryExpr()[0]
+        .primaryExpr()
+        .lvalue()
+        .getText()
+        == "a"
+    )
 
 
 def test_shift_binds_tighter_than_relational(generated_parser):
@@ -105,7 +128,13 @@ def test_shift_binds_tighter_than_relational(generated_parser):
     tree, _ = _parse_expr("a<<1<b", lexer_cls, parser_cls)
 
     rel_ctx = (
-        tree.logicalExpr().logicalOrExpr().logicalAndExpr()[0].bitwiseOrExpr()[0].bitwiseXorExpr()[0].bitwiseAndExpr()[0].equalityExpr()[0]
+        tree.logicalExpr()
+        .logicalOrExpr()
+        .logicalAndExpr()[0]
+        .bitwiseOrExpr()[0]
+        .bitwiseXorExpr()[0]
+        .bitwiseAndExpr()[0]
+        .equalityExpr()[0]
     )
     assert len(rel_ctx.relExpr()) == 2
 

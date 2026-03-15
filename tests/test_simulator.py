@@ -8,7 +8,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lockstep_compiler.cli import run_cli
-from lockstep_compiler.simulator import parse_simulation_inputs, simulate_pipeline_entities
+from lockstep_compiler.simulator import (
+    parse_simulation_inputs,
+    simulate_pipeline_entities,
+)
 
 
 def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():
@@ -172,7 +175,10 @@ def test_run_cli_rejects_combined_dump_and_simulate_modes():
     except SystemExit as err:
         assert err.code == 2
     else:
-        raise AssertionError("Expected parser to reject combined output-producing flags")
+        raise AssertionError(
+            "Expected parser to reject combined output-producing flags"
+        )
+
 
 def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
     entities = {
@@ -204,7 +210,9 @@ def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
         ],
     }
 
-    simulation = simulate_pipeline_entities(entities, stream_inputs={"in_stream": [1, 2, 3, 4]})
+    simulation = simulate_pipeline_entities(
+        entities, stream_inputs={"in_stream": [1, 2, 3, 4]}
+    )
 
     assert simulation["streams"]["out_stream"] == [
         {"_source": 1, "_kernel": "Project"},
@@ -212,10 +220,9 @@ def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
     ]
 
 
-
 def test_parse_simulation_inputs_rejects_non_object_root():
     try:
-        parse_simulation_inputs('[1, 2, 3]')
+        parse_simulation_inputs("[1, 2, 3]")
     except ValueError as err:
         assert "<root>" in str(err)
     else:
@@ -324,26 +331,32 @@ def test_fold_values_uses_jit_reduce_for_sum_and_avg(monkeypatch):
 
 
 def test_jit_numeric_reduce_falls_back_to_python_sum_on_error(monkeypatch):
-    monkeypatch.setattr("lockstep_compiler.simulator._jit_reduce_callable", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        "lockstep_compiler.simulator._jit_reduce_callable",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
-    assert simulate_pipeline_entities(
-        {
-            "streams": [],
-            "accumulators": [{"name": "energy", "type": "float"}],
-            "uniforms": [{"name": "total", "type": "float", "initializer": "0"}],
-            "shaders": [],
-            "filters": [],
-            "bind_routes": ["uniform float total = fold sum(energy);"],
-            "bind_routes_ir": [
-                {
-                    "kind": "fold",
-                    "uniform_type": "float",
-                    "uniform_name": "total",
-                    "operator": "sum",
-                    "source": "energy",
-                    "route": "uniform float total = fold sum(energy);",
-                }
-            ],
-        },
-        accumulator_inputs={"energy": [1.25, 2.75]},
-    )["uniforms"]["total"] == 4.0
+    assert (
+        simulate_pipeline_entities(
+            {
+                "streams": [],
+                "accumulators": [{"name": "energy", "type": "float"}],
+                "uniforms": [{"name": "total", "type": "float", "initializer": "0"}],
+                "shaders": [],
+                "filters": [],
+                "bind_routes": ["uniform float total = fold sum(energy);"],
+                "bind_routes_ir": [
+                    {
+                        "kind": "fold",
+                        "uniform_type": "float",
+                        "uniform_name": "total",
+                        "operator": "sum",
+                        "source": "energy",
+                        "route": "uniform float total = fold sum(energy);",
+                    }
+                ],
+            },
+            accumulator_inputs={"energy": [1.25, 2.75]},
+        )["uniforms"]["total"]
+        == 4.0
+    )

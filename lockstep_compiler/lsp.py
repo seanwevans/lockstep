@@ -58,7 +58,9 @@ def _is_inside_bind_block(source: str, line: int, column: int) -> bool:
     if line >= len(lines):
         return False
 
-    offset = sum(len(existing) for existing in lines[:line]) + min(column, len(lines[line]))
+    offset = sum(len(existing) for existing in lines[:line]) + min(
+        column, len(lines[line])
+    )
 
     for match in re.finditer(r"\bbind\s*\{", source):
         block_start = match.end()
@@ -139,7 +141,9 @@ def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, s
     return inferred
 
 
-def _build_struct_member_index_from_entities(entities: dict[str, Any]) -> dict[str, dict[str, MemberDefinition]]:
+def _build_struct_member_index_from_entities(
+    entities: dict[str, Any],
+) -> dict[str, dict[str, MemberDefinition]]:
     index: dict[str, dict[str, MemberDefinition]] = {}
 
     for struct in entities.get("structs", []):
@@ -163,7 +167,9 @@ def _build_struct_member_index_from_entities(entities: dict[str, Any]) -> dict[s
     return index
 
 
-def _build_struct_field_type_index_from_entities(entities: dict[str, Any]) -> dict[str, dict[str, str]]:
+def _build_struct_field_type_index_from_entities(
+    entities: dict[str, Any],
+) -> dict[str, dict[str, str]]:
     return {
         struct.get("name"): {
             field.get("name"): field.get("type")
@@ -339,7 +345,10 @@ def provide_hover_info(
             return f"(struct) `struct {name}`"
         if any(shader.get("name") == name for shader in entities.get("shaders", [])):
             return f"(shader) `shader {name}(...)`"
-        if any(filter_decl.get("name") == name for filter_decl in entities.get("filters", [])):
+        if any(
+            filter_decl.get("name") == name
+            for filter_decl in entities.get("filters", [])
+        ):
             return f"(filter) `filter {name}(...)`"
         if any(
             pure.get("name") == name and not pure.get("intrinsic")
@@ -378,7 +387,9 @@ def run_lsp_server() -> int:
                 start=types.Position(line=line, character=column),
                 end=types.Position(line=line, character=column + 1),
             ),
-            severity=severity_map.get(diag.get("severity", "info"), types.DiagnosticSeverity.Information),
+            severity=severity_map.get(
+                diag.get("severity", "info"), types.DiagnosticSeverity.Information
+            ),
             code=diag.get("code"),
             message=diag.get("message", ""),
         )
@@ -388,7 +399,9 @@ def run_lsp_server() -> int:
         document = server.workspace.get_text_document(uri)
         compiled = compile_context_for_lsp(document.source)
         doc_contexts[uri] = compiled
-        server.publish_diagnostics(uri, [_to_lsp_diagnostic(d) for d in compiled.diagnostics])
+        server.publish_diagnostics(
+            uri, [_to_lsp_diagnostic(d) for d in compiled.diagnostics]
+        )
         pending_tasks.pop(uri, None)
 
     def _schedule_validate(uri: str):
@@ -413,7 +426,9 @@ def run_lsp_server() -> int:
     def completion(params: types.CompletionParams):
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(document.source, compiled_context=compiled)
+        analysis_context = build_analysis_context(
+            document.source, compiled_context=compiled
+        )
         entries = provide_bind_completion_items(
             document.source,
             line=params.position.line,
@@ -441,7 +456,9 @@ def run_lsp_server() -> int:
     def hover(params: types.HoverParams):
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(document.source, compiled_context=compiled)
+        analysis_context = build_analysis_context(
+            document.source, compiled_context=compiled
+        )
         info = provide_hover_info(
             document.source,
             params.position.line,
@@ -461,7 +478,9 @@ def run_lsp_server() -> int:
     def definition(params: types.DefinitionParams):
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(document.source, compiled_context=compiled)
+        analysis_context = build_analysis_context(
+            document.source, compiled_context=compiled
+        )
         member = find_member_definition(
             document.source,
             params.position.line,
@@ -472,7 +491,9 @@ def run_lsp_server() -> int:
             return None
         target = types.Range(
             start=types.Position(line=member.line, character=member.column),
-            end=types.Position(line=member.line, character=member.column + len(member.field_name)),
+            end=types.Position(
+                line=member.line, character=member.column + len(member.field_name)
+            ),
         )
         return types.Location(uri=document.uri, range=target)
 

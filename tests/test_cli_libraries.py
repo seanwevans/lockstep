@@ -19,7 +19,14 @@ def test_run_cli_passes_library_sources_to_compiler(tmp_path):
         captured["source"] = source
         captured["verbose"] = verbose
         captured["library_sources"] = library_sources
-        return {"streams": [], "accumulators": [], "uniforms": [], "shaders": [], "filters": [], "bind_routes": []}
+        return {
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": [],
+        }
 
     exit_code = run_cli(
         ["--lib", str(library), "--simulate"],

@@ -28,7 +28,14 @@ class ParseErrorCollector(ErrorListener):
 class LockstepCompileError(Exception):
     """Raised when the Lockstep source contains parse or semantic errors."""
 
-    def __init__(self, errors, diagnostics=None, *, phase: str = "parse", source_file: str | None = None):
+    def __init__(
+        self,
+        errors,
+        diagnostics=None,
+        *,
+        phase: str = "parse",
+        source_file: str | None = None,
+    ):
         self.errors = errors
         self.diagnostics = diagnostics or []
         self.phase = phase
@@ -38,14 +45,20 @@ class LockstepCompileError(Exception):
     def _format_message(self):
         count = len(self.errors)
         suffix = "" if count == 1 else "s"
-        inferred_source_file = self.source_file or (self.errors[0].source_file if self.errors else None)
+        inferred_source_file = self.source_file or (
+            self.errors[0].source_file if self.errors else None
+        )
         file_context = f" in '{inferred_source_file}'" if inferred_source_file else ""
-        summary = f"Compilation failed with {count} {self.phase} error{suffix}{file_context}."
+        summary = (
+            f"Compilation failed with {count} {self.phase} error{suffix}{file_context}."
+        )
 
         details = []
         for error in self.errors:
             if error.source_file:
-                details.append(f"{error.source_file}:{error.line}:{error.column} {error.message}")
+                details.append(
+                    f"{error.source_file}:{error.line}:{error.column} {error.message}"
+                )
             else:
                 details.append(f"line {error.line}:{error.column} {error.message}")
         detail_text = "\n".join(details)

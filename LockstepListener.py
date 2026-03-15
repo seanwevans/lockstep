@@ -1,7 +1,7 @@
-# Generated from Lockstep.g4 by ANTLR 4.13.2
+# Generated from Lockstep.g4 by ANTLR 4.7.2
 from antlr4 import *
 
-if "." in __name__:
+if __name__ is not None and "." in __name__:
     from .LockstepParser import LockstepParser
 else:
     from LockstepParser import LockstepParser
@@ -24,14 +24,6 @@ class LockstepListener(ParseTreeListener):
 
     # Exit a parse tree produced by LockstepParser#declaration.
     def exitDeclaration(self, ctx: LockstepParser.DeclarationContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#dependencyDecl.
-    def enterDependencyDecl(self, ctx: LockstepParser.DependencyDeclContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#dependencyDecl.
-    def exitDependencyDecl(self, ctx: LockstepParser.DependencyDeclContext):
         pass
 
     # Enter a parse tree produced by LockstepParser#structDecl.
@@ -154,14 +146,6 @@ class LockstepListener(ParseTreeListener):
     def exitBindStmt(self, ctx: LockstepParser.BindStmtContext):
         pass
 
-    # Enter a parse tree produced by LockstepParser#foldOperator.
-    def enterFoldOperator(self, ctx: LockstepParser.FoldOperatorContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#foldOperator.
-    def exitFoldOperator(self, ctx: LockstepParser.FoldOperatorContext):
-        pass
-
     # Enter a parse tree produced by LockstepParser#argList.
     def enterArgList(self, ctx: LockstepParser.ArgListContext):
         pass
@@ -210,110 +194,6 @@ class LockstepListener(ParseTreeListener):
     def exitExpr(self, ctx: LockstepParser.ExprContext):
         pass
 
-    # Enter a parse tree produced by LockstepParser#logicalExpr.
-    def enterLogicalExpr(self, ctx: LockstepParser.LogicalExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#logicalExpr.
-    def exitLogicalExpr(self, ctx: LockstepParser.LogicalExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#logicalOrExpr.
-    def enterLogicalOrExpr(self, ctx: LockstepParser.LogicalOrExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#logicalOrExpr.
-    def exitLogicalOrExpr(self, ctx: LockstepParser.LogicalOrExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#logicalAndExpr.
-    def enterLogicalAndExpr(self, ctx: LockstepParser.LogicalAndExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#logicalAndExpr.
-    def exitLogicalAndExpr(self, ctx: LockstepParser.LogicalAndExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#bitwiseOrExpr.
-    def enterBitwiseOrExpr(self, ctx: LockstepParser.BitwiseOrExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#bitwiseOrExpr.
-    def exitBitwiseOrExpr(self, ctx: LockstepParser.BitwiseOrExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#bitwiseXorExpr.
-    def enterBitwiseXorExpr(self, ctx: LockstepParser.BitwiseXorExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#bitwiseXorExpr.
-    def exitBitwiseXorExpr(self, ctx: LockstepParser.BitwiseXorExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#bitwiseAndExpr.
-    def enterBitwiseAndExpr(self, ctx: LockstepParser.BitwiseAndExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#bitwiseAndExpr.
-    def exitBitwiseAndExpr(self, ctx: LockstepParser.BitwiseAndExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#equalityExpr.
-    def enterEqualityExpr(self, ctx: LockstepParser.EqualityExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#equalityExpr.
-    def exitEqualityExpr(self, ctx: LockstepParser.EqualityExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#relExpr.
-    def enterRelExpr(self, ctx: LockstepParser.RelExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#relExpr.
-    def exitRelExpr(self, ctx: LockstepParser.RelExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#shiftExpr.
-    def enterShiftExpr(self, ctx: LockstepParser.ShiftExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#shiftExpr.
-    def exitShiftExpr(self, ctx: LockstepParser.ShiftExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#addExpr.
-    def enterAddExpr(self, ctx: LockstepParser.AddExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#addExpr.
-    def exitAddExpr(self, ctx: LockstepParser.AddExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#mulExpr.
-    def enterMulExpr(self, ctx: LockstepParser.MulExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#mulExpr.
-    def exitMulExpr(self, ctx: LockstepParser.MulExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#unaryExpr.
-    def enterUnaryExpr(self, ctx: LockstepParser.UnaryExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#unaryExpr.
-    def exitUnaryExpr(self, ctx: LockstepParser.UnaryExprContext):
-        pass
-
-    # Enter a parse tree produced by LockstepParser#primaryExpr.
-    def enterPrimaryExpr(self, ctx: LockstepParser.PrimaryExprContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#primaryExpr.
-    def exitPrimaryExpr(self, ctx: LockstepParser.PrimaryExprContext):
-        pass
-
     # Enter a parse tree produced by LockstepParser#exprList.
     def enterExprList(self, ctx: LockstepParser.ExprListContext):
         pass
@@ -337,14 +217,3 @@ class LockstepListener(ParseTreeListener):
     # Exit a parse tree produced by LockstepParser#typeName.
     def exitTypeName(self, ctx: LockstepParser.TypeNameContext):
         pass
-
-    # Enter a parse tree produced by LockstepParser#typeSuffix.
-    def enterTypeSuffix(self, ctx: LockstepParser.TypeSuffixContext):
-        pass
-
-    # Exit a parse tree produced by LockstepParser#typeSuffix.
-    def exitTypeSuffix(self, ctx: LockstepParser.TypeSuffixContext):
-        pass
-
-
-del LockstepParser

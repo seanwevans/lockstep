@@ -16,7 +16,11 @@ class AstType:
 def _normalize_type(value: AstType | str) -> AstType:
     if isinstance(value, AstType):
         return value
-    kind = "primitive" if value in {"int", "float", "bool", "uint", "double", "string"} else "named"
+    kind = (
+        "primitive"
+        if value in {"int", "float", "bool", "uint", "double", "string"}
+        else "named"
+    )
     return AstType(name=value, kind=kind)
 
 
@@ -71,7 +75,14 @@ class AstExprCast:
         object.__setattr__(self, "target_type", _normalize_type(self.target_type))
 
 
-AstExpr = AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast
+AstExpr = (
+    AstExprLiteral
+    | AstExprVar
+    | AstExprUnary
+    | AstExprBinary
+    | AstExprCall
+    | AstExprCast
+)
 
 
 @dataclass(frozen=True)
@@ -82,7 +93,9 @@ class AstVarDeclStmt:
 
     def __post_init__(self):
         if self.declared_type is not None:
-            object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
+            object.__setattr__(
+                self, "declared_type", _normalize_type(self.declared_type)
+            )
 
 
 @dataclass(frozen=True)
@@ -224,7 +237,9 @@ class _AstBuilderMixin:
     @staticmethod
     def _location(ctx: Any) -> AstLocation:
         token = getattr(ctx, "start", None)
-        return AstLocation(line=getattr(token, "line", 0), column=getattr(token, "column", 0))
+        return AstLocation(
+            line=getattr(token, "line", 0), column=getattr(token, "column", 0)
+        )
 
     @staticmethod
     def _call(ctx: Any, method_name: str, default: Any = None) -> Any:
@@ -269,11 +284,17 @@ class AstBuilder(_AstBuilderMixin):
             modifier = param.getChild(0).getText()
             declared_type = self._resolve_type(self._call(param, "typeName").getText())
             name = self._call(param, "ID").getText()
-            params.append(AstKernelParam(modifier=modifier, declared_type=declared_type, name=name))
+            params.append(
+                AstKernelParam(
+                    modifier=modifier, declared_type=declared_type, name=name
+                )
+            )
         return tuple(params)
 
     def _parse_lvalue(self, lvalue_ctx: Any) -> tuple[str, ...]:
-        return tuple(token.getText() for token in self._call(lvalue_ctx, "ID", []) or [])
+        return tuple(
+            token.getText() for token in self._call(lvalue_ctx, "ID", []) or []
+        )
 
     def _parse_left_associative(self, ctx: Any, parts: list[Any]):
         if not parts:
@@ -294,19 +315,29 @@ class AstBuilder(_AstBuilderMixin):
         return self.visit(self._call(ctx, "logicalOrExpr"))
 
     def visitLogicalOrExpr(self, ctx: Any):
-        return self._parse_left_associative(ctx, self._call(ctx, "logicalAndExpr", []) or [])
+        return self._parse_left_associative(
+            ctx, self._call(ctx, "logicalAndExpr", []) or []
+        )
 
     def visitLogicalAndExpr(self, ctx: Any):
-        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseOrExpr", []) or [])
+        return self._parse_left_associative(
+            ctx, self._call(ctx, "bitwiseOrExpr", []) or []
+        )
 
     def visitBitwiseOrExpr(self, ctx: Any):
-        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseXorExpr", []) or [])
+        return self._parse_left_associative(
+            ctx, self._call(ctx, "bitwiseXorExpr", []) or []
+        )
 
     def visitBitwiseXorExpr(self, ctx: Any):
-        return self._parse_left_associative(ctx, self._call(ctx, "bitwiseAndExpr", []) or [])
+        return self._parse_left_associative(
+            ctx, self._call(ctx, "bitwiseAndExpr", []) or []
+        )
 
     def visitBitwiseAndExpr(self, ctx: Any):
-        return self._parse_left_associative(ctx, self._call(ctx, "equalityExpr", []) or [])
+        return self._parse_left_associative(
+            ctx, self._call(ctx, "equalityExpr", []) or []
+        )
 
     def visitEqualityExpr(self, ctx: Any):
         return self._parse_left_associative(ctx, self._call(ctx, "relExpr", []) or [])
@@ -326,12 +357,20 @@ class AstBuilder(_AstBuilderMixin):
     def visitUnaryExpr(self, ctx: Any):
         nested = self._call(ctx, "unaryExpr")
         if nested is not None:
-            if ctx.getChildCount() >= 4 and ctx.getChild(0).getText() == "(" and ctx.getChild(2).getText() == ")":
+            if (
+                ctx.getChildCount() >= 4
+                and ctx.getChild(0).getText() == "("
+                and ctx.getChild(2).getText() == ")"
+            ):
                 return AstExprCast(
-                    target_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                    target_type=self._resolve_type(
+                        self._call(ctx, "typeName").getText()
+                    ),
                     value=self.visit(nested),
                 )
-            return AstExprUnary(op=ctx.getChild(0).getText(), operand=self.visit(nested))
+            return AstExprUnary(
+                op=ctx.getChild(0).getText(), operand=self.visit(nested)
+            )
         return self.visit(self._call(ctx, "primaryExpr"))
 
     def visitPrimaryExpr(self, ctx: Any):
@@ -341,15 +380,26 @@ class AstBuilder(_AstBuilderMixin):
 
         expr_list = self._call(ctx, "exprList")
         id_token = self._call(ctx, "ID")
-        if id_token is not None and ctx.getChildCount() >= 3 and ctx.getChild(1).getText() == "(":
+        if (
+            id_token is not None
+            and ctx.getChildCount() >= 3
+            and ctx.getChild(1).getText() == "("
+        ):
             args = ()
             if expr_list is not None:
-                args = tuple(self.visit(child) for child in self._call(expr_list, "expr", []) or [])
+                args = tuple(
+                    self.visit(child)
+                    for child in self._call(expr_list, "expr", []) or []
+                )
             callee_name = id_token.getText()
             if callee_name in {"int", "float", "double", "uint", "bool"}:
                 if len(args) != 1:
-                    raise ValueError(f"cast '{callee_name}(...)' expects exactly one argument")
-                return AstExprCast(target_type=self._resolve_type(callee_name), value=args[0])
+                    raise ValueError(
+                        f"cast '{callee_name}(...)' expects exactly one argument"
+                    )
+                return AstExprCast(
+                    target_type=self._resolve_type(callee_name), value=args[0]
+                )
             return AstExprCall(name=callee_name, args=args)
 
         lvalue = self._call(ctx, "lvalue")
@@ -384,9 +434,17 @@ class AstBuilder(_AstBuilderMixin):
                 initializer_ctx = self._call(var_decl, "expr")
                 parsed.append(
                     AstVarDeclStmt(
-                        declared_type=self._resolve_type(declared_type.getText()) if declared_type else None,
+                        declared_type=(
+                            self._resolve_type(declared_type.getText())
+                            if declared_type
+                            else None
+                        ),
                         name=self._call(var_decl, "ID").getText(),
-                        initializer=self._parse_expr(initializer_ctx) if initializer_ctx else None,
+                        initializer=(
+                            self._parse_expr(initializer_ctx)
+                            if initializer_ctx
+                            else None
+                        ),
                     )
                 )
                 continue
@@ -403,7 +461,11 @@ class AstBuilder(_AstBuilderMixin):
 
             return_stmt = self._call(statement, "returnStmt")
             if return_stmt is not None:
-                parsed.append(AstReturnStmt(value=self._parse_expr(self._call(return_stmt, "expr"))))
+                parsed.append(
+                    AstReturnStmt(
+                        value=self._parse_expr(self._call(return_stmt, "expr"))
+                    )
+                )
         return tuple(parsed)
 
     def visitProgram(self, ctx: Any):
@@ -413,17 +475,27 @@ class AstBuilder(_AstBuilderMixin):
         members = self._call(ctx, "structMember", []) or []
         fields = tuple(
             AstStructField(
-                declared_type=self._resolve_type(self._call(member, "typeName").getText()),
+                declared_type=self._resolve_type(
+                    self._call(member, "typeName").getText()
+                ),
                 name=self._call(member, "ID").getText(),
                 location=AstLocation(
-                    line=getattr(getattr(self._call(member, "ID"), "symbol", None), "line", 0),
-                    column=getattr(getattr(self._call(member, "ID"), "symbol", None), "column", 0),
+                    line=getattr(
+                        getattr(self._call(member, "ID"), "symbol", None), "line", 0
+                    ),
+                    column=getattr(
+                        getattr(self._call(member, "ID"), "symbol", None), "column", 0
+                    ),
                 ),
             )
             for member in members
         )
         self._structs.append(
-            AstStructDecl(name=self._call(ctx, "ID").getText(), fields=fields, location=self._location(ctx))
+            AstStructDecl(
+                name=self._call(ctx, "ID").getText(),
+                fields=fields,
+                location=self._location(ctx),
+            )
         )
         return self.visitChildren(ctx)
 
@@ -431,8 +503,17 @@ class AstBuilder(_AstBuilderMixin):
         params: list[AstKernelParam] = []
         pure_param_list = self._call(ctx, "pureParamList")
         if pure_param_list:
-            for declared_type, name in zip(self._call(pure_param_list, "typeName", []), self._call(pure_param_list, "ID", [])):
-                params.append(AstKernelParam(modifier="in", declared_type=self._resolve_type(declared_type.getText()), name=name.getText()))
+            for declared_type, name in zip(
+                self._call(pure_param_list, "typeName", []),
+                self._call(pure_param_list, "ID", []),
+            ):
+                params.append(
+                    AstKernelParam(
+                        modifier="in",
+                        declared_type=self._resolve_type(declared_type.getText()),
+                        name=name.getText(),
+                    )
+                )
         self._pure_functions.append(
             AstPureDecl(
                 name=self._call(ctx, "ID").getText(),
@@ -527,7 +608,13 @@ class AstBuilder(_AstBuilderMixin):
             if fold_operator is not None and len(id_tokens) >= 2:
                 self._active_bind_routes.append(
                     AstFoldBindRoute(
-                        uniform_type=self._resolve_type(self._call(bind_stmt, "typeName").getText()) if self._call(bind_stmt, "typeName") else self._resolve_type("float"),
+                        uniform_type=(
+                            self._resolve_type(
+                                self._call(bind_stmt, "typeName").getText()
+                            )
+                            if self._call(bind_stmt, "typeName")
+                            else self._resolve_type("float")
+                        ),
                         uniform_name=id_tokens[0].getText(),
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
@@ -585,7 +672,11 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
 
     def _statement_to_text(statement: AstStatement) -> str:
         if isinstance(statement, AstVarDeclStmt):
-            prefix = f"{_type_name(statement.declared_type)} " if statement.declared_type else ""
+            prefix = (
+                f"{_type_name(statement.declared_type)} "
+                if statement.declared_type
+                else ""
+            )
             if statement.initializer is None:
                 return f"{prefix}{statement.name};"
             return f"{prefix}{statement.name} = {_expr_to_text(statement.initializer)};"
@@ -600,7 +691,11 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
     bind_routes_ir = []
     for pipeline in program.pipelines:
         streams.extend(
-            {"name": stream.name, "type": _type_name(stream.declared_type), "capacity": stream.capacity}
+            {
+                "name": stream.name,
+                "type": _type_name(stream.declared_type),
+                "capacity": stream.capacity,
+            }
             for stream in pipeline.streams
         )
         accumulators.extend(
@@ -659,7 +754,11 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": shader.name,
                 "params": [
-                    {"modifier": param.modifier, "type": _type_name(param.declared_type), "name": param.name}
+                    {
+                        "modifier": param.modifier,
+                        "type": _type_name(param.declared_type),
+                        "name": param.name,
+                    }
                     for param in shader.params
                 ],
                 "body": [_statement_to_text(statement) for statement in shader.body],
@@ -671,7 +770,11 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": flt.name,
                 "params": [
-                    {"modifier": param.modifier, "type": _type_name(param.declared_type), "name": param.name}
+                    {
+                        "modifier": param.modifier,
+                        "type": _type_name(param.declared_type),
+                        "name": param.name,
+                    }
                     for param in flt.params
                 ],
                 "body": [_statement_to_text(statement) for statement in flt.body],

@@ -51,7 +51,10 @@ pipeline Stage {
 
     assert exc_info.value.phase == "semantic"
     assert [diag.code for diag in exc_info.value.errors] == ["LCK310"]
-    assert "Unknown declared type 'MissingType' in 'vector<MissingType,4>'" in exc_info.value.errors[0].message
+    assert (
+        "Unknown declared type 'MissingType' in 'vector<MissingType,4>'"
+        in exc_info.value.errors[0].message
+    )
 
 
 def test_local_var_declaration_requires_explicit_type_annotation():
@@ -89,8 +92,13 @@ pipeline Main {
 }
 """
 
-    monkeypatch.setattr("lockstep_compiler.compiler.emit_llvm_ir", lambda *_args, **_kwargs: "; mock")
-    monkeypatch.setattr("lockstep_compiler.compiler.emit_c_header", lambda *_args, **_kwargs: "/* mock */")
+    monkeypatch.setattr(
+        "lockstep_compiler.compiler.emit_llvm_ir", lambda *_args, **_kwargs: "; mock"
+    )
+    monkeypatch.setattr(
+        "lockstep_compiler.compiler.emit_c_header",
+        lambda *_args, **_kwargs: "/* mock */",
+    )
 
     result = compile_lockstep(source, verbose=False)
 

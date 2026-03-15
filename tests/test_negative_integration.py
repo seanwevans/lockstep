@@ -44,11 +44,24 @@ pipeline StressTopology {
         compile_lockstep(source, verbose=False)
 
     assert exc_info.value.phase == "semantic"
-    assert [diag.code for diag in exc_info.value.errors] == ["LCK303", "LCK304", "LCK303", "LCK403"]
-    assert "Invocation of 'Scatter' expects 2 argument(s), but got 0." in exc_info.value.errors[0].message
+    assert [diag.code for diag in exc_info.value.errors] == [
+        "LCK303",
+        "LCK304",
+        "LCK303",
+        "LCK403",
+    ]
+    assert (
+        "Invocation of 'Scatter' expects 2 argument(s), but got 0."
+        in exc_info.value.errors[0].message
+    )
     assert "Undefined shader/filter 'MissingKernel'" in exc_info.value.errors[1].message
-    assert "Invocation of 'Integrate' expects 2 argument(s), but got 0." in exc_info.value.errors[2].message
-    assert "must reference an accumulator, got stream" in exc_info.value.errors[3].message
+    assert (
+        "Invocation of 'Integrate' expects 2 argument(s), but got 0."
+        in exc_info.value.errors[2].message
+    )
+    assert (
+        "must reference an accumulator, got stream" in exc_info.value.errors[3].message
+    )
 
 
 def test_multi_pipeline_topology_reports_failures_without_short_circuiting_after_first_error():
@@ -85,7 +98,19 @@ pipeline StageB {
         compile_lockstep(source, verbose=False)
 
     assert exc_info.value.phase == "semantic"
-    assert [diag.code for diag in exc_info.value.errors] == ["LCK303", "LCK303", "LCK403"]
-    assert "Invocation of 'Blend' expects 3 argument(s), but got 0." in exc_info.value.errors[0].message
-    assert "Invocation of 'Blend' expects 3 argument(s), but got 0." in exc_info.value.errors[1].message
-    assert "must reference an accumulator, got uniform" in exc_info.value.errors[2].message
+    assert [diag.code for diag in exc_info.value.errors] == [
+        "LCK303",
+        "LCK303",
+        "LCK403",
+    ]
+    assert (
+        "Invocation of 'Blend' expects 3 argument(s), but got 0."
+        in exc_info.value.errors[0].message
+    )
+    assert (
+        "Invocation of 'Blend' expects 3 argument(s), but got 0."
+        in exc_info.value.errors[1].message
+    )
+    assert (
+        "must reference an accumulator, got uniform" in exc_info.value.errors[2].message
+    )

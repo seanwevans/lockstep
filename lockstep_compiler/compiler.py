@@ -17,8 +17,14 @@ from .visitors import build_debug_visitor, validate_semantics as _validate_seman
 DEFAULT_SOURCE_FILE = "<stdin>"
 
 
-def _merge_intrinsic_pure_functions(pure_functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged = {fn.get("name"): fn for fn in pure_functions if isinstance(fn, dict) and fn.get("name")}
+def _merge_intrinsic_pure_functions(
+    pure_functions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = {
+        fn.get("name"): fn
+        for fn in pure_functions
+        if isinstance(fn, dict) and fn.get("name")
+    }
     for name, intrinsic in load_intrinsics().items():
         if name not in merged:
             merged[name] = intrinsic
@@ -86,7 +92,10 @@ def _remap_diagnostics(
     source_map: list[tuple[int, int, str]],
     default_source_file: str,
 ) -> list[LockstepDiagnostic]:
-    return [_remap_diagnostic(diagnostic, source_map, default_source_file) for diagnostic in diagnostics]
+    return [
+        _remap_diagnostic(diagnostic, source_map, default_source_file)
+        for diagnostic in diagnostics
+    ]
 
 
 def _compile_lockstep_with_dependencies(
@@ -184,7 +193,9 @@ def _compile_lockstep_with_dependencies(
             "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
         }
 
-    entities["pure_functions"] = _merge_intrinsic_pure_functions(entities.get("pure_functions", []))
+    entities["pure_functions"] = _merge_intrinsic_pure_functions(
+        entities.get("pure_functions", [])
+    )
 
     all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *debug_diagnostics])
     bind_optimization = optimize_bind_routes(

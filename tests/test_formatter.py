@@ -21,11 +21,7 @@ def test_format_lockstep_source_preserves_struct_terminator():
     source = "struct Vec3{float x;float y;float z;};"
 
     assert format_lockstep_source(source) == (
-        "struct Vec3 {\n"
-        "    float x;\n"
-        "    float y;\n"
-        "    float z;\n"
-        "};\n"
+        "struct Vec3 {\n" "    float x;\n" "    float y;\n" "    float z;\n" "};\n"
     )
 
 
@@ -47,5 +43,9 @@ def test_lexer_preserves_line_comments_in_token_stream():
     stream = CommonTokenStream(lexer)
     stream.fill()
 
-    comments = [token.text for token in stream.tokens if token.text and token.text.startswith("//")]
+    comments = [
+        token.text
+        for token in stream.tokens
+        if token.text and token.text.startswith("//")
+    ]
     assert comments == ["// keep me"]

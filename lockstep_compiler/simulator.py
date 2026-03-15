@@ -94,7 +94,9 @@ def _jit_reduce_callable() -> Any:
     address = engine.get_function_address("lockstep_fold_sum")
     if address == 0:
         raise RuntimeError("failed to JIT compile lockstep_fold_sum")
-    return ctypes.CFUNCTYPE(ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int32)(address)
+    return ctypes.CFUNCTYPE(
+        ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int32
+    )(address)
 
 
 def _jit_numeric_reduce(operator: str, values: list[Any]) -> Any:
@@ -152,10 +154,21 @@ def simulate_pipeline_entities(
         accum["name"]: list((accumulator_inputs or {}).get(accum["name"], []))
         for accum in entities.get("accumulators", [])
     }
-    uniforms = {uniform["name"]: uniform.get("initializer") for uniform in entities.get("uniforms", [])}
+    uniforms = {
+        uniform["name"]: uniform.get("initializer")
+        for uniform in entities.get("uniforms", [])
+    }
 
-    kernels = {shader["name"]: {"kind": "shader", "params": shader.get("params", [])} for shader in entities.get("shaders", [])}
-    kernels.update({flt["name"]: {"kind": "filter", "params": flt.get("params", [])} for flt in entities.get("filters", [])})
+    kernels = {
+        shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
+        for shader in entities.get("shaders", [])
+    }
+    kernels.update(
+        {
+            flt["name"]: {"kind": "filter", "params": flt.get("params", [])}
+            for flt in entities.get("filters", [])
+        }
+    )
 
     routes: list[RouteSimulation] = []
     bind_routes_ir = entities.get("bind_routes_ir", [])
@@ -168,19 +181,38 @@ def simulate_pipeline_entities(
             source_values = accumulators.get(str(route_ir.get("source", "")), [])
             uniform_name = route_ir.get("uniform_name")
             if isinstance(uniform_name, str) and uniform_name:
-                uniforms[uniform_name] = _fold_values(str(route_ir.get("operator", "")), source_values)
-            routes.append(RouteSimulation(route=route_text, kind="fold", input_count=len(source_values), output_count=1))
+                uniforms[uniform_name] = _fold_values(
+                    str(route_ir.get("operator", "")), source_values
+                )
+            routes.append(
+                RouteSimulation(
+                    route=route_text,
+                    kind="fold",
+                    input_count=len(source_values),
+                    output_count=1,
+                )
+            )
             continue
 
         if route_kind == "kernel":
             kernel = kernels.get(str(route_ir.get("kernel", "")))
             if kernel is None:
-                routes.append(RouteSimulation(route=route_text, kind="kernel", input_count=0, output_count=0, notes="Unknown kernel"))
+                routes.append(
+                    RouteSimulation(
+                        route=route_text,
+                        kind="kernel",
+                        input_count=0,
+                        output_count=0,
+                        notes="Unknown kernel",
+                    )
+                )
                 continue
 
             source_count = 0
             rows: list[Any] = []
-            args = route_ir.get("args") if isinstance(route_ir.get("args"), list) else []
+            args = (
+                route_ir.get("args") if isinstance(route_ir.get("args"), list) else []
+            )
             for index, arg_name in enumerate(args):
                 params = kernel["params"]
                 if index >= len(params):
@@ -191,9 +223,15 @@ def simulate_pipeline_entities(
                     break
 
             if kernel["kind"] == "filter":
-                output_rows = [row for row in rows if not isinstance(row, dict) or row.get("_keep", True)]
+                output_rows = [
+                    row
+                    for row in rows
+                    if not isinstance(row, dict) or row.get("_keep", True)
+                ]
             else:
-                output_rows = [{"_source": row, "_kernel": route_ir.get("kernel")} for row in rows]
+                output_rows = [
+                    {"_source": row, "_kernel": route_ir.get("kernel")} for row in rows
+                ]
 
             target = route_ir.get("target")
             if isinstance(target, str) and target in streams:
@@ -207,10 +245,25 @@ def simulate_pipeline_entities(
                 if params[index]["modifier"] == "accum" and arg_name in accumulators:
                     accumulators[arg_name].extend([1] * len(output_rows))
 
-            routes.append(RouteSimulation(route=route_text, kind=kernel["kind"], input_count=source_count, output_count=len(output_rows)))
+            routes.append(
+                RouteSimulation(
+                    route=route_text,
+                    kind=kernel["kind"],
+                    input_count=source_count,
+                    output_count=len(output_rows),
+                )
+            )
             continue
 
-        routes.append(RouteSimulation(route=route_text, kind="unknown", input_count=0, output_count=0, notes="Unknown bind route IR kind"))
+        routes.append(
+            RouteSimulation(
+                route=route_text,
+                kind="unknown",
+                input_count=0,
+                output_count=0,
+                notes="Unknown bind route IR kind",
+            )
+        )
 
     if entities.get("bind_routes") and not bind_routes_ir:
         routes.append(
@@ -240,12 +293,20 @@ def simulate_pipeline_entities(
     }
 
 
-def simulate_pipeline_source(source_code: str, *, stream_inputs=None, accumulator_inputs=None) -> dict[str, Any]:
+def simulate_pipeline_source(
+    source_code: str, *, stream_inputs=None, accumulator_inputs=None
+) -> dict[str, Any]:
     result = compile_lockstep(source_code, verbose=False)
-    return simulate_pipeline_entities(result.entities, stream_inputs=stream_inputs, accumulator_inputs=accumulator_inputs)
+    return simulate_pipeline_entities(
+        result.entities,
+        stream_inputs=stream_inputs,
+        accumulator_inputs=accumulator_inputs,
+    )
 
 
-def parse_simulation_inputs(raw: str) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
+def parse_simulation_inputs(
+    raw: str,
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]]]:
     payload = json.loads(raw) if raw.strip() else {}
 
     if not isinstance(payload, dict):
@@ -254,7 +315,9 @@ def parse_simulation_inputs(raw: str) -> tuple[dict[str, list[Any]], dict[str, l
     def _validate_input_map(field: str) -> dict[str, list[Any]]:
         value = payload.get(field, {})
         if not isinstance(value, dict):
-            raise ValueError(f"Invalid simulation input at '{field}': expected an object map.")
+            raise ValueError(
+                f"Invalid simulation input at '{field}': expected an object map."
+            )
         for name, rows in value.items():
             if not isinstance(rows, list):
                 raise ValueError(

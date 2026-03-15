@@ -125,6 +125,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
 
     if args.version:
         from importlib.metadata import version as _pkg_version, PackageNotFoundError
+
         try:
             ver = _pkg_version("Lockstep")
         except PackageNotFoundError:
@@ -220,7 +221,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         )
         for error in err.errors:
             if error.source_file:
-                print(f"{error.source_file}:{error.line}:{error.column} {error.message}", file=stderr)
+                print(
+                    f"{error.source_file}:{error.line}:{error.column} {error.message}",
+                    file=stderr,
+                )
             else:
                 print(f"line {error.line}:{error.column} {error.message}", file=stderr)
         if args.debug:
@@ -294,7 +298,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
                 file=stdout,
             )
         else:
-            print(json.dumps(simulation, indent=2, sort_keys=True, default=str), file=stdout)
+            print(
+                json.dumps(simulation, indent=2, sort_keys=True, default=str),
+                file=stdout,
+            )
         return 0
 
     return 0

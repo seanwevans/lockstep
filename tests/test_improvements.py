@@ -94,7 +94,9 @@ def test_codegen_min_intrinsic():
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
         [
             AstReturnStmt(
-                value=AstExprCall(name="min", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",))))
+                value=AstExprCall(
+                    name="min", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",)))
+                )
             )
         ],
     )
@@ -108,7 +110,9 @@ def test_codegen_max_intrinsic():
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
         [
             AstReturnStmt(
-                value=AstExprCall(name="max", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",))))
+                value=AstExprCall(
+                    name="max", args=(AstExprVar(path=("a",)), AstExprVar(path=("b",)))
+                )
             )
         ],
     )
@@ -130,7 +134,11 @@ def test_codegen_sign_intrinsic():
     entities = _entities_with_pure(
         "test_sign",
         [{"type": "float", "name": "x"}],
-        [AstReturnStmt(value=AstExprCall(name="sign", args=(AstExprVar(path=("x",)),)))],
+        [
+            AstReturnStmt(
+                value=AstExprCall(name="sign", args=(AstExprVar(path=("x",)),))
+            )
+        ],
     )
     ir_text = emit_llvm_ir(entities)
     assert "sign_pos" in ir_text or "sign" in ir_text
@@ -148,7 +156,11 @@ def test_codegen_smoothstep_intrinsic():
             AstReturnStmt(
                 value=AstExprCall(
                     name="smoothstep",
-                    args=(AstExprVar(path=("e0",)), AstExprVar(path=("e1",)), AstExprVar(path=("x",))),
+                    args=(
+                        AstExprVar(path=("e0",)),
+                        AstExprVar(path=("e1",)),
+                        AstExprVar(path=("x",)),
+                    ),
                 )
             )
         ],
@@ -236,7 +248,9 @@ def test_arg_parser_rejects_multiple_output_modes():
     except SystemExit as err:
         assert err.code == 2
     else:
-        raise AssertionError("Expected parser to reject multiple output-producing flags")
+        raise AssertionError(
+            "Expected parser to reject multiple output-producing flags"
+        )
 
 
 def test_arg_parser_has_report():

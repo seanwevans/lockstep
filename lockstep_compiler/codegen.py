@@ -59,7 +59,9 @@ class _FunctionLowerer:
     def _compiler_error(self, message: str) -> None:
         raise CodegenError(message)
 
-    def _declare_llvm_intrinsic(self, intrinsic_name: str, arg_type: ir.Type) -> ir.Function:
+    def _declare_llvm_intrinsic(
+        self, intrinsic_name: str, arg_type: ir.Type
+    ) -> ir.Function:
         llvm_name = f"llvm.{intrinsic_name}.f32"
         intrinsic = self.module.globals.get(llvm_name)
         if intrinsic is not None:
@@ -79,7 +81,9 @@ class _FunctionLowerer:
             if not all(isinstance(arg.type, ir.FloatType) for arg in args):
                 self._compiler_error("intrinsic 'mix' expects float arguments")
             a, b, t = args
-            one_minus_t = self.builder.fsub(ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t")
+            one_minus_t = self.builder.fsub(
+                ir.Constant(ir.FloatType(), 1.0), t, name="mix_one_minus_t"
+            )
             return self.builder.fadd(
                 self.builder.fmul(a, one_minus_t),
                 self.builder.fmul(b, t),
@@ -104,7 +108,9 @@ class _FunctionLowerer:
             x_val, min_value, max_value = args
             maxnum = self._declare_llvm_intrinsic("maxnum", ir.FloatType())
             minnum = self._declare_llvm_intrinsic("minnum", ir.FloatType())
-            clamped_min = self.builder.call(maxnum, [x_val, min_value], name="clamp_min")
+            clamped_min = self.builder.call(
+                maxnum, [x_val, min_value], name="clamp_min"
+            )
             return self.builder.call(minnum, [clamped_min, max_value], name="clamp")
 
         if name == "abs" and len(args) == 1:
@@ -163,14 +169,18 @@ class _FunctionLowerer:
                 return name
         return None
 
-    def _field_index_and_type(self, llvm_type: ir.Type, field_name: str) -> tuple[int, ir.Type] | None:
+    def _field_index_and_type(
+        self, llvm_type: ir.Type, field_name: str
+    ) -> tuple[int, ir.Type] | None:
         struct_name = self._struct_name_for_type(llvm_type)
         if struct_name is None:
             return None
         fields = self.struct_fields.get(struct_name, [])
         for index, field in enumerate(fields):
             if field.get("name") == field_name:
-                return index, self._llvm_type(field.get("type", "float"), self.known_structs)
+                return index, self._llvm_type(
+                    field.get("type", "float"), self.known_structs
+                )
         return None
 
     def _coerce_value_to_type(self, value: ir.Value, target_type: ir.Type) -> ir.Value:
@@ -191,38 +201,56 @@ class _FunctionLowerer:
         if isinstance(target_type, ir.IntType) and isinstance(value.type, ir.FloatType):
             return self.builder.fptosi(value, target_type)
 
-        if isinstance(target_type, ir.FloatType) and isinstance(value.type, ir.DoubleType):
+        if isinstance(target_type, ir.FloatType) and isinstance(
+            value.type, ir.DoubleType
+        ):
             return self.builder.fptrunc(value, target_type)
 
-        if isinstance(target_type, ir.DoubleType) and isinstance(value.type, ir.FloatType):
+        if isinstance(target_type, ir.DoubleType) and isinstance(
+            value.type, ir.FloatType
+        ):
             return self.builder.fpext(value, target_type)
 
-        self._compiler_error(f"cannot coerce value of type '{value.type}' to '{target_type}'")
+        self._compiler_error(
+            f"cannot coerce value of type '{value.type}' to '{target_type}'"
+        )
 
     def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
         current = value
         for field_name in path:
             field_info = self._field_index_and_type(current.type, field_name)
             if field_info is None:
-                self._compiler_error(f"unknown struct field '{field_name}' in access path")
+                self._compiler_error(
+                    f"unknown struct field '{field_name}' in access path"
+                )
             index, _ = field_info
-            current = self.builder.extract_value(current, index, name=f"{field_name}_field")
+            current = self.builder.extract_value(
+                current, index, name=f"{field_name}_field"
+            )
         return current
 
-    def _insert_field_path(self, aggregate: ir.Value, path: list[str], value: ir.Value) -> ir.Value:
+    def _insert_field_path(
+        self, aggregate: ir.Value, path: list[str], value: ir.Value
+    ) -> ir.Value:
         field_info = self._field_index_and_type(aggregate.type, path[0])
         if field_info is None:
             self._compiler_error(f"unknown struct field '{path[0]}' in assignment path")
         index, field_type = field_info
         if len(path) == 1:
             coerced = self._coerce_value_to_type(value, field_type)
-            return self.builder.insert_value(aggregate, coerced, index, name=f"set_{path[0]}")
+            return self.builder.insert_value(
+                aggregate, coerced, index, name=f"set_{path[0]}"
+            )
 
         nested = self.builder.extract_value(aggregate, index, name=f"load_{path[0]}")
         updated_nested = self._insert_field_path(nested, path[1:], value)
-        return self.builder.insert_value(aggregate, updated_nested, index, name=f"set_{path[0]}")
+        return self.builder.insert_value(
+            aggregate, updated_nested, index, name=f"set_{path[0]}"
+        )
 
-    def _llvm_type(self, type_name: str, known_structs: dict[str, ir.IdentifiedStructType]) -> ir.Type:
+    def _llvm_type(
+        self, type_name: str, known_structs: dict[str, ir.IdentifiedStructType]
+    ) -> ir.Type:
         if type_name in _PRIMITIVE_TYPE_MAP:
             return _PRIMITIVE_TYPE_MAP[type_name]
         if type_name in known_structs:
@@ -238,7 +266,9 @@ class _FunctionLowerer:
 
     def _emit_numeric_binary(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if lhs.type != rhs.type:
-            self._compiler_error(f"operator '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'")
+            self._compiler_error(
+                f"operator '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'"
+            )
 
         if isinstance(lhs.type, ir.FloatType):
             return {
@@ -260,9 +290,13 @@ class _FunctionLowerer:
 
         self._compiler_error(f"operator '{op}' is unsupported for type '{lhs.type}'")
 
-    def _emit_relational_compare(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
+    def _emit_relational_compare(
+        self, op: str, lhs: ir.Value, rhs: ir.Value
+    ) -> ir.Value:
         if lhs.type != rhs.type:
-            self._compiler_error(f"comparison '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'")
+            self._compiler_error(
+                f"comparison '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'"
+            )
 
         rel_map = {"<": "<", "<=": "<=", ">": ">", ">=": ">=", "==": "==", "!=": "!="}
         if isinstance(lhs.type, ir.FloatType):
@@ -275,7 +309,9 @@ class _FunctionLowerer:
         parts = name.split(".")
         base_key = _sanitize_symbol(parts[0])
         if base_key in self.locals:
-            base_value = self.builder.load(self.locals[base_key], name=f"{base_key}_val")
+            base_value = self.builder.load(
+                self.locals[base_key], name=f"{base_key}_val"
+            )
             if len(parts) == 1:
                 return base_value
             return self._extract_field_path(base_value, parts[1:])
@@ -292,14 +328,21 @@ class _FunctionLowerer:
                 self._compiler_error(
                     f"function '{name}' expects {len(callee.args)} argument(s), got {len(args)}"
                 )
-            coerced = [self._coerce_value_to_type(arg, param.type) for arg, param in zip(args, callee.args)]
+            coerced = [
+                self._coerce_value_to_type(arg, param.type)
+                for arg, param in zip(args, callee.args)
+            ]
             return self.builder.call(callee, coerced, name=f"call_{name}")
         self._compiler_error(f"unknown function '{name}'")
 
     def _lower_binary_op(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
         if op in {"+", "-", "*", "/", "%"}:
             return self._emit_numeric_binary(op, lhs, rhs)
-        if op in {"&", "|", "^", "<<", ">>"} and isinstance(lhs.type, ir.IntType) and lhs.type == rhs.type:
+        if (
+            op in {"&", "|", "^", "<<", ">>"}
+            and isinstance(lhs.type, ir.IntType)
+            and lhs.type == rhs.type
+        ):
             if op == "&":
                 return self.builder.and_(lhs, rhs)
             if op == "|":
@@ -312,16 +355,34 @@ class _FunctionLowerer:
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._emit_relational_compare(op, lhs, rhs)
         if op == "&&":
-            if not isinstance(lhs.type, ir.IntType) or lhs.type.width != 1 or lhs.type != rhs.type:
+            if (
+                not isinstance(lhs.type, ir.IntType)
+                or lhs.type.width != 1
+                or lhs.type != rhs.type
+            ):
                 self._compiler_error("operator '&&' expects matching boolean operands")
             return self.builder.and_(lhs, rhs)
         if op == "||":
-            if not isinstance(lhs.type, ir.IntType) or lhs.type.width != 1 or lhs.type != rhs.type:
+            if (
+                not isinstance(lhs.type, ir.IntType)
+                or lhs.type.width != 1
+                or lhs.type != rhs.type
+            ):
                 self._compiler_error("operator '||' expects matching boolean operands")
             return self.builder.or_(lhs, rhs)
         self._compiler_error(f"unsupported binary operator '{op}'")
 
-    def _lower_expr(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast):
+    def _lower_expr(
+        self,
+        node: (
+            AstExprLiteral
+            | AstExprVar
+            | AstExprUnary
+            | AstExprBinary
+            | AstExprCall
+            | AstExprCast
+        ),
+    ):
 
         if isinstance(node, AstExprLiteral):
             if node.kind == "float":
@@ -337,9 +398,13 @@ class _FunctionLowerer:
                 return self._emit_numeric_unary_minus(operand)
             return self.builder.not_(operand)
         if isinstance(node, AstExprCall):
-            return self._lower_call(node.name, [self._lower_expr(arg) for arg in node.args])
+            return self._lower_call(
+                node.name, [self._lower_expr(arg) for arg in node.args]
+            )
         if isinstance(node, AstExprCast):
-            target_type = self._llvm_type(_type_name(node.target_type), self.known_structs)
+            target_type = self._llvm_type(
+                _type_name(node.target_type), self.known_structs
+            )
             return self._coerce_value_to_type(self._lower_expr(node.value), target_type)
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
@@ -354,7 +419,9 @@ class _FunctionLowerer:
             self.locals[key] = slot
         if not field_path:
             slot_type = self.locals[key].type.pointee
-            self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
+            self.builder.store(
+                self._coerce_value_to_type(value, slot_type), self.locals[key]
+            )
             return
 
         current = self.builder.load(self.locals[key], name=f"{key}_val")
@@ -371,12 +438,18 @@ class _FunctionLowerer:
             return
 
         if isinstance(statement, AstAssignStmt):
-            self._lower_assignment(".".join(statement.target), self._lower_expr(statement.value))
+            self._lower_assignment(
+                ".".join(statement.target), self._lower_expr(statement.value)
+            )
             return
 
         if isinstance(statement, AstVarDeclStmt):
             key = _sanitize_symbol(statement.name)
-            declared_type = _type_name(statement.declared_type) if statement.declared_type else "float"
+            declared_type = (
+                _type_name(statement.declared_type)
+                if statement.declared_type
+                else "float"
+            )
             llvm_type = self._llvm_type(declared_type, self.known_structs)
             if key not in self.locals:
                 slot = self.builder.alloca(llvm_type, name=key)
@@ -385,12 +458,16 @@ class _FunctionLowerer:
             if statement.initializer is not None:
                 value = self._lower_expr(statement.initializer)
                 slot_type = self.locals[key].type.pointee
-                self.builder.store(self._coerce_value_to_type(value, slot_type), self.locals[key])
+                self.builder.store(
+                    self._coerce_value_to_type(value, slot_type), self.locals[key]
+                )
             return
 
         self._compiler_error(f"unsupported statement node '{type(statement).__name__}'")
 
-    def lower_function(self, fn: ir.Function, statements: list[AstStatement], return_type: ir.Type):
+    def lower_function(
+        self, fn: ir.Function, statements: list[AstStatement], return_type: ir.Type
+    ):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
@@ -413,7 +490,9 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def _normalize_codegen_input(program_or_entities: AstProgram | dict[str, Any]) -> dict[str, Any]:
+def _normalize_codegen_input(
+    program_or_entities: AstProgram | dict[str, Any],
+) -> dict[str, Any]:
     if isinstance(program_or_entities, AstProgram):
         return ast_to_entities(program_or_entities)
     return program_or_entities
@@ -454,7 +533,11 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         if isinstance(struct_decl, str):
             normalized_structs.append({"name": struct_decl, "fields": []})
         elif isinstance(struct_decl, dict) and struct_decl.get("name"):
-            fields = struct_decl.get("fields") if isinstance(struct_decl.get("fields"), list) else []
+            fields = (
+                struct_decl.get("fields")
+                if isinstance(struct_decl.get("fields"), list)
+                else []
+            )
             normalized_structs.append({"name": struct_decl["name"], "fields": fields})
 
     for struct_decl in normalized_structs:
@@ -470,7 +553,9 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         if isinstance(pure, dict) and pure.get("intrinsic") and pure.get("name")
     }
 
-    lowerer = _FunctionLowerer(module, {}, known_structs, struct_fields, intrinsic_names)
+    lowerer = _FunctionLowerer(
+        module, {}, known_structs, struct_fields, intrinsic_names
+    )
 
     unresolved = set(known_structs.keys())
     while unresolved:
@@ -499,22 +584,43 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     function_map: dict[str, ir.Function] = {}
     for pure in pure_functions:
         ret_ty = lowerer._llvm_type(pure.get("return_type", "float"), known_structs)
-        params = [lowerer._llvm_type(param.get("type", "float"), known_structs) for param in pure.get("params", [])]
-        fn = ir.Function(module, ir.FunctionType(ret_ty, params), name=f"pure_{_sanitize_symbol(pure['name'])}")
+        params = [
+            lowerer._llvm_type(param.get("type", "float"), known_structs)
+            for param in pure.get("params", [])
+        ]
+        fn = ir.Function(
+            module,
+            ir.FunctionType(ret_ty, params),
+            name=f"pure_{_sanitize_symbol(pure['name'])}",
+        )
         for idx, param in enumerate(pure.get("params", [])):
             fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
         function_map[fn.name] = fn
 
     for shader in shaders:
-        params = [lowerer._llvm_type(param.get("type", "float"), known_structs) for param in shader.get("params", [])]
-        fn = ir.Function(module, ir.FunctionType(ir.VoidType(), params), name=f"shader_{_sanitize_symbol(shader['name'])}")
+        params = [
+            lowerer._llvm_type(param.get("type", "float"), known_structs)
+            for param in shader.get("params", [])
+        ]
+        fn = ir.Function(
+            module,
+            ir.FunctionType(ir.VoidType(), params),
+            name=f"shader_{_sanitize_symbol(shader['name'])}",
+        )
         for idx, param in enumerate(shader.get("params", [])):
             fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
         function_map[fn.name] = fn
 
     for flt in filters:
-        params = [lowerer._llvm_type(param.get("type", "float"), known_structs) for param in flt.get("params", [])]
-        fn = ir.Function(module, ir.FunctionType(ir.VoidType(), params), name=f"filter_{_sanitize_symbol(flt['name'])}")
+        params = [
+            lowerer._llvm_type(param.get("type", "float"), known_structs)
+            for param in flt.get("params", [])
+        ]
+        fn = ir.Function(
+            module,
+            ir.FunctionType(ir.VoidType(), params),
+            name=f"filter_{_sanitize_symbol(flt['name'])}",
+        )
         for idx, param in enumerate(flt.get("params", [])):
             fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
         function_map[fn.name] = fn
@@ -525,31 +631,53 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
         if pure.get("intrinsic"):
             continue
-        lowerer.lower_function(fn, _ast_body_for(pure, entity_kind="pure function"), fn.function_type.return_type)
+        lowerer.lower_function(
+            fn,
+            _ast_body_for(pure, entity_kind="pure function"),
+            fn.function_type.return_type,
+        )
 
     for shader in shaders:
         fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
-        lowerer.lower_function(fn, _ast_body_for(shader, entity_kind="shader"), ir.VoidType())
+        lowerer.lower_function(
+            fn, _ast_body_for(shader, entity_kind="shader"), ir.VoidType()
+        )
 
     for flt in filters:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
-        lowerer.lower_function(fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType())
+        lowerer.lower_function(
+            fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType()
+        )
 
     arena_fields: list[tuple[str, str, ir.Type]] = []
     stream_slots: dict[str, int] = {}
     stream_capacities: dict[str, int] = {}
     for stream in streams:
         stream_slots[stream["name"]] = len(arena_fields)
-        arena_fields.append(("stream", stream["name"], lowerer._llvm_type(stream["type"], known_structs)))
+        arena_fields.append(
+            (
+                "stream",
+                stream["name"],
+                lowerer._llvm_type(stream["type"], known_structs),
+            )
+        )
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
     accum_slots: dict[str, int] = {}
     for accum in accumulators:
         accum_slots[accum["name"]] = len(arena_fields)
-        arena_fields.append(("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs)))
+        arena_fields.append(
+            ("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs))
+        )
     uniform_slots: dict[str, int] = {}
     for uniform in uniforms:
         uniform_slots[uniform["name"]] = len(arena_fields)
-        arena_fields.append(("uniform", uniform["name"], lowerer._llvm_type(uniform["type"], known_structs)))
+        arena_fields.append(
+            (
+                "uniform",
+                uniform["name"],
+                lowerer._llvm_type(uniform["type"], known_structs),
+            )
+        )
 
     kernel_signatures = {
         shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
@@ -564,14 +692,39 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_arg_specs: list[tuple[str, str, ir.Type, bool]] = []
     for stream in streams:
-        tick_arg_specs.append(("stream", stream["name"], lowerer._llvm_type(stream["type"], known_structs), True))
+        tick_arg_specs.append(
+            (
+                "stream",
+                stream["name"],
+                lowerer._llvm_type(stream["type"], known_structs),
+                True,
+            )
+        )
     for accum in accumulators:
-        tick_arg_specs.append(("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs), True))
+        tick_arg_specs.append(
+            (
+                "accum",
+                accum["name"],
+                lowerer._llvm_type(accum["type"], known_structs),
+                True,
+            )
+        )
     for uniform in uniforms:
-        tick_arg_specs.append(("uniform", uniform["name"], lowerer._llvm_type(uniform["type"], known_structs), False))
+        tick_arg_specs.append(
+            (
+                "uniform",
+                uniform["name"],
+                lowerer._llvm_type(uniform["type"], known_structs),
+                False,
+            )
+        )
 
-    tick_param_types = [field_type.as_pointer() for _, _, field_type, _ in tick_arg_specs]
-    tick = ir.Function(module, ir.FunctionType(ir.VoidType(), tick_param_types), name="Lockstep_Tick")
+    tick_param_types = [
+        field_type.as_pointer() for _, _, field_type, _ in tick_arg_specs
+    ]
+    tick = ir.Function(
+        module, ir.FunctionType(ir.VoidType(), tick_param_types), name="Lockstep_Tick"
+    )
     tick_param_ptrs: dict[tuple[str, str], ir.Argument] = {}
     for arg, (kind, name, _, apply_noalias) in zip(tick.args, tick_arg_specs):
         arg.name = f"{kind}_{_sanitize_symbol(name)}"
@@ -607,19 +760,27 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)
-        seed = tick_builder.insert_element(ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0))
+        seed = tick_builder.insert_element(
+            ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
+        )
         mask_ty = ir.VectorType(ir.IntType(32), width)
         mask = ir.Constant(mask_ty, [0] * width)
-        return tick_builder.shuffle_vector(seed, ir.Constant(vec_ty, ir.Undefined), mask, name="fold_splat")
+        return tick_builder.shuffle_vector(
+            seed, ir.Constant(vec_ty, ir.Undefined), mask, name="fold_splat"
+        )
 
-    def _get_vector_reduce_intrinsic(name: str, ret_ty: ir.Type, arg_tys: list[ir.Type]) -> ir.Function:
+    def _get_vector_reduce_intrinsic(
+        name: str, ret_ty: ir.Type, arg_tys: list[ir.Type]
+    ) -> ir.Function:
         fn_ty = ir.FunctionType(ret_ty, arg_tys)
         intrinsic = module.globals.get(name)
         if intrinsic is None:
             intrinsic = ir.Function(module, fn_ty, name=name)
         return intrinsic
 
-    def _reduce_fold(operator: str, accum_value: ir.Value, uniform_type: ir.Type) -> ir.Value:
+    def _reduce_fold(
+        operator: str, accum_value: ir.Value, uniform_type: ir.Type
+    ) -> ir.Value:
         if accum_value.type != uniform_type:
             return _zero_value(uniform_type)
 
@@ -630,12 +791,20 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
         is_int = isinstance(uniform_type, ir.IntType)
         _REDUCE_INTRINSIC = {
-            (True, "sum"): "fadd", (True, "avg"): "fadd",
-            (True, "min"): "fmin", (True, "max"): "fmax",
-            (False, "sum"): "add", (False, "avg"): "add",
-            (False, "min"): "smin", (False, "max"): "smax",
+            (True, "sum"): "fadd",
+            (True, "avg"): "fadd",
+            (True, "min"): "fmin",
+            (True, "max"): "fmax",
+            (False, "sum"): "add",
+            (False, "avg"): "add",
+            (False, "min"): "smin",
+            (False, "max"): "smax",
         }
-        intrinsic_suffix = _REDUCE_INTRINSIC.get((is_float, operator)) if (is_float or is_int) else None
+        intrinsic_suffix = (
+            _REDUCE_INTRINSIC.get((is_float, operator))
+            if (is_float or is_int)
+            else None
+        )
         if intrinsic_suffix is None:
             return _zero_value(uniform_type)
 
@@ -643,10 +812,18 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         # fadd requires a starting accumulator argument
         needs_start_value = is_float and operator in {"sum", "avg"}
         if needs_start_value:
-            intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [uniform_type, vector_ty])
-            reduced = tick_builder.call(intrinsic, [ir.Constant(uniform_type, 0.0), vector_value], name="fold_reduce")
+            intrinsic = _get_vector_reduce_intrinsic(
+                intrinsic_name, uniform_type, [uniform_type, vector_ty]
+            )
+            reduced = tick_builder.call(
+                intrinsic,
+                [ir.Constant(uniform_type, 0.0), vector_value],
+                name="fold_reduce",
+            )
         else:
-            intrinsic = _get_vector_reduce_intrinsic(intrinsic_name, uniform_type, [vector_ty])
+            intrinsic = _get_vector_reduce_intrinsic(
+                intrinsic_name, uniform_type, [vector_ty]
+            )
             reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
 
         if is_float:
@@ -654,17 +831,23 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
         if operator == "avg":
             if is_float:
-                reduced = tick_builder.fdiv(reduced, ir.Constant(uniform_type, float(simd_width)), name="fold_avg")
+                reduced = tick_builder.fdiv(
+                    reduced,
+                    ir.Constant(uniform_type, float(simd_width)),
+                    name="fold_avg",
+                )
             else:
-                reduced = tick_builder.sdiv(reduced, ir.Constant(uniform_type, simd_width), name="fold_avg")
+                reduced = tick_builder.sdiv(
+                    reduced, ir.Constant(uniform_type, simd_width), name="fold_avg"
+                )
 
         return reduced
 
     def _lower_kernel_route(route: dict[str, Any]):
         kernel_name = str(route.get("kernel", ""))
-        callee = function_map.get(f"shader_{_sanitize_symbol(kernel_name)}") or function_map.get(
-            f"filter_{_sanitize_symbol(kernel_name)}"
-        )
+        callee = function_map.get(
+            f"shader_{_sanitize_symbol(kernel_name)}"
+        ) or function_map.get(f"filter_{_sanitize_symbol(kernel_name)}")
         if callee is None:
             return
 
@@ -685,17 +868,27 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         if trip_count <= 0:
             trip_count = 1
 
-        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx")
+        index_ptr = tick_builder.alloca(
+            ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx"
+        )
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
 
-        loop_cond = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_cond")
-        loop_body = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_body")
-        loop_exit = tick.append_basic_block(f"route_{_sanitize_symbol(kernel_name)}_exit")
+        loop_cond = tick.append_basic_block(
+            f"route_{_sanitize_symbol(kernel_name)}_cond"
+        )
+        loop_body = tick.append_basic_block(
+            f"route_{_sanitize_symbol(kernel_name)}_body"
+        )
+        loop_exit = tick.append_basic_block(
+            f"route_{_sanitize_symbol(kernel_name)}_exit"
+        )
         tick_builder.branch(loop_cond)
 
         tick_builder.position_at_end(loop_cond)
         current = tick_builder.load(index_ptr, name="idx")
-        cond = tick_builder.icmp_signed("<", current, ir.Constant(ir.IntType(32), trip_count), name="route_active")
+        cond = tick_builder.icmp_signed(
+            "<", current, ir.Constant(ir.IntType(32), trip_count), name="route_active"
+        )
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
@@ -715,7 +908,9 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             call_args.append(value)
 
         tick_builder.call(callee, call_args)
-        next_index = tick_builder.add(current, ir.Constant(ir.IntType(32), 1), name="idx_next")
+        next_index = tick_builder.add(
+            current, ir.Constant(ir.IntType(32), 1), name="idx_next"
+        )
         tick_builder.store(next_index, index_ptr)
         tick_builder.branch(loop_cond)
 
@@ -742,7 +937,9 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
                 _store_arena_slot(uniform_slot, reduced)
                 continue
             asm_ty = ir.FunctionType(ir.VoidType(), [])
-            escaped = str(route.get("route", route)).replace("\\", "\\\\").replace('"', '\\"')
+            escaped = (
+                str(route.get("route", route)).replace("\\", "\\\\").replace('"', '\\"')
+            )
             asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
             tick_builder.call(asm, [])
     else:

@@ -34,7 +34,12 @@ def type_names(draw):
 
 @st.composite
 def literal_exprs(draw):
-    return draw(st.one_of(st.sampled_from(["0", "1", "42", "0.0", "1.5", "true", "false"]), identifiers()))
+    return draw(
+        st.one_of(
+            st.sampled_from(["0", "1", "42", "0.0", "1.5", "true", "false"]),
+            identifiers(),
+        )
+    )
 
 
 @st.composite
@@ -108,7 +113,9 @@ def pipeline_decl(draw):
 
 
 valid_programs = st.lists(
-    st.one_of(struct_decl(), pure_decl(), shader_decl(), filter_decl(), pipeline_decl()),
+    st.one_of(
+        struct_decl(), pure_decl(), shader_decl(), filter_decl(), pipeline_decl()
+    ),
     min_size=1,
     max_size=4,
 ).map(lambda declarations: "\n".join(declarations))

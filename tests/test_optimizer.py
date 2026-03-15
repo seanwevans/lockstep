@@ -97,6 +97,8 @@ def test_optimize_bind_routes_uses_structured_bind_route_ir_when_available():
         "out = Blur(tmp, out);",
     ]
     assert result["fused_groups"] == []
+
+
 def test_optimize_bind_routes_uses_liveness_not_global_use_count():
     result = optimize_bind_routes(
         [

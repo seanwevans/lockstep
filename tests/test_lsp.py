@@ -121,7 +121,6 @@ blend(float a, float b)
 """
 
 
-
 def test_build_struct_member_index_tracks_locations_from_ast():
     index = build_struct_member_index(TRICKY_FORMAT_SOURCE)
 
@@ -151,6 +150,8 @@ def test_hover_resolves_variable_and_callable_symbols_with_tricky_formatting():
     assert shader_hover == "(shader) `shader Apply(...)`"
     assert filter_hover == "(filter) `filter Post(...)`"
     assert pure_hover == "(pure) `pure blend(...)`"
+
+
 def test_large_source_member_definition_matches_default_and_context_path():
     struct_count = 50
     shader_count = 60

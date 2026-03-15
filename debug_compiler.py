@@ -20,6 +20,7 @@ LockstepLexer = _LockstepLexer
 LockstepParser = _LockstepParser
 LockstepVisitor = _LockstepVisitor
 
+
 class _CompatibilityVisitor(LockstepVisitor):
     """Visitor shim that keeps debug_compiler test doubles lightweight."""
 

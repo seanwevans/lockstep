@@ -1,7 +1,7 @@
-# Generated from Lockstep.g4 by ANTLR 4.13.2
+# Generated from Lockstep.g4 by ANTLR 4.7.2
 from antlr4 import *
 
-if "." in __name__:
+if __name__ is not None and "." in __name__:
     from .LockstepParser import LockstepParser
 else:
     from LockstepParser import LockstepParser
@@ -17,10 +17,6 @@ class LockstepVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by LockstepParser#declaration.
     def visitDeclaration(self, ctx: LockstepParser.DeclarationContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#dependencyDecl.
-    def visitDependencyDecl(self, ctx: LockstepParser.DependencyDeclContext):
         return self.visitChildren(ctx)
 
     # Visit a parse tree produced by LockstepParser#structDecl.
@@ -83,10 +79,6 @@ class LockstepVisitor(ParseTreeVisitor):
     def visitBindStmt(self, ctx: LockstepParser.BindStmtContext):
         return self.visitChildren(ctx)
 
-    # Visit a parse tree produced by LockstepParser#foldOperator.
-    def visitFoldOperator(self, ctx: LockstepParser.FoldOperatorContext):
-        return self.visitChildren(ctx)
-
     # Visit a parse tree produced by LockstepParser#argList.
     def visitArgList(self, ctx: LockstepParser.ArgListContext):
         return self.visitChildren(ctx)
@@ -111,58 +103,6 @@ class LockstepVisitor(ParseTreeVisitor):
     def visitExpr(self, ctx: LockstepParser.ExprContext):
         return self.visitChildren(ctx)
 
-    # Visit a parse tree produced by LockstepParser#logicalExpr.
-    def visitLogicalExpr(self, ctx: LockstepParser.LogicalExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#logicalOrExpr.
-    def visitLogicalOrExpr(self, ctx: LockstepParser.LogicalOrExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#logicalAndExpr.
-    def visitLogicalAndExpr(self, ctx: LockstepParser.LogicalAndExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#bitwiseOrExpr.
-    def visitBitwiseOrExpr(self, ctx: LockstepParser.BitwiseOrExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#bitwiseXorExpr.
-    def visitBitwiseXorExpr(self, ctx: LockstepParser.BitwiseXorExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#bitwiseAndExpr.
-    def visitBitwiseAndExpr(self, ctx: LockstepParser.BitwiseAndExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#equalityExpr.
-    def visitEqualityExpr(self, ctx: LockstepParser.EqualityExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#relExpr.
-    def visitRelExpr(self, ctx: LockstepParser.RelExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#shiftExpr.
-    def visitShiftExpr(self, ctx: LockstepParser.ShiftExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#addExpr.
-    def visitAddExpr(self, ctx: LockstepParser.AddExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#mulExpr.
-    def visitMulExpr(self, ctx: LockstepParser.MulExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#unaryExpr.
-    def visitUnaryExpr(self, ctx: LockstepParser.UnaryExprContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#primaryExpr.
-    def visitPrimaryExpr(self, ctx: LockstepParser.PrimaryExprContext):
-        return self.visitChildren(ctx)
-
     # Visit a parse tree produced by LockstepParser#exprList.
     def visitExprList(self, ctx: LockstepParser.ExprListContext):
         return self.visitChildren(ctx)
@@ -173,10 +113,6 @@ class LockstepVisitor(ParseTreeVisitor):
 
     # Visit a parse tree produced by LockstepParser#typeName.
     def visitTypeName(self, ctx: LockstepParser.TypeNameContext):
-        return self.visitChildren(ctx)
-
-    # Visit a parse tree produced by LockstepParser#typeSuffix.
-    def visitTypeSuffix(self, ctx: LockstepParser.TypeSuffixContext):
         return self.visitChildren(ctx)
 
 

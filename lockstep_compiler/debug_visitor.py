@@ -7,7 +7,9 @@ def build_debug_visitor(base_visitor_cls):
     class LockstepDebugVisitor(base_visitor_cls):
         """Walks the Parse Tree and extracts the pipeline architecture."""
 
-        def __init__(self, verbose: bool = True, *, normalize_bind_routes: bool = False):
+        def __init__(
+            self, verbose: bool = True, *, normalize_bind_routes: bool = False
+        ):
             self.verbose = verbose
             self.normalize_bind_routes = normalize_bind_routes
             self.structs = []
@@ -80,15 +82,28 @@ def build_debug_visitor(base_visitor_cls):
                 )
             self._seen_pure_functions.add(name)
             params = []
-            if hasattr(ctx, "pureParamList") and callable(ctx.pureParamList) and ctx.pureParamList():
+            if (
+                hasattr(ctx, "pureParamList")
+                and callable(ctx.pureParamList)
+                and ctx.pureParamList()
+            ):
                 ids = ctx.pureParamList().ID()
                 types = ctx.pureParamList().typeName()
                 for param_type, param_name in zip(types, ids):
-                    params.append({"type": param_type.getText(), "name": param_name.getText()})
+                    params.append(
+                        {"type": param_type.getText(), "name": param_name.getText()}
+                    )
             statements = []
             if hasattr(ctx, "statement") and callable(ctx.statement):
                 statements = [statement.getText() for statement in ctx.statement()]
-            self.pure_functions.append({"name": name, "return_type": ret_type, "params": params, "body": statements})
+            self.pure_functions.append(
+                {
+                    "name": name,
+                    "return_type": ret_type,
+                    "params": params,
+                    "body": statements,
+                }
+            )
             self._print(f"[Pure Function] {name} -> {ret_type}")
             return self.visitChildren(ctx)
 
@@ -115,7 +130,9 @@ def build_debug_visitor(base_visitor_cls):
                     modifier = param.getChild(0).getText()
                     p_type = param.typeName().getText()
                     p_name = param.ID().getText()
-                    params.append({"modifier": modifier, "type": p_type, "name": p_name})
+                    params.append(
+                        {"modifier": modifier, "type": p_type, "name": p_name}
+                    )
                     self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
             statements = []
             if hasattr(ctx, "statement") and callable(ctx.statement):
@@ -145,7 +162,9 @@ def build_debug_visitor(base_visitor_cls):
                     modifier = param.getChild(0).getText()
                     p_type = param.typeName().getText()
                     p_name = param.ID().getText()
-                    params.append({"modifier": modifier, "type": p_type, "name": p_name})
+                    params.append(
+                        {"modifier": modifier, "type": p_type, "name": p_name}
+                    )
                     self._print(f"  └─ Param: ({modifier}) {p_type} {p_name}")
             statements = []
             if hasattr(ctx, "statement") and callable(ctx.statement):
@@ -222,7 +241,9 @@ def build_debug_visitor(base_visitor_cls):
             initializer = None
             if ctx.expr():
                 initializer = ctx.expr().getText()
-            self.uniforms.append({"name": name, "type": u_type, "initializer": initializer})
+            self.uniforms.append(
+                {"name": name, "type": u_type, "initializer": initializer}
+            )
             self._print(f"  └─ Uniform: {name} <{u_type}>")
             return self.visitChildren(ctx)
 
@@ -254,11 +275,17 @@ def build_debug_visitor(base_visitor_cls):
             id_tokens_getter = getattr(stmt_ctx, "ID", None)
             id_tokens = id_tokens_getter() if callable(id_tokens_getter) else []
             fold_operator_getter = getattr(stmt_ctx, "foldOperator", None)
-            fold_operator = fold_operator_getter() if callable(fold_operator_getter) else None
+            fold_operator = (
+                fold_operator_getter() if callable(fold_operator_getter) else None
+            )
             if fold_operator is not None and len(id_tokens) >= 2:
                 return {
                     "kind": "fold",
-                    "uniform_type": stmt_ctx.typeName().getText() if getattr(stmt_ctx, "typeName", None) else "",
+                    "uniform_type": (
+                        stmt_ctx.typeName().getText()
+                        if getattr(stmt_ctx, "typeName", None)
+                        else ""
+                    ),
                     "uniform_name": id_tokens[0].getText(),
                     "operator": fold_operator.getText(),
                     "source": id_tokens[1].getText(),

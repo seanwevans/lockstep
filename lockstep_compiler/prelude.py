@@ -27,7 +27,9 @@ def load_intrinsics() -> dict[str, dict[str, Any]]:
                 param_match = _PARAM_RE.match(piece)
                 if param_match is None:
                     continue
-                params.append({"type": param_match.group(1), "name": param_match.group(2)})
+                params.append(
+                    {"type": param_match.group(1), "name": param_match.group(2)}
+                )
 
         intrinsics[match.group("name")] = {
             "name": match.group("name"),

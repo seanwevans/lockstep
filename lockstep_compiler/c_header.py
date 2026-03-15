@@ -28,7 +28,11 @@ def _normalize_structs(structs: list[Any]) -> list[dict[str, Any]]:
         if isinstance(struct_decl, str):
             normalized.append({"name": struct_decl, "fields": []})
         elif isinstance(struct_decl, dict) and struct_decl.get("name"):
-            fields = struct_decl.get("fields") if isinstance(struct_decl.get("fields"), list) else []
+            fields = (
+                struct_decl.get("fields")
+                if isinstance(struct_decl.get("fields"), list)
+                else []
+            )
             normalized.append({"name": struct_decl["name"], "fields": fields})
     return normalized
 
@@ -41,7 +45,9 @@ def _field_size(type_name: str, struct_sizes: dict[str, int]) -> int:
     return 8
 
 
-def _resolve_struct_layouts(normalized_structs: list[dict[str, Any]]) -> tuple[dict[str, int], set[str]]:
+def _resolve_struct_layouts(
+    normalized_structs: list[dict[str, Any]],
+) -> tuple[dict[str, int], set[str]]:
     struct_sizes: dict[str, int] = {}
     unresolved = {struct["name"] for struct in normalized_structs}
     struct_map = {struct["name"]: struct for struct in normalized_structs}
@@ -82,8 +88,15 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
     return "void*"
 
 
-def emit_c_header(program_or_entities: AstProgram | dict[str, Any], guard: str = "LOCKSTEP_GENERATED_H") -> str:
-    entities = ast_to_entities(program_or_entities) if isinstance(program_or_entities, AstProgram) else program_or_entities
+def emit_c_header(
+    program_or_entities: AstProgram | dict[str, Any],
+    guard: str = "LOCKSTEP_GENERATED_H",
+) -> str:
+    entities = (
+        ast_to_entities(program_or_entities)
+        if isinstance(program_or_entities, AstProgram)
+        else program_or_entities
+    )
 
     normalized_structs = _normalize_structs(entities.get("structs", []))
     known_structs = {struct["name"] for struct in normalized_structs}
@@ -152,15 +165,19 @@ def emit_c_header(program_or_entities: AstProgram | dict[str, Any], guard: str =
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
     for stream in entities.get("streams", []):
         stream_name = _sanitize_symbol(stream["name"]).upper()
-        stream_capacity = int(stream.get("capacity", 0)) if stream.get("capacity") is not None else 0
-        lines.append(f"#define LOCKSTEP_CAPACITY_STREAM_{stream_name} {stream_capacity}")
+        stream_capacity = (
+            int(stream.get("capacity", 0)) if stream.get("capacity") is not None else 0
+        )
+        lines.append(
+            f"#define LOCKSTEP_CAPACITY_STREAM_{stream_name} {stream_capacity}"
+        )
     lines.append("")
 
     lines.extend(
         [
             "#ifndef LOCKSTEP_SATURATED_WRITE_LOG",
             "#define LOCKSTEP_SATURATED_WRITE_LOG(stream_name, index, capacity, saturated_index) \\",
-            "    fprintf(stderr, \"[lockstep] saturated write stream=%s index=%zu capacity=%zu -> %zu\\n\", \\",
+            '    fprintf(stderr, "[lockstep] saturated write stream=%s index=%zu capacity=%zu -> %zu\\n", \\',
             "            (stream_name), (size_t)(index), (size_t)(capacity), (size_t)(saturated_index))",
             "#endif",
             "",
@@ -173,7 +190,7 @@ def emit_c_header(program_or_entities: AstProgram | dict[str, Any], guard: str =
             "    }",
             "    const size_t saturated_index = capacity - 1;",
             "#ifdef LOCKSTEP_DEBUG_SATURATED_WRITES",
-            "    LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : \"<unnamed>\", index, capacity, saturated_index);",
+            '    LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : "<unnamed>", index, capacity, saturated_index);',
             "#endif",
             "    return saturated_index;",
             "}",

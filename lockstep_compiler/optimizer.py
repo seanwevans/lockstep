@@ -23,7 +23,11 @@ def _parse_bind_route(route: str) -> ParsedBindRoute | None:
         return None
 
     args_text = match.group("args").strip()
-    args = tuple(arg.strip() for arg in args_text.split(",") if arg.strip()) if args_text else ()
+    args = (
+        tuple(arg.strip() for arg in args_text.split(",") if arg.strip())
+        if args_text
+        else ()
+    )
     return ParsedBindRoute(
         target=match.group("target"),
         callee=match.group("callee"),
@@ -52,11 +56,15 @@ def optimize_bind_routes(
                     target=route.get("target", ""),
                     callee=route.get("kernel", ""),
                     args=tuple(route.get("args", [])),
-                    raw=route.get("route", bind_routes[index] if index < len(bind_routes) else ""),
+                    raw=route.get(
+                        "route", bind_routes[index] if index < len(bind_routes) else ""
+                    ),
                 )
             )
         if len(parsed_routes) < len(bind_routes):
-            parsed_routes.extend(_parse_bind_route(route) for route in bind_routes[len(parsed_routes) :])
+            parsed_routes.extend(
+                _parse_bind_route(route) for route in bind_routes[len(parsed_routes) :]
+            )
     else:
         parsed_routes = [_parse_bind_route(route) for route in bind_routes]
     valid_kernel_names = shader_names | filter_names
@@ -85,7 +93,10 @@ def optimize_bind_routes(
     for idx, parsed in enumerate(parsed_routes):
         if parsed is None or parsed.callee not in valid_kernel_names:
             continue
-        if parsed.target in live_after_route[idx] or last_definition_index.get(parsed.target) == idx:
+        if (
+            parsed.target in live_after_route[idx]
+            or last_definition_index.get(parsed.target) == idx
+        ):
             active_kernel_indices.add(idx)
 
     # Build producer/consumer links between active kernels.
@@ -164,7 +175,9 @@ def optimize_bind_routes(
                     "entry_args": entry_args,
                     "output": parsed_routes[sink_idx].target,
                     "eliminated_intermediates": [
-                        parsed_routes[idx].target for idx in ordered_nodes if idx != sink_idx
+                        parsed_routes[idx].target
+                        for idx in ordered_nodes
+                        if idx != sink_idx
                     ],
                     "source_routes": [parsed_routes[idx].raw for idx in ordered_nodes],
                 }
@@ -189,7 +202,11 @@ def optimize_bind_routes(
     optimized_bind_routes: list[str] = []
     for idx, route in enumerate(bind_routes):
         parsed = parsed_routes[idx]
-        if parsed is not None and parsed.callee in valid_kernel_names and idx not in active_kernel_indices:
+        if (
+            parsed is not None
+            and parsed.callee in valid_kernel_names
+            and idx not in active_kernel_indices
+        ):
             continue
         if idx in removed_indices:
             continue

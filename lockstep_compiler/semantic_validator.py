@@ -3,7 +3,12 @@ from typing import Any
 
 from .prelude import load_intrinsics
 
-from .models import LockstepDiagnostic, SemanticKernelParam, SemanticStructField, SemanticSymbol
+from .models import (
+    LockstepDiagnostic,
+    SemanticKernelParam,
+    SemanticStructField,
+    SemanticSymbol,
+)
 from .visitor_common import SEMANTIC_DIAGNOSTIC_CODES, Scope, ScopedSymbolData
 
 
@@ -20,7 +25,11 @@ def build_semantic_validator(base_visitor_cls):
                 name: {
                     "return_type": signature["return_type"],
                     "params": [
-                        SemanticKernelParam(name=param["name"], declared_type=param["type"], modifier="value")
+                        SemanticKernelParam(
+                            name=param["name"],
+                            declared_type=param["type"],
+                            modifier="value",
+                        )
                         for param in signature["params"]
                     ],
                     "intrinsic": True,
@@ -37,9 +46,19 @@ def build_semantic_validator(base_visitor_cls):
             token = getattr(ctx, "start", None)
             return (getattr(token, "line", 0), getattr(token, "column", 0))
 
-        def _add_diagnostic(self, *, severity: str, code: str, message: str, ctx, hint: str | None = None):
+        def _add_diagnostic(
+            self,
+            *,
+            severity: str,
+            code: str,
+            message: str,
+            ctx,
+            hint: str | None = None,
+        ):
             line, column = self._line_col(ctx)
-            self.diagnostics.append(LockstepDiagnostic(severity, code, message, line, column, hint))
+            self.diagnostics.append(
+                LockstepDiagnostic(severity, code, message, line, column, hint)
+            )
 
         def _push_scope(self):
             self.scopes.append(Scope())
@@ -85,7 +104,9 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return False
             current_scope.symbols[name] = ScopedSymbolData(
-                symbol=SemanticSymbol(name=name, declared_type=declared_type, kind=kind),
+                symbol=SemanticSymbol(
+                    name=name, declared_type=declared_type, kind=kind
+                ),
                 usage_count=0,
                 declaration_ctx=ctx,
                 is_assigned=assigned,
@@ -122,13 +143,19 @@ def build_semantic_validator(base_visitor_cls):
         def _known_types(self) -> set[str]:
             return self._primitive_types | set(self.structs.keys())
 
-        def _consume_identifier(self, type_name: str, index: int) -> tuple[str | None, int]:
-            if index >= len(type_name) or not (type_name[index].isalpha() or type_name[index] == "_"):
+        def _consume_identifier(
+            self, type_name: str, index: int
+        ) -> tuple[str | None, int]:
+            if index >= len(type_name) or not (
+                type_name[index].isalpha() or type_name[index] == "_"
+            ):
                 return None, index
 
             start = index
             index += 1
-            while index < len(type_name) and (type_name[index].isalnum() or type_name[index] == "_"):
+            while index < len(type_name) and (
+                type_name[index].isalnum() or type_name[index] == "_"
+            ):
                 index += 1
             return type_name[start:index], index
 
@@ -142,7 +169,9 @@ def build_semantic_validator(base_visitor_cls):
                 index += 1
             return type_name[start:index], index
 
-        def _parse_type_name(self, type_name: str, index: int = 0) -> tuple[dict[str, Any] | None, int]:
+        def _parse_type_name(
+            self, type_name: str, index: int = 0
+        ) -> tuple[dict[str, Any] | None, int]:
             base_name, index = self._consume_identifier(type_name, index)
             if base_name is None:
                 return None, index
@@ -152,7 +181,11 @@ def build_semantic_validator(base_visitor_cls):
                 if type_name[index] == "[":
                     index += 1
                     length, index = self._consume_digits(type_name, index)
-                    if length is None or index >= len(type_name) or type_name[index] != "]":
+                    if (
+                        length is None
+                        or index >= len(type_name)
+                        or type_name[index] != "]"
+                    ):
                         return None, index
                     parsed_type["inner"].append({"kind": "array", "size": int(length)})
                     index += 1
@@ -184,12 +217,18 @@ def build_semantic_validator(base_visitor_cls):
 
             return parsed_type, index
 
-        def _collect_referenced_type_names(self, parsed_type: dict[str, Any]) -> list[str]:
-            has_generic_suffix = any(suffix["kind"] == "generic" for suffix in parsed_type["inner"])
+        def _collect_referenced_type_names(
+            self, parsed_type: dict[str, Any]
+        ) -> list[str]:
+            has_generic_suffix = any(
+                suffix["kind"] == "generic" for suffix in parsed_type["inner"]
+            )
             referenced_names = [] if has_generic_suffix else [parsed_type["base"]]
             for suffix in parsed_type["inner"]:
                 if suffix["kind"] == "generic":
-                    referenced_names.extend(self._collect_referenced_type_names(suffix["type"]))
+                    referenced_names.extend(
+                        self._collect_referenced_type_names(suffix["type"])
+                    )
             return referenced_names
 
         def _validate_declared_type(self, type_name: str, ctx, code: str) -> bool:
@@ -211,7 +250,9 @@ def build_semantic_validator(base_visitor_cls):
                 if referenced_type in known_types:
                     continue
 
-                suggestions = get_close_matches(referenced_type, sorted(known_types), n=2, cutoff=0.6)
+                suggestions = get_close_matches(
+                    referenced_type, sorted(known_types), n=2, cutoff=0.6
+                )
                 hint = (
                     f"Unknown type '{referenced_type}'. Use a primitive ({', '.join(sorted(self._primitive_types))}) "
                     "or declare a struct with this name before using it."
@@ -229,7 +270,9 @@ def build_semantic_validator(base_visitor_cls):
                 all_known = False
             return all_known
 
-        def _record_kernel_signature(self, ctx, target: dict[str, list[SemanticKernelParam]]):
+        def _record_kernel_signature(
+            self, ctx, target: dict[str, list[SemanticKernelParam]]
+        ):
             name = ctx.ID().getText()
             params = []
             if ctx.paramList():
@@ -260,7 +303,9 @@ def build_semantic_validator(base_visitor_cls):
             target[name] = params
             return name, params
 
-        def _check_expression_identifier(self, name: str, ctx, *, require_assigned: bool = True):
+        def _check_expression_identifier(
+            self, name: str, ctx, *, require_assigned: bool = True
+        ):
             symbol = self._lookup(name)
             if symbol is None:
                 self._add_diagnostic(
@@ -271,7 +316,11 @@ def build_semantic_validator(base_visitor_cls):
                     hint="Declare the identifier in scope before using it.",
                 )
                 return None
-            if require_assigned and symbol.kind == "local" and not self._is_symbol_assigned(name):
+            if (
+                require_assigned
+                and symbol.kind == "local"
+                and not self._is_symbol_assigned(name)
+            ):
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["use_before_definition"],
@@ -321,7 +370,9 @@ def build_semantic_validator(base_visitor_cls):
                 if struct_fields is None:
                     self._add_diagnostic(
                         severity="error",
-                        code=SEMANTIC_DIAGNOSTIC_CODES["invalid_field_access_non_struct"],
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "invalid_field_access_non_struct"
+                        ],
                         message=(
                             f"Cannot access field '{field_name}' on non-struct type "
                             f"'{current_type}'."
@@ -333,7 +384,9 @@ def build_semantic_validator(base_visitor_cls):
                 if field_name not in struct_fields:
                     self._add_diagnostic(
                         severity="error",
-                        code=SEMANTIC_DIAGNOSTIC_CODES["invalid_field_access_unknown_field"],
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "invalid_field_access_unknown_field"
+                        ],
                         message=f"Struct '{current_type}' has no field '{field_name}'.",
                         ctx=ctx,
                         hint="Use one of the fields declared on this struct.",
@@ -343,7 +396,9 @@ def build_semantic_validator(base_visitor_cls):
 
             return current_type
 
-        def _type_check_bind_call(self, ctx, target_name: str, callee_name: str, arg_names):
+        def _type_check_bind_call(
+            self, ctx, target_name: str, callee_name: str, arg_names
+        ):
             modifier_to_kind = {
                 "in": "stream",
                 "out": "stream",
@@ -355,7 +410,9 @@ def build_semantic_validator(base_visitor_cls):
                 return f"Fix-it: {action}."
 
             known_kernels = sorted(set(self.shaders.keys()) | set(self.filters.keys()))
-            kernel_suggestions = get_close_matches(callee_name, known_kernels, n=2, cutoff=0.3)
+            kernel_suggestions = get_close_matches(
+                callee_name, known_kernels, n=2, cutoff=0.3
+            )
 
             kernel = self.shaders.get(callee_name) or self.filters.get(callee_name)
             if kernel is None:
@@ -377,7 +434,9 @@ def build_semantic_validator(base_visitor_cls):
             actual_arity = len(arg_names)
             if expected_arity != actual_arity:
                 parameter_names = [param.name for param in kernel]
-                call_example = f"{target_name} = {callee_name}({', '.join(parameter_names)});"
+                call_example = (
+                    f"{target_name} = {callee_name}({', '.join(parameter_names)});"
+                )
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["bind_argument_count_mismatch"],
@@ -387,13 +446,20 @@ def build_semantic_validator(base_visitor_cls):
                     ),
                     ctx=ctx,
                     hint=(
-                        bind_fixit(f'use the full signature `{call_example}`') + " "
+                        bind_fixit(f"use the full signature `{call_example}`") + " "
                         "Match bind arguments to the shader/filter parameter list."
                     ),
                 )
                 return
 
-            out_param_index = next((index for index, param in enumerate(kernel) if param.modifier == "out"), None)
+            out_param_index = next(
+                (
+                    index
+                    for index, param in enumerate(kernel)
+                    if param.modifier == "out"
+                ),
+                None,
+            )
             out_param = kernel[out_param_index] if out_param_index is not None else None
 
             target_symbol = self._lookup(target_name)
@@ -409,7 +475,9 @@ def build_semantic_validator(base_visitor_cls):
                 if out_param is None:
                     self._add_diagnostic(
                         severity="error",
-                        code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_target_kind_mismatch"],
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "bind_output_target_kind_mismatch"
+                        ],
                         message=(
                             f"Bind target '{target_name}' is assigned from '{callee_name}', "
                             "but the kernel has no out parameter."
@@ -422,14 +490,19 @@ def build_semantic_validator(base_visitor_cls):
                     if out_arg_name != target_name:
                         self._add_diagnostic(
                             severity="error",
-                            code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_symbol_mismatch"],
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "bind_output_symbol_mismatch"
+                            ],
                             message=(
                                 f"Bind target '{target_name}' must match out argument "
                                 f"'{out_arg_name}' for parameter '{out_param.name}' in '{callee_name}'."
                             ),
                             ctx=ctx,
                             hint=(
-                                bind_fixit(f"change the bind target to '{out_arg_name}' or the out argument to '{target_name}'") + " "
+                                bind_fixit(
+                                    f"change the bind target to '{out_arg_name}' or the out argument to '{target_name}'"
+                                )
+                                + " "
                                 "Use the same symbol for assignment target and out argument."
                             ),
                         )
@@ -441,7 +514,9 @@ def build_semantic_validator(base_visitor_cls):
                     if target_symbol.kind != expected_output_kind:
                         self._add_diagnostic(
                             severity="error",
-                            code=SEMANTIC_DIAGNOSTIC_CODES["bind_output_target_kind_mismatch"],
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "bind_output_target_kind_mismatch"
+                            ],
                             message=(
                                 f"Bind target '{target_name}' for '{callee_name}' must be a "
                                 f"{expected_output_kind} for out parameter '{out_param.name}', "
@@ -449,7 +524,10 @@ def build_semantic_validator(base_visitor_cls):
                             ),
                             ctx=ctx,
                             hint=(
-                                bind_fixit(f"bind output to a '{expected_output_kind}' symbol") + " "
+                                bind_fixit(
+                                    f"bind output to a '{expected_output_kind}' symbol"
+                                )
+                                + " "
                                 "Route kernel outputs to a stream-compatible bind target."
                             ),
                         )
@@ -474,7 +552,8 @@ def build_semantic_validator(base_visitor_cls):
                         message=f"Undefined identifier '{arg_name}'.",
                         ctx=ctx,
                         hint=(
-                            bind_fixit(f'declare `{arg_name}` in the pipeline block') + " "
+                            bind_fixit(f"declare `{arg_name}` in the pipeline block")
+                            + " "
                             "Declare pipeline symbols before passing them to bind."
                         ),
                     )
@@ -495,7 +574,10 @@ def build_semantic_validator(base_visitor_cls):
                         ),
                         ctx=ctx,
                         hint=(
-                            bind_fixit(f'replace `{arg_name}` with a {expected_kind} symbol') + " "
+                            bind_fixit(
+                                f"replace `{arg_name}` with a {expected_kind} symbol"
+                            )
+                            + " "
                             "Pass a symbol with the kind required by the parameter modifier."
                         ),
                     )
@@ -563,7 +645,9 @@ def build_semantic_validator(base_visitor_cls):
                     )
                     continue
                 seen_field_names.add(field_name)
-                fields[field_name] = SemanticStructField(name=field_name, declared_type=member.typeName().getText())
+                fields[field_name] = SemanticStructField(
+                    name=field_name, declared_type=member.typeName().getText()
+                )
             self.structs[struct_name] = fields
             return self.visitChildren(ctx)
 
@@ -631,7 +715,9 @@ def build_semantic_validator(base_visitor_cls):
 
             return_statements: list[tuple[int, Any]] = []
             for index, statement in enumerate(statements):
-                if not hasattr(statement, "returnStmt") or not callable(statement.returnStmt):
+                if not hasattr(statement, "returnStmt") or not callable(
+                    statement.returnStmt
+                ):
                     continue
                 return_stmt = statement.returnStmt()
                 if return_stmt is not None:
@@ -705,10 +791,19 @@ def build_semantic_validator(base_visitor_cls):
                     child = ctx.getChild(index)
                 except Exception:
                     return None
-                return child.getText() if child is not None and hasattr(child, "getText") else None
+                return (
+                    child.getText()
+                    if child is not None and hasattr(child, "getText")
+                    else None
+                )
 
-            def _report_operand_error(operator: str, expected: str, actual_types: list[str | None]):
-                rendered_types = ", ".join(type_name if type_name is not None else "<unresolved>" for type_name in actual_types)
+            def _report_operand_error(
+                operator: str, expected: str, actual_types: list[str | None]
+            ):
+                rendered_types = ", ".join(
+                    type_name if type_name is not None else "<unresolved>"
+                    for type_name in actual_types
+                )
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["invalid_operand_types"],
@@ -721,8 +816,15 @@ def build_semantic_validator(base_visitor_cls):
                 )
 
             def _resolve_numeric_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
-                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                operand_types = [
+                    self._resolve_expr_type(operand_ctx)
+                    for operand_ctx in operand_contexts
+                ]
+                known = [
+                    operand_type
+                    for operand_type in operand_types
+                    if operand_type is not None
+                ]
                 if any(operand_type not in {"int", "float"} for operand_type in known):
                     _report_operand_error(operator, "numeric", operand_types)
                     return None
@@ -742,8 +844,15 @@ def build_semantic_validator(base_visitor_cls):
                 return known[0] if known else None
 
             def _resolve_boolean_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
-                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                operand_types = [
+                    self._resolve_expr_type(operand_ctx)
+                    for operand_ctx in operand_contexts
+                ]
+                known = [
+                    operand_type
+                    for operand_type in operand_types
+                    if operand_type is not None
+                ]
                 if any(operand_type != "bool" for operand_type in known):
                     _report_operand_error(operator, "bool", operand_types)
                     return None
@@ -752,8 +861,15 @@ def build_semantic_validator(base_visitor_cls):
                 return "bool"
 
             def _resolve_int_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operand_contexts]
-                known = [operand_type for operand_type in operand_types if operand_type is not None]
+                operand_types = [
+                    self._resolve_expr_type(operand_ctx)
+                    for operand_ctx in operand_contexts
+                ]
+                known = [
+                    operand_type
+                    for operand_type in operand_types
+                    if operand_type is not None
+                ]
                 if any(operand_type != "int" for operand_type in known):
                     _report_operand_error(operator, "int", operand_types)
                     return None
@@ -799,9 +915,18 @@ def build_semantic_validator(base_visitor_cls):
             if hasattr(ctx, "relExpr") and callable(ctx.relExpr):
                 operands = _as_list(ctx.relExpr())
                 if len(operands) > 1:
-                    operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operands]
-                    known = [operand_type for operand_type in operand_types if operand_type is not None]
-                    if any(operand_type not in {"int", "float", "bool"} for operand_type in known):
+                    operand_types = [
+                        self._resolve_expr_type(operand_ctx) for operand_ctx in operands
+                    ]
+                    known = [
+                        operand_type
+                        for operand_type in operand_types
+                        if operand_type is not None
+                    ]
+                    if any(
+                        operand_type not in {"int", "float", "bool"}
+                        for operand_type in known
+                    ):
                         operator = _child_text(1) or "=="
                         _report_operand_error(operator, "comparable", operand_types)
                         return None
@@ -819,9 +944,18 @@ def build_semantic_validator(base_visitor_cls):
                 operands = _as_list(ctx.shiftExpr())
                 if len(operands) > 1:
                     operator = _child_text(1) or "<"
-                    operand_types = [self._resolve_expr_type(operand_ctx) for operand_ctx in operands]
-                    known = [operand_type for operand_type in operand_types if operand_type is not None]
-                    if any(operand_type not in {"int", "float", "bool"} for operand_type in known):
+                    operand_types = [
+                        self._resolve_expr_type(operand_ctx) for operand_ctx in operands
+                    ]
+                    known = [
+                        operand_type
+                        for operand_type in operand_types
+                        if operand_type is not None
+                    ]
+                    if any(
+                        operand_type not in {"int", "float", "bool"}
+                        for operand_type in known
+                    ):
                         _report_operand_error(operator, "comparable", operand_types)
                         return None
                     if len(set(known)) > 1:
@@ -848,10 +982,18 @@ def build_semantic_validator(base_visitor_cls):
                 if len(operands) == 1:
                     return self._resolve_expr_type(operands[0])
 
-            if hasattr(ctx, "unaryExpr") and callable(ctx.unaryExpr) and ctx.unaryExpr() is not None:
+            if (
+                hasattr(ctx, "unaryExpr")
+                and callable(ctx.unaryExpr)
+                and ctx.unaryExpr() is not None
+            ):
                 operator = _child_text(0) or ""
                 operand_type = self._resolve_expr_type(ctx.unaryExpr())
-                type_name_ctx = ctx.typeName() if hasattr(ctx, "typeName") and callable(ctx.typeName) else None
+                type_name_ctx = (
+                    ctx.typeName()
+                    if hasattr(ctx, "typeName") and callable(ctx.typeName)
+                    else None
+                )
                 if type_name_ctx is not None and _child_text(0) == "(":
                     cast_target = type_name_ctx.getText()
                     self._validate_declared_type(
@@ -861,7 +1003,10 @@ def build_semantic_validator(base_visitor_cls):
                     )
                     return cast_target
                 if operator == "-":
-                    if operand_type is not None and operand_type not in {"int", "float"}:
+                    if operand_type is not None and operand_type not in {
+                        "int",
+                        "float",
+                    }:
                         _report_operand_error(operator, "numeric", [operand_type])
                         return None
                     return operand_type
@@ -877,25 +1022,43 @@ def build_semantic_validator(base_visitor_cls):
 
             if hasattr(ctx, "INT") and callable(ctx.INT) and ctx.INT() is not None:
                 return "int"
-            if hasattr(ctx, "FLOAT") and callable(ctx.FLOAT) and ctx.FLOAT() is not None:
+            if (
+                hasattr(ctx, "FLOAT")
+                and callable(ctx.FLOAT)
+                and ctx.FLOAT() is not None
+            ):
                 return "float"
             if hasattr(ctx, "BOOL") and callable(ctx.BOOL) and ctx.BOOL() is not None:
                 return "bool"
-            if hasattr(ctx, "STRING") and callable(ctx.STRING) and ctx.STRING() is not None:
+            if (
+                hasattr(ctx, "STRING")
+                and callable(ctx.STRING)
+                and ctx.STRING() is not None
+            ):
                 return "string"
 
-            if hasattr(ctx, "lvalue") and callable(ctx.lvalue) and ctx.lvalue() is not None:
+            if (
+                hasattr(ctx, "lvalue")
+                and callable(ctx.lvalue)
+                and ctx.lvalue() is not None
+            ):
                 return self._resolve_lvalue_type(ctx.lvalue())
 
             if hasattr(ctx, "ID") and callable(ctx.ID) and ctx.ID() is not None:
-                if hasattr(ctx, "exprList") and callable(ctx.exprList) and ctx.exprList() is not None:
+                if (
+                    hasattr(ctx, "exprList")
+                    and callable(ctx.exprList)
+                    and ctx.exprList() is not None
+                ):
                     function_name = ctx.ID().getText()
                     args = ctx.exprList().expr() if ctx.exprList() is not None else []
                     if _is_cast_function_name(function_name):
                         if len(args) != 1:
                             self._add_diagnostic(
                                 severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
                                 message=(
                                     f"Cast '{function_name}(...)' expects 1 argument, "
                                     f"but got {len(args)}."
@@ -911,7 +1074,11 @@ def build_semantic_validator(base_visitor_cls):
                     return None
                 return self._check_expression_identifier(ctx.ID().getText(), ctx)
 
-            if hasattr(ctx, "primaryExpr") and callable(ctx.primaryExpr) and ctx.primaryExpr() is not None:
+            if (
+                hasattr(ctx, "primaryExpr")
+                and callable(ctx.primaryExpr)
+                and ctx.primaryExpr() is not None
+            ):
                 return self._resolve_expr_type(ctx.primaryExpr())
 
             if hasattr(ctx, "expr") and callable(ctx.expr):
@@ -956,10 +1123,14 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return
 
-            for index, (arg_expr, expected) in enumerate(zip(actual_args, expected_params), start=1):
+            for index, (arg_expr, expected) in enumerate(
+                zip(actual_args, expected_params), start=1
+            ):
                 actual_type = self._resolve_expr_type(arg_expr)
                 if actual_type != expected.declared_type:
-                    resolved_actual = actual_type if actual_type is not None else "<unresolved>"
+                    resolved_actual = (
+                        actual_type if actual_type is not None else "<unresolved>"
+                    )
                     self._add_diagnostic(
                         severity="error",
                         code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_type_mismatch"],
@@ -972,7 +1143,11 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
         def visitVarDecl(self, ctx):
-            type_ctx = ctx.typeName() if hasattr(ctx, "typeName") and callable(ctx.typeName) else None
+            type_ctx = (
+                ctx.typeName()
+                if hasattr(ctx, "typeName") and callable(ctx.typeName)
+                else None
+            )
             declared_type = type_ctx.getText() if type_ctx is not None else None
             symbol_name = ctx.ID().getText()
             if declared_type is not None:
@@ -981,7 +1156,11 @@ def build_semantic_validator(base_visitor_cls):
             if declared_type is None:
                 existing_symbol = self._lookup(symbol_name)
                 if existing_symbol is not None:
-                    has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+                    has_initializer = (
+                        hasattr(ctx, "expr")
+                        and callable(ctx.expr)
+                        and ctx.expr() is not None
+                    )
                     if has_initializer:
                         initializer_type = self._resolve_expr_type(ctx.expr())
                         if (
@@ -990,7 +1169,9 @@ def build_semantic_validator(base_visitor_cls):
                         ):
                             self._add_diagnostic(
                                 severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "assignment_type_mismatch"
+                                ],
                                 message=(
                                     "Type mismatch in assignment: "
                                     f"left-hand side expects {existing_symbol.declared_type}, got {initializer_type}."
@@ -1001,8 +1182,12 @@ def build_semantic_validator(base_visitor_cls):
                     self._mark_symbol_used(symbol_name)
                     return self.visitChildren(ctx)
 
-            has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
-            initializer_type = self._resolve_expr_type(ctx.expr()) if has_initializer else None
+            has_initializer = (
+                hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            )
+            initializer_type = (
+                self._resolve_expr_type(ctx.expr()) if has_initializer else None
+            )
 
             if declared_type is None:
                 if initializer_type is None:
@@ -1042,13 +1227,27 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitAssignStmt(self, ctx):
-            lvalue_ctx = ctx.lvalue() if hasattr(ctx, "lvalue") and callable(ctx.lvalue) else None
-            expr_ctx = ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+            lvalue_ctx = (
+                ctx.lvalue()
+                if hasattr(ctx, "lvalue") and callable(ctx.lvalue)
+                else None
+            )
+            expr_ctx = (
+                ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+            )
 
-            lvalue_type = self._resolve_lvalue_type(lvalue_ctx, for_write=True) if lvalue_ctx is not None else None
+            lvalue_type = (
+                self._resolve_lvalue_type(lvalue_ctx, for_write=True)
+                if lvalue_ctx is not None
+                else None
+            )
             expr_type = self._resolve_expr_type(expr_ctx)
 
-            if lvalue_type is not None and expr_type is not None and lvalue_type != expr_type:
+            if (
+                lvalue_type is not None
+                and expr_type is not None
+                and lvalue_type != expr_type
+            ):
                 self._add_diagnostic(
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
@@ -1072,7 +1271,9 @@ def build_semantic_validator(base_visitor_cls):
                 return self.visitChildren(ctx)
 
             expected_type = self._current_pure_function["return_type"]
-            return_expr = ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+            return_expr = (
+                ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
+            )
             actual_type = self._resolve_expr_type(return_expr)
             if actual_type is not None and actual_type != expected_type:
                 self._add_diagnostic(
@@ -1097,7 +1298,10 @@ def build_semantic_validator(base_visitor_cls):
 
             declared_resources = self._pipeline_resource_stack.pop()
             bind_used_resources = self._pipeline_bind_usage_stack.pop()
-            for resource_name, (resource_kind, resource_ctx) in declared_resources.items():
+            for resource_name, (
+                resource_kind,
+                resource_ctx,
+            ) in declared_resources.items():
                 if resource_name in bind_used_resources:
                     continue
                 self._add_diagnostic(
@@ -1112,31 +1316,60 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStreamDecl(self, ctx):
-            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="stream")
+            self._validate_declared_type(
+                ctx.typeName().getText(), ctx.typeName(), "LCK310"
+            )
+            self._declare(
+                ctx.ID().getText(),
+                ctx.typeName().getText(),
+                ctx,
+                duplicate_code="LCK306",
+                kind="stream",
+            )
             if self._pipeline_resource_stack:
                 self._pipeline_resource_stack[-1][ctx.ID().getText()] = ("stream", ctx)
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
-            self._validate_declared_type(ctx.typeName().getText(), ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), ctx.typeName().getText(), ctx, duplicate_code="LCK306", kind="accumulator")
+            self._validate_declared_type(
+                ctx.typeName().getText(), ctx.typeName(), "LCK310"
+            )
+            self._declare(
+                ctx.ID().getText(),
+                ctx.typeName().getText(),
+                ctx,
+                duplicate_code="LCK306",
+                kind="accumulator",
+            )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = ("accumulator", ctx)
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = (
+                    "accumulator",
+                    ctx,
+                )
             return self.visitChildren(ctx)
 
         def visitUniformDecl(self, ctx):
             declared_type = ctx.typeName().getText()
             self._validate_declared_type(declared_type, ctx.typeName(), "LCK310")
-            self._declare(ctx.ID().getText(), declared_type, ctx, duplicate_code="LCK306", kind="uniform")
+            self._declare(
+                ctx.ID().getText(),
+                declared_type,
+                ctx,
+                duplicate_code="LCK306",
+                kind="uniform",
+            )
 
-            has_initializer = hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            has_initializer = (
+                hasattr(ctx, "expr") and callable(ctx.expr) and ctx.expr() is not None
+            )
             if has_initializer:
                 initializer_type = self._resolve_expr_type(ctx.expr())
                 if initializer_type is not None and initializer_type != declared_type:
                     self._add_diagnostic(
                         severity="error",
-                        code=SEMANTIC_DIAGNOSTIC_CODES["uniform_initializer_type_mismatch"],
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "uniform_initializer_type_mismatch"
+                        ],
                         message=(
                             f"Type mismatch in uniform initializer for '{ctx.ID().getText()}': "
                             f"expected {declared_type}, got {initializer_type}."
@@ -1229,11 +1462,15 @@ def build_semantic_validator(base_visitor_cls):
                 else:
                     callee_name = ctx.ID().getText()
                     if callee_name in {"int", "float", "double", "uint", "bool"}:
-                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                        args = (
+                            ctx.exprList().expr() if ctx.exprList() is not None else []
+                        )
                         if len(args) != 1:
                             self._add_diagnostic(
                                 severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
                                 message=(
                                     f"Cast '{callee_name}(...)' expects 1 argument, but got {len(args)}."
                                 ),
@@ -1254,6 +1491,7 @@ def build_semantic_validator(base_visitor_cls):
             return self.diagnostics
 
     return LockstepSemanticValidator
+
 
 def validate_semantics(parse_tree: Any, visitor_cls) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()

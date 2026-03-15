@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 
 from .errors import ParseErrorCollector
 
+
 def _lex_tokens(source: str) -> list[str]:
 
     lexer = LockstepLexer(InputStream(source))
