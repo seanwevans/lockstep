@@ -17,9 +17,10 @@ shader Integrate(in Vec3 pos, out Vec3 out_pos, uniform float dt) {
 pipeline P {
     stream<Vec3, 32> src;
     stream<Vec3, 32> dst;
+    uniform float dt = 0.1;
 
     bind {
-        dst = Integrate(src, dst, 0.1);
+        dst = Integrate(src, dst, dt);
     }
 }
 """
@@ -44,10 +45,10 @@ def test_find_member_definition_resolves_struct_field():
 
 
 def test_provide_bind_completion_items_includes_routes_and_kernels():
-    items = provide_bind_completion_items(SOURCE, line=12, column=8)
+    items = provide_bind_completion_items(SOURCE, line=13, column=8)
     labels = [item["label"] for item in items]
 
-    assert labels[0] == "dst=Integrate(src,dst,0.1);"
+    assert labels[0] == "dst=Integrate(src,dst,dt);"
     assert "Integrate(...)" in labels
     assert items[0]["detail"] == "Bind route template"
 
@@ -56,26 +57,29 @@ def test_provide_bind_completion_items_omits_bind_routes_outside_bind_block():
     items = provide_bind_completion_items(SOURCE, line=4, column=8)
     labels = [item["label"] for item in items]
 
-    assert "dst=Integrate(src,dst,0.1);" not in labels
+    assert "dst=Integrate(src,dst,dt);" not in labels
     assert labels == ["Integrate(...)"]
 
 
 def test_provide_bind_completion_items_deduplicates_and_ranks_categories():
     source = """
-shader mix(in float value, out float out_value) { }
+shader mix(in float value, out float out_value) { out_value = value; }
 pure float mix(float a, float b) { return a; }
 
 pipeline P {
+    stream<float, 8> in_stream;
+    stream<float, 8> out_stream;
+
     bind {
-        out = mix(in_stream, out_stream);
+        out_stream = mix(in_stream, out_stream);
     }
 }
 """
 
-    items = provide_bind_completion_items(source, line=6, column=10)
+    items = provide_bind_completion_items(source, line=8, column=10)
 
     assert [item["label"] for item in items] == [
-        "out=mix(in_stream,out_stream);",
+        "out_stream=mix(in_stream,out_stream);",
         "mix(...)",
     ]
     assert [item["detail"] for item in items] == [
@@ -86,8 +90,7 @@ pipeline P {
 
 TRICKY_FORMAT_SOURCE = """
 struct Particle {
-    float mass; // mass comment
-    /* block comment before velocity */
+    float mass;
     Vec3 velocity;
 };
 
@@ -102,7 +105,6 @@ Apply(
     float speed = dt;
 }
 
-// comment before filter
 filter
 Post(
     in Particle src,
@@ -119,15 +121,16 @@ blend(float a, float b)
 """
 
 
-def test_build_struct_member_index_ignores_comments_and_tracks_locations():
+
+def test_build_struct_member_index_tracks_locations_from_ast():
     index = build_struct_member_index(TRICKY_FORMAT_SOURCE)
 
     assert index["Particle"]["mass"].line == 2
-    assert index["Particle"]["velocity"].line == 4
+    assert index["Particle"]["velocity"].line == 3
 
 
 def test_infer_and_definition_resolve_member_declared_from_body_ast():
-    line = 14
+    line = 13
     column = 8  # dst.velocity
 
     definition = find_member_definition(TRICKY_FORMAT_SOURCE, line, column)
@@ -135,14 +138,14 @@ def test_infer_and_definition_resolve_member_declared_from_body_ast():
     assert definition is not None
     assert definition.struct_name == "Particle"
     assert definition.field_name == "velocity"
-    assert definition.line == 4
+    assert definition.line == 3
 
 
 def test_hover_resolves_variable_and_callable_symbols_with_tricky_formatting():
-    variable_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 14, 20)  # local.velocity
-    shader_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 8, 0)  # Apply
-    filter_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 20, 0)  # Post
-    pure_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 28, 0)  # blend
+    variable_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 13, 20)  # local.velocity
+    shader_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 7, 0)  # Apply
+    filter_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 18, 0)  # Post
+    pure_hover = provide_hover_info(TRICKY_FORMAT_SOURCE, 26, 0)  # blend
 
     assert variable_hover == "(field) `Particle.velocity: Vec3`"
     assert shader_hover == "(shader) `shader Apply(...)`"

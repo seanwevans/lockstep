@@ -260,9 +260,10 @@ shader Integrate(in Vec3 pos, out Vec3 out_pos, uniform float dt) {
 pipeline P {
     stream<Vec3, 32> src;
     stream<Vec3, 32> dst;
+    uniform float dt = 0.1;
 
     bind {
-        dst = Integrate(src, dst, 0.1);
+        dst = Integrate(src, dst, dt);
     }
 }
 """
