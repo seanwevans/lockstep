@@ -1,10 +1,12 @@
 import json
-import ctypes
 from dataclasses import dataclass
 from functools import lru_cache
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 
-from llvmlite import binding, ir
+from llvmlite import ir
 
 from .compiler import compile_lockstep
 
@@ -33,19 +35,7 @@ def _fold_values(operator: str, values: list[Any]) -> Any:
     return None
 
 
-@lru_cache(maxsize=1)
-def _get_execution_engine() -> Any:
-    binding.initialize()
-    binding.initialize_native_target()
-    binding.initialize_native_asmprinter()
-    target = binding.Target.from_default_triple()
-    target_machine = target.create_target_machine()
-    backing_module = binding.parse_assembly("")
-    return binding.create_mcjit_compiler(backing_module, target_machine)
-
-
-@lru_cache(maxsize=1)
-def _jit_reduce_callable() -> Any:
+def _build_reduce_program_ir(values: list[float]) -> str:
     module = ir.Module(name="lockstep_simulator_fold")
     float_ty = ir.DoubleType()
     int_ty = ir.IntType(32)
@@ -86,17 +76,83 @@ def _jit_reduce_callable() -> Any:
     builder.position_at_end(loop_exit)
     builder.ret(acc_phi)
 
-    llvm_module = binding.parse_assembly(str(module))
-    llvm_module.verify()
-    engine = _get_execution_engine()
-    engine.add_module(llvm_module)
-    engine.finalize_object()
-    address = engine.get_function_address("lockstep_fold_sum")
-    if address == 0:
-        raise RuntimeError("failed to JIT compile lockstep_fold_sum")
-    return ctypes.CFUNCTYPE(
-        ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int32
-    )(address)
+    array_ty = ir.ArrayType(float_ty, len(values))
+    data_const = ir.Constant(array_ty, values)
+    data_global = ir.GlobalVariable(module, array_ty, name="fold_data")
+    data_global.global_constant = True
+    data_global.initializer = data_const
+
+    printf_ty = ir.FunctionType(int_ty, [ir.IntType(8).as_pointer()], var_arg=True)
+    printf = ir.Function(module, printf_ty, name="printf")
+
+    fmt_ty = ir.ArrayType(ir.IntType(8), 7)
+    fmt_const = ir.Constant(fmt_ty, bytearray(b"%.17g\n\x00"))
+    fmt_global = ir.GlobalVariable(module, fmt_ty, name="fmt")
+    fmt_global.global_constant = True
+    fmt_global.initializer = fmt_const
+
+    main_ty = ir.FunctionType(int_ty, [])
+    main_fn = ir.Function(module, main_ty, name="main")
+    main_entry = main_fn.append_basic_block("entry")
+    main_builder = ir.IRBuilder(main_entry)
+
+    zero = ir.Constant(int_ty, 0)
+    data_ptr = main_builder.gep(data_global, [zero, zero], inbounds=True)
+    sum_value = main_builder.call(
+        function,
+        [data_ptr, ir.Constant(int_ty, len(values))],
+        name="sum_value",
+    )
+    fmt_ptr = main_builder.gep(fmt_global, [zero, zero], inbounds=True)
+    main_builder.call(printf, [fmt_ptr, sum_value])
+    main_builder.ret(zero)
+
+    return str(module)
+
+
+@lru_cache(maxsize=1)
+def _simulator_runtime_command() -> tuple[str, ...] | None:
+    clang_path = shutil.which("clang")
+    if clang_path:
+        return (clang_path,)
+    lli_path = shutil.which("lli")
+    if lli_path:
+        return (lli_path,)
+    return None
+
+
+def _run_reduce_subprocess(values: list[float]) -> float:
+    command = _simulator_runtime_command()
+    if command is None:
+        raise RuntimeError("missing clang/lli runtime toolchain")
+
+    with tempfile.TemporaryDirectory(prefix="lockstep-sim-") as temp_dir:
+        ir_path = f"{temp_dir}/fold.ll"
+        with open(ir_path, "w", encoding="utf-8") as handle:
+            handle.write(_build_reduce_program_ir(values))
+
+        if len(command) == 1 and "clang" in command[0].split("/")[-1]:
+            exe_path = f"{temp_dir}/fold_reduce"
+            subprocess.run(
+                [command[0], "-O2", ir_path, "-o", exe_path],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            run_command = [exe_path]
+        else:
+            run_command = [command[0], ir_path]
+
+        completed = subprocess.run(
+            run_command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    return float(completed.stdout.strip())
 
 
 def _jit_numeric_reduce(operator: str, values: list[Any]) -> Any:
@@ -105,9 +161,7 @@ def _jit_numeric_reduce(operator: str, values: list[Any]) -> Any:
         return None
 
     try:
-        reduce_fn = _jit_reduce_callable()
-        raw_values = (ctypes.c_double * len(numeric_values))(*numeric_values)
-        reduced = float(reduce_fn(raw_values, len(numeric_values)))
+        reduced = _run_reduce_subprocess(numeric_values)
     except Exception:
         reduced = float(sum(numeric_values))
 
