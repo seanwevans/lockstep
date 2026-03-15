@@ -88,7 +88,7 @@ primaryExpr
     ;
 
 exprList: expr (',' expr)*;
-lvalue: ID ('.' ID)*;
+lvalue: ID ('.' ID)?;
 typeName: ID typeSuffix*;
 typeSuffix
     : '[' INT ']'

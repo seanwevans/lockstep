@@ -1760,6 +1760,34 @@ def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_m
     ]
 
 
+def test_semantic_validator_lvalue_reports_excessive_member_depth(debug_compiler_module):
+    validator = debug_compiler_module.LockstepSemanticValidator()
+    validator._push_scope()
+    validator._declare("entity", "Particle", _ctx(), duplicate_code="LCK306", kind="local")
+
+    lvalue_ctx = _ctx(
+        start_line=60,
+        start_col=2,
+        ID=lambda: [_token("entity"), _token("position"), _token("x")],
+    )
+
+    validator.visitLvalue(lvalue_ctx)
+
+    assert validator.diagnostics == [
+        debug_compiler_module.LockstepDiagnostic(
+            severity="error",
+            code="LCK302",
+            message=(
+                "Nested field access deeper than one member is not supported for lvalues "
+                "('entity.position.x')."
+            ),
+            line=60,
+            column=2,
+            hint="Rewrite the expression to use at most one '.field' dereference.",
+        )
+    ]
+
+
 def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator._push_scope()

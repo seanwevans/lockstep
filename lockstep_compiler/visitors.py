@@ -644,6 +644,20 @@ def build_semantic_validator(base_visitor_cls):
             if not id_tokens:
                 return None
 
+            if len(id_tokens) > 2:
+                access_path = ".".join(token.getText() for token in id_tokens)
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["invalid_field_access_non_struct"],
+                    message=(
+                        "Nested field access deeper than one member is not supported "
+                        f"for lvalues ('{access_path}')."
+                    ),
+                    ctx=ctx,
+                    hint="Rewrite the expression to use at most one '.field' dereference.",
+                )
+                return None
+
             root_identifier = id_tokens[0].getText()
             current_type = self._check_expression_identifier(
                 root_identifier,
