@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from lockstep_compiler.models import (
     SemanticKernelParam,
+    SemanticPureFunctionSignature,
     SemanticStructField,
     SemanticSymbol,
 )
@@ -1298,17 +1299,15 @@ def test_semantic_validator_records_pure_signature_from_declaration(
     validator.visitPureDecl(pure_decl_ctx)
 
     assert "blend" in validator.pure_functions
-    assert validator.pure_functions["blend"] == {
-        "return_type": "float",
-        "params": [
-            SemanticKernelParam(name="left", declared_type="float", modifier="value"),
-            SemanticKernelParam(name="right", declared_type="int", modifier="value"),
-        ],
-    }
+    assert validator.pure_functions["blend"].return_type == "float"
+    assert validator.pure_functions["blend"].params == (
+        SemanticKernelParam(name="left", declared_type="float", modifier="value"),
+        SemanticKernelParam(name="right", declared_type="int", modifier="value"),
+    )
     assert {
         name
         for name, signature in validator.pure_functions.items()
-        if signature.get("intrinsic")
+        if signature.intrinsic
     } == {
         "step",
         "mix",
@@ -1509,13 +1508,13 @@ def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_
 def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.pure_functions = {
-        "mix": {
-            "return_type": "float",
-            "params": [
+        "mix": SemanticPureFunctionSignature(
+            return_type="float",
+            params=(
                 SemanticKernelParam(name="a", declared_type="float", modifier="value"),
                 SemanticKernelParam(name="b", declared_type="float", modifier="value"),
-            ],
-        }
+            ),
+        )
     }
 
     call_ctx = _ctx(
@@ -1544,14 +1543,14 @@ def test_semantic_validator_reports_pure_call_argument_type_mismatch(
 ):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.pure_functions = {
-        "negate": {
-            "return_type": "float",
-            "params": [
+        "negate": SemanticPureFunctionSignature(
+            return_type="float",
+            params=(
                 SemanticKernelParam(
                     name="value", declared_type="float", modifier="value"
-                )
-            ],
-        }
+                ),
+            ),
+        )
     }
 
     call_ctx = _ctx(
@@ -1578,13 +1577,13 @@ def test_semantic_validator_reports_pure_call_argument_type_mismatch(
 def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
     validator = debug_compiler_module.LockstepSemanticValidator()
     validator.pure_functions = {
-        "dot": {
-            "return_type": "float",
-            "params": [
+        "dot": SemanticPureFunctionSignature(
+            return_type="float",
+            params=(
                 SemanticKernelParam(name="x", declared_type="float", modifier="value"),
                 SemanticKernelParam(name="y", declared_type="float", modifier="value"),
-            ],
-        }
+            ),
+        )
     }
 
     call_ctx = _ctx(

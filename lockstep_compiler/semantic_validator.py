@@ -5,7 +5,11 @@ from .prelude import load_intrinsics
 
 from .models import (
     LockstepDiagnostic,
+    ParsedTypeArraySuffix,
+    ParsedTypeGenericSuffix,
+    ParsedTypeName,
     SemanticKernelParam,
+    SemanticPureFunctionSignature,
     SemanticStructField,
     SemanticSymbol,
 )
@@ -21,19 +25,19 @@ def build_semantic_validator(base_visitor_cls):
             self.scopes: list[Scope] = []
             self.shaders: dict[str, list[SemanticKernelParam]] = {}
             self.filters: dict[str, list[SemanticKernelParam]] = {}
-            self.pure_functions: dict[str, dict[str, Any]] = {
-                name: {
-                    "return_type": signature["return_type"],
-                    "params": [
+            self.pure_functions: dict[str, SemanticPureFunctionSignature] = {
+                name: SemanticPureFunctionSignature(
+                    return_type=signature.return_type,
+                    params=tuple(
                         SemanticKernelParam(
-                            name=param["name"],
-                            declared_type=param["type"],
+                            name=param.name,
+                            declared_type=param.type_name,
                             modifier="value",
                         )
-                        for param in signature["params"]
-                    ],
-                    "intrinsic": True,
-                }
+                        for param in signature.params
+                    ),
+                    intrinsic=True,
+                )
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
@@ -171,12 +175,12 @@ def build_semantic_validator(base_visitor_cls):
 
         def _parse_type_name(
             self, type_name: str, index: int = 0
-        ) -> tuple[dict[str, Any] | None, int]:
+        ) -> tuple[ParsedTypeName | None, int]:
             base_name, index = self._consume_identifier(type_name, index)
             if base_name is None:
                 return None, index
 
-            parsed_type: dict[str, Any] = {"base": base_name, "inner": []}
+            suffixes: list[ParsedTypeArraySuffix | ParsedTypeGenericSuffix] = []
             while index < len(type_name):
                 if type_name[index] == "[":
                     index += 1
@@ -187,7 +191,7 @@ def build_semantic_validator(base_visitor_cls):
                         or type_name[index] != "]"
                     ):
                         return None, index
-                    parsed_type["inner"].append({"kind": "array", "size": int(length)})
+                    suffixes.append(ParsedTypeArraySuffix(size=int(length)))
                     index += 1
                     continue
 
@@ -207,27 +211,27 @@ def build_semantic_validator(base_visitor_cls):
 
                     if index >= len(type_name) or type_name[index] != ">":
                         return None, index
-                    parsed_type["inner"].append(
-                        {"kind": "generic", "type": inner_type, "arity": arity}
+                    suffixes.append(
+                        ParsedTypeGenericSuffix(type_name=inner_type, arity=arity)
                     )
                     index += 1
                     continue
 
                 break
 
-            return parsed_type, index
+            return ParsedTypeName(base=base_name, inner=tuple(suffixes)), index
 
         def _collect_referenced_type_names(
-            self, parsed_type: dict[str, Any]
+            self, parsed_type: ParsedTypeName
         ) -> list[str]:
             has_generic_suffix = any(
-                suffix["kind"] == "generic" for suffix in parsed_type["inner"]
+                isinstance(suffix, ParsedTypeGenericSuffix) for suffix in parsed_type.inner
             )
-            referenced_names = [] if has_generic_suffix else [parsed_type["base"]]
-            for suffix in parsed_type["inner"]:
-                if suffix["kind"] == "generic":
+            referenced_names = [] if has_generic_suffix else [parsed_type.base]
+            for suffix in parsed_type.inner:
+                if isinstance(suffix, ParsedTypeGenericSuffix):
                     referenced_names.extend(
-                        self._collect_referenced_type_names(suffix["type"])
+                        self._collect_referenced_type_names(suffix.type_name)
                     )
             return referenced_names
 
@@ -689,10 +693,10 @@ def build_semantic_validator(base_visitor_cls):
                         )
                     )
 
-            self.pure_functions[name] = {
-                "return_type": return_type,
-                "params": params,
-            }
+            self.pure_functions[name] = SemanticPureFunctionSignature(
+                return_type=return_type,
+                params=tuple(params),
+            )
 
             statements = []
             if hasattr(ctx, "statement") and callable(ctx.statement):
@@ -1070,7 +1074,7 @@ def build_semantic_validator(base_visitor_cls):
                         return function_name
                     function_signature = self.pure_functions.get(function_name)
                     if function_signature is not None:
-                        return function_signature["return_type"]
+                        return function_signature.return_type
                     return None
                 return self._check_expression_identifier(ctx.ID().getText(), ctx)
 
@@ -1105,7 +1109,7 @@ def build_semantic_validator(base_visitor_cls):
                 )
                 return
 
-            expected_params: list[SemanticKernelParam] = signature["params"]
+            expected_params = signature.params
             actual_args = []
             if ctx.exprList() is not None:
                 actual_args = ctx.exprList().expr()

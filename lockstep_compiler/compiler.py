@@ -8,13 +8,31 @@ from .ast import ast_to_entities, build_program_ast
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
-from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
+from .models import (
+    IntrinsicSignature,
+    LockstepCompileResult,
+    LockstepDiagnostic,
+    normalize_diagnostics,
+)
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
 from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
+
+
+def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> dict[str, Any]:
+    return {
+        "name": intrinsic.name,
+        "return_type": intrinsic.return_type,
+        "params": [
+            {"type": param.type_name, "name": param.name}
+            for param in intrinsic.params
+        ],
+        "body": [],
+        "intrinsic": True,
+    }
 
 
 def _merge_intrinsic_pure_functions(
@@ -27,7 +45,7 @@ def _merge_intrinsic_pure_functions(
     }
     for name, intrinsic in load_intrinsics().items():
         if name not in merged:
-            merged[name] = intrinsic
+            merged[name] = _intrinsic_to_entity(intrinsic)
     return list(merged.values())
 
 
