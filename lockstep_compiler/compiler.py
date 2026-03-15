@@ -181,7 +181,7 @@ def _compile_lockstep_with_dependencies(
     if debug_visitor_cls is None:
         try:
             typed_ast = build_program_ast(tree, visitor_cls)
-        except Exception:
+        except TypeError:
             # Keep the legacy parse-tree visitor flow for parser stubs used by unit tests.
             typed_ast = None
 
