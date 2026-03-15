@@ -9,6 +9,8 @@ from .models import (
     ParsedTypeGenericSuffix,
     ParsedTypeName,
     SemanticKernelParam,
+    SemanticPipelineResource,
+    SemanticPureFunctionContext,
     SemanticPureFunctionSignature,
     SemanticStructField,
     SemanticSymbol,
@@ -42,8 +44,8 @@ def build_semantic_validator(base_visitor_cls):
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
             self._primitive_types = {"int", "float", "bool", "string"}
-            self._current_pure_function: dict[str, str] | None = None
-            self._pipeline_resource_stack: list[dict[str, tuple[str, Any]]] = []
+            self._current_pure_function: SemanticPureFunctionContext | None = None
+            self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
 
         def _line_col(self, ctx) -> tuple[int, int]:
@@ -763,7 +765,10 @@ def build_semantic_validator(base_visitor_cls):
 
             self._push_scope()
             previous_pure_function = self._current_pure_function
-            self._current_pure_function = {"name": name, "return_type": return_type}
+            self._current_pure_function = SemanticPureFunctionContext(
+                name=name,
+                return_type=return_type,
+            )
             for param in params:
                 self._declare(
                     param.name,
@@ -1275,7 +1280,7 @@ def build_semantic_validator(base_visitor_cls):
             if self._current_pure_function is None:
                 return self.visitChildren(ctx)
 
-            expected_type = self._current_pure_function["return_type"]
+            expected_type = self._current_pure_function.return_type
             return_expr = (
                 ctx.expr() if hasattr(ctx, "expr") and callable(ctx.expr) else None
             )
@@ -1285,7 +1290,7 @@ def build_semantic_validator(base_visitor_cls):
                     severity="error",
                     code=SEMANTIC_DIAGNOSTIC_CODES["pure_return_type_mismatch"],
                     message=(
-                        f"Return type mismatch in pure function '{self._current_pure_function['name']}': "
+                        f"Return type mismatch in pure function '{self._current_pure_function.name}': "
                         f"expected {expected_type}, got {actual_type}."
                     ),
                     ctx=ctx,
@@ -1303,19 +1308,16 @@ def build_semantic_validator(base_visitor_cls):
 
             declared_resources = self._pipeline_resource_stack.pop()
             bind_used_resources = self._pipeline_bind_usage_stack.pop()
-            for resource_name, (
-                resource_kind,
-                resource_ctx,
-            ) in declared_resources.items():
+            for resource_name, resource in declared_resources.items():
                 if resource_name in bind_used_resources:
                     continue
                 self._add_diagnostic(
                     severity="warning",
                     code=SEMANTIC_DIAGNOSTIC_CODES["unbound_pipeline_resource"],
                     message=(
-                        f"Pipeline {resource_kind} '{resource_name}' is declared but not used in the bind block."
+                        f"Pipeline {resource.kind} '{resource_name}' is declared but not used in the bind block."
                     ),
-                    ctx=resource_ctx,
+                    ctx=resource.declaration_ctx,
                     hint="Reference every declared stream/accumulator in at least one bind statement.",
                 )
             return result
@@ -1332,7 +1334,10 @@ def build_semantic_validator(base_visitor_cls):
                 kind="stream",
             )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = ("stream", ctx)
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
+                    kind="stream",
+                    declaration_ctx=ctx,
+                )
             return self.visitChildren(ctx)
 
         def visitAccumDecl(self, ctx):
@@ -1347,9 +1352,9 @@ def build_semantic_validator(base_visitor_cls):
                 kind="accumulator",
             )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = (
-                    "accumulator",
-                    ctx,
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
+                    kind="accumulator",
+                    declaration_ctx=ctx,
                 )
             return self.visitChildren(ctx)
 
@@ -1382,6 +1387,11 @@ def build_semantic_validator(base_visitor_cls):
                         ctx=ctx,
                         hint="Use an initializer expression with the same type as the declared uniform.",
                     )
+            if self._pipeline_resource_stack:
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
+                    kind="uniform",
+                    declaration_ctx=ctx,
+                )
             return self.visitChildren(ctx)
 
         def visitBindStmt(self, ctx):

@@ -12,6 +12,8 @@ from .models import (
     IntrinsicSignature,
     LockstepCompileResult,
     LockstepDiagnostic,
+    PureFunctionEntity,
+    PureFunctionParamEntity,
     normalize_diagnostics,
 )
 from .optimizer import optimize_bind_routes
@@ -22,26 +24,47 @@ from .visitors import build_debug_visitor, validate_semantics as _validate_seman
 DEFAULT_SOURCE_FILE = "<stdin>"
 
 
-def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> dict[str, Any]:
-    return {
-        "name": intrinsic.name,
-        "return_type": intrinsic.return_type,
-        "params": [
-            {"type": param.type_name, "name": param.name} for param in intrinsic.params
-        ],
-        "body": [],
-        "intrinsic": True,
-    }
+def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> PureFunctionEntity:
+    return PureFunctionEntity(
+        name=intrinsic.name,
+        return_type=intrinsic.return_type,
+        params=tuple(
+            PureFunctionParamEntity(type=param.type_name, name=param.name)
+            for param in intrinsic.params
+        ),
+        body=(),
+        intrinsic=True,
+    )
+
+
+def _pure_function_name(entity: dict[str, Any] | PureFunctionEntity) -> str | None:
+    if isinstance(entity, PureFunctionEntity):
+        return entity.name
+    if isinstance(entity, dict):
+        value = entity.get("name")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _normalize_pure_function_entity(
+    entity: dict[str, Any] | PureFunctionEntity,
+) -> dict[str, Any] | PureFunctionEntity:
+    if isinstance(entity, PureFunctionEntity):
+        return entity
+    if isinstance(entity, dict):
+        return entity
+    return {}
 
 
 def _merge_intrinsic_pure_functions(
-    pure_functions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    merged = {
-        fn.get("name"): fn
-        for fn in pure_functions
-        if isinstance(fn, dict) and fn.get("name")
-    }
+    pure_functions: list[dict[str, Any] | PureFunctionEntity],
+) -> list[dict[str, Any] | PureFunctionEntity]:
+    merged: dict[str, dict[str, Any] | PureFunctionEntity] = {}
+    for pure_function in pure_functions:
+        normalized = _normalize_pure_function_entity(pure_function)
+        name = _pure_function_name(normalized)
+        if name is not None:
+            merged[name] = normalized
     for name, intrinsic in load_intrinsics().items():
         if name not in merged:
             merged[name] = _intrinsic_to_entity(intrinsic)
@@ -210,9 +233,14 @@ def _compile_lockstep_with_dependencies(
             "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
         }
 
-    entities["pure_functions"] = _merge_intrinsic_pure_functions(
-        entities.get("pure_functions", [])
-    )
+    entities["pure_functions"] = [
+        pure_function.to_dict()
+        if isinstance(pure_function, PureFunctionEntity)
+        else pure_function
+        for pure_function in _merge_intrinsic_pure_functions(
+            entities.get("pure_functions", [])
+        )
+    ]
 
     all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *debug_diagnostics])
     bind_optimization = optimize_bind_routes(

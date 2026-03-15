@@ -80,6 +80,44 @@ class ParsedTypeGenericSuffix:
     arity: int | None = None
 
 
+@dataclass(frozen=True)
+class SemanticPureFunctionContext:
+    name: str
+    return_type: str
+
+
+@dataclass(frozen=True)
+class SemanticPipelineResource:
+    kind: str
+    declaration_ctx: Any
+
+
+@dataclass(frozen=True)
+class PureFunctionParamEntity:
+    type: str
+    name: str
+
+
+@dataclass(frozen=True)
+class PureFunctionEntity:
+    name: str
+    return_type: str
+    params: tuple[PureFunctionParamEntity, ...] = ()
+    body: tuple[str, ...] = ()
+    intrinsic: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "return_type": self.return_type,
+            "params": [
+                {"type": param.type, "name": param.name} for param in self.params
+            ],
+            "body": list(self.body),
+            "intrinsic": self.intrinsic,
+        }
+
+
 _SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
 
 
