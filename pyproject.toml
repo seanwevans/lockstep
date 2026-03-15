@@ -30,6 +30,7 @@ testpaths = ["tests"]
 line-length = 88
 target-version = ["py311"]
 include = "\\.pyi?$"
+extend-exclude = "generated/"
 
 [tool.coverage.run]
 branch = true
