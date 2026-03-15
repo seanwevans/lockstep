@@ -22,6 +22,7 @@ class AnalysisContext:
     variable_types: dict[str, str]
     struct_member_index: dict[str, dict[str, MemberDefinition]]
     struct_field_types: dict[str, dict[str, str]]
+    callable_index: dict[str, "DefinitionTarget"]
     entities: dict[str, Any]
 
 
@@ -29,6 +30,13 @@ class AnalysisContext:
 class CompiledLspContext:
     entities: dict[str, Any]
     diagnostics: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class DefinitionTarget:
+    line: int
+    column: int
+    symbol: str
 
 
 _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -201,8 +209,78 @@ def build_analysis_context(
         variable_types=_infer_variable_types_from_entities(entities),
         struct_member_index=_build_struct_member_index_from_entities(entities),
         struct_field_types=_build_struct_field_type_index_from_entities(entities),
+        callable_index=_build_callable_index(source, entities),
         entities=entities,
     )
+
+
+def _offset_to_line_column(source: str, offset: int) -> tuple[int, int]:
+    clamped = min(max(offset, 0), len(source))
+    line = source.count("\n", 0, clamped)
+    line_start = source.rfind("\n", 0, clamped)
+    if line_start == -1:
+        return line, clamped
+    return line, clamped - line_start - 1
+
+
+def _find_callable_definition(
+    source: str,
+    pattern: re.Pattern[str],
+    symbol: str,
+) -> DefinitionTarget | None:
+    match = pattern.search(source)
+    if match is None:
+        return None
+
+    line, column = _offset_to_line_column(source, match.start("name"))
+    return DefinitionTarget(line=line, column=column, symbol=symbol)
+
+
+def _build_callable_index(
+    source: str,
+    entities: dict[str, Any],
+) -> dict[str, DefinitionTarget]:
+    callable_index: dict[str, DefinitionTarget] = {}
+
+    for shader in entities.get("shaders", []):
+        name = shader.get("name")
+        if not name or name in callable_index:
+            continue
+        target = _find_callable_definition(
+            source,
+            re.compile(rf"\bshader\s+(?P<name>{re.escape(name)})\s*\("),
+            name,
+        )
+        if target is not None:
+            callable_index[name] = target
+
+    for filter_decl in entities.get("filters", []):
+        name = filter_decl.get("name")
+        if not name or name in callable_index:
+            continue
+        target = _find_callable_definition(
+            source,
+            re.compile(rf"\bfilter\s+(?P<name>{re.escape(name)})\s*\("),
+            name,
+        )
+        if target is not None:
+            callable_index[name] = target
+
+    for pure in entities.get("pure_functions", []):
+        name = pure.get("name")
+        if not name or pure.get("intrinsic") or name in callable_index:
+            continue
+        target = _find_callable_definition(
+            source,
+            re.compile(
+                rf"\bpure\b[\s\S]*?\b(?P<name>{re.escape(name)})\s*\("
+            ),
+            name,
+        )
+        if target is not None:
+            callable_index[name] = target
+
+    return callable_index
 
 
 def find_member_definition(
@@ -227,6 +305,39 @@ def find_member_definition(
         if not struct_name:
             return None
         return context.struct_member_index.get(struct_name, {}).get(field_name)
+    return None
+
+
+def find_definition_target(
+    source: str,
+    line: int,
+    column: int,
+    analysis_context: AnalysisContext | None = None,
+) -> DefinitionTarget | None:
+    member = find_member_definition(
+        source,
+        line,
+        column,
+        analysis_context=analysis_context,
+    )
+    if member is not None:
+        return DefinitionTarget(
+            line=member.line,
+            column=member.column,
+            symbol=member.field_name,
+        )
+
+    lines = source.splitlines()
+    if line < 0 or line >= len(lines):
+        return None
+
+    line_text = lines[line]
+    context = analysis_context or build_analysis_context(source)
+    for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", line_text):
+        start, end = match.span(1)
+        if not (start <= column < end):
+            continue
+        return context.callable_index.get(match.group(1))
     return None
 
 
@@ -394,8 +505,9 @@ def run_lsp_server() -> int:
             message=diag.get("message", ""),
         )
 
-    async def _debounced_validate(uri: str):
-        await asyncio.sleep(debounce_seconds)
+    async def _validate(uri: str, *, debounced: bool):
+        if debounced:
+            await asyncio.sleep(debounce_seconds)
         document = server.workspace.get_text_document(uri)
         compiled = compile_context_for_lsp(document.source)
         doc_contexts[uri] = compiled
@@ -404,11 +516,17 @@ def run_lsp_server() -> int:
         )
         pending_tasks.pop(uri, None)
 
-    def _schedule_validate(uri: str):
+    def _schedule_validate(uri: str, *, debounced: bool = True):
         task = pending_tasks.get(uri)
         if task is not None and not task.done():
             task.cancel()
-        pending_tasks[uri] = asyncio.create_task(_debounced_validate(uri))
+        pending_tasks[uri] = asyncio.create_task(_validate(uri, debounced=debounced))
+
+    def _clear_document_context(uri: str):
+        task = pending_tasks.pop(uri, None)
+        if task is not None and not task.done():
+            task.cancel()
+        doc_contexts.pop(uri, None)
 
     def _context_for_document(uri: str, source: str) -> CompiledLspContext:
         context = doc_contexts.get(uri)
@@ -421,6 +539,15 @@ def run_lsp_server() -> int:
     @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
     def validate(params):
         _schedule_validate(params.text_document.uri)
+
+    @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
+    def validate_on_save(params):
+        _schedule_validate(params.text_document.uri, debounced=False)
+
+    @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
+    def close_document(params):
+        _clear_document_context(params.text_document.uri)
+        server.publish_diagnostics(params.text_document.uri, [])
 
     @server.feature(types.TEXT_DOCUMENT_COMPLETION)
     def completion(params: types.CompletionParams):
@@ -481,21 +608,21 @@ def run_lsp_server() -> int:
         analysis_context = build_analysis_context(
             document.source, compiled_context=compiled
         )
-        member = find_member_definition(
+        target = find_definition_target(
             document.source,
             params.position.line,
             params.position.character,
             analysis_context=analysis_context,
         )
-        if member is None:
+        if target is None:
             return None
-        target = types.Range(
-            start=types.Position(line=member.line, character=member.column),
+        target_range = types.Range(
+            start=types.Position(line=target.line, character=target.column),
             end=types.Position(
-                line=member.line, character=member.column + len(member.field_name)
+                line=target.line, character=target.column + len(target.symbol)
             ),
         )
-        return types.Location(uri=document.uri, range=target)
+        return types.Location(uri=document.uri, range=target_range)
 
     server.start_io()
     return 0
