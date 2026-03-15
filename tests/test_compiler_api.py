@@ -734,6 +734,58 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
 
 
+def test_emit_llvm_ir_selects_target_dependent_simd_width_for_fold_intrinsics():
+    ir_x86 = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+            "target_triple": "x86_64-unknown-linux-gnu",
+        }
+    )
+    ir_arm = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+            "target_triple": "aarch64-unknown-linux-gnu",
+        }
+    )
+
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in ir_x86
+    assert 'call fast float @"llvm.vector.reduce.fadd.v4f32"' in ir_arm
+
+
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
     with pytest.raises(CodegenError, match="requires matching operand types"):
         emit_llvm_ir(

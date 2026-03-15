@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llvmlite import ir
+from llvmlite import binding, ir
 
 from .ast import (
     AstAssignStmt,
@@ -536,10 +536,29 @@ def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatem
     return body_ast
 
 
+def _simd_width_for_target(target_triple: str | None) -> int:
+    triple = (target_triple or "").strip().lower()
+    arch = triple.split("-", 1)[0]
+
+    if arch in {"x86_64", "amd64"}:
+        return 8
+    if arch in {"x86", "i386", "i486", "i586", "i686"}:
+        return 4
+    if arch in {"aarch64", "arm64", "arm", "thumb", "wasm32", "wasm64"}:
+        return 4
+    if arch.startswith("riscv"):
+        return 4
+    return 4
+
+
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
     entities = _normalize_codegen_input(program_or_entities)
+    target_triple = entities.get("target_triple")
+    if not isinstance(target_triple, str) or not target_triple.strip():
+        target_triple = binding.get_default_triple()
+    simd_width = _simd_width_for_target(target_triple)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
@@ -762,8 +781,6 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    simd_width = 8
-
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
