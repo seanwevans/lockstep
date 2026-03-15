@@ -10,6 +10,7 @@ import lockstep_compiler
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
+from lockstep_compiler.models import LockstepDiagnostic
 from lockstep_compiler.ast import (
     AstAssignStmt,
     AstExprBinary,
@@ -314,6 +315,87 @@ def test_compile_lockstep_maps_semantic_diagnostics_to_primary_source_file():
 
     assert exc_info.value.errors[0].source_file == "main.lock"
     assert exc_info.value.errors[0].line == 2
+
+
+def test_compile_lockstep_wraps_codegen_errors_with_compile_error(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    class StubDebugVisitor:
+        def __init__(self, verbose=True):
+            self.verbose = verbose
+            self.structs = []
+            self.shaders = []
+            self.filters = []
+            self.pure_functions = []
+            self.streams = []
+            self.accumulators = []
+            self.uniforms = []
+            self.bind_routes = []
+            self.bind_routes_ir = []
+            self.diagnostics = [
+                LockstepDiagnostic(
+                    severity="warning",
+                    code="LCK421",
+                    message="unused symbol 'x'",
+                    line=2,
+                    column=4,
+                )
+            ]
+
+        def visit(self, tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monkeypatch.setattr(
+        compiler_module,
+        "emit_llvm_ir",
+        lambda _program: (_ for _ in ()).throw(CodegenError("undefined variable 'missing'")),
+    )
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline Main { bind { } }",
+            source_file="main.lock",
+            verbose=False,
+            semantic_validator=lambda _tree: [],
+            token_stream_cls=lambda lexer: object(),
+            debug_visitor_cls=StubDebugVisitor,
+        )
+
+    error = exc_info.value
+    assert error.phase == "codegen"
+    assert [diag.code for diag in error.errors] == ["LCK501"]
+    assert error.errors[0].message == "undefined variable 'missing'"
+    assert error.errors[0].source_file == "main.lock"
+    assert {diag.code for diag in error.diagnostics} == {"LCK421", "LCK501"}
 
 def test_emit_llvm_ir_accepts_ast_program_input():
     from lockstep_compiler.ast import (
