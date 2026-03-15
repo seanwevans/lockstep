@@ -285,6 +285,10 @@ def format_lockstep_source(source, *, indent="    "):
     lexer.addErrorListener(error_listener)
 
     stream = CommonTokenStream(lexer)
+    stream.fill()
+    if any(token.type == LockstepLexer.COMMENT for token in stream.tokens):
+        return source
+
     parser = LockstepParser(stream)
     parser.removeErrorListeners()
     parser.addErrorListener(error_listener)

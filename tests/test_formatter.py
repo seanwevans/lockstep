@@ -49,3 +49,9 @@ def test_lexer_preserves_line_comments_in_token_stream():
         if token.text and token.text.startswith("//")
     ]
     assert comments == ["// keep me"]
+
+
+def test_format_lockstep_source_preserves_comments_by_skipping_reformat():
+    source = "pipeline Main{ // keep me\nstream<float,4> s;\n}\n"
+
+    assert format_lockstep_source(source) == source
