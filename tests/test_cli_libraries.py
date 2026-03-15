@@ -87,3 +87,40 @@ def test_run_cli_reports_stdin_file_in_diagnostics(tmp_path):
 
     assert exit_code == 1
     assert "<stdin>:1:" in stderr.getvalue()
+
+
+def test_run_cli_passes_frontend_limits_to_compiler():
+    captured = {}
+
+    def fake_compiler(source, *, frontend_limits=None):
+        captured["source"] = source
+        captured["frontend_limits"] = frontend_limits
+        return {
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": [],
+        }
+
+    exit_code = run_cli(
+        [
+            "--simulate",
+            "--max-source-bytes",
+            "64",
+            "--parse-timeout-ms",
+            "50",
+            "--max-expr-nesting",
+            "16",
+        ],
+        stdin=io.StringIO("pipeline Main { bind { } }"),
+        stdout=io.StringIO(),
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    assert captured["source"] == "pipeline Main { bind { } }"
+    assert captured["frontend_limits"].max_source_bytes == 64
+    assert captured["frontend_limits"].parse_timeout_ms == 50
+    assert captured["frontend_limits"].max_expression_nesting == 16

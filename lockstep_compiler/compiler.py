@@ -1,6 +1,7 @@
 import functools
 import re
-from dataclasses import replace
+import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +22,186 @@ from .visitors import validate_semantics as _validate_semantics
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
+DEFAULT_MAX_SOURCE_BYTES = 1_048_576
+DEFAULT_PARSE_TIMEOUT_MS = 2_000
+DEFAULT_MAX_EXPRESSION_NESTING = 128
 _DEPENDENCY_DECL_PATTERN = re.compile(
     r'^\s*(?:import|#include)\s+"((?:[^"\\]|\\.)+)"\s*;\s*$',
     re.MULTILINE,
 )
+
+
+@dataclass(frozen=True)
+class FrontendLimits:
+    max_source_bytes: int | None = DEFAULT_MAX_SOURCE_BYTES
+    parse_timeout_ms: int | None = DEFAULT_PARSE_TIMEOUT_MS
+    max_expression_nesting: int | None = DEFAULT_MAX_EXPRESSION_NESTING
+
+
+class FrontendLimitExceeded(RuntimeError):
+    def __init__(self, diagnostic: LockstepDiagnostic):
+        super().__init__(diagnostic.message)
+        self.diagnostic = diagnostic
+
+
+class _DeadlineTokenStream(CommonTokenStream):
+    def __init__(self, lexer, *, deadline: float | None = None, source_file: str):
+        super().__init__(lexer)
+        self._deadline = deadline
+        self._source_file = source_file
+
+    def _enforce_deadline(self) -> None:
+        if self._deadline is None:
+            return
+        if time.monotonic() > self._deadline:
+            raise FrontendLimitExceeded(
+                LockstepDiagnostic(
+                    severity="error",
+                    code="LCK004",
+                    message=(
+                        "Parsing exceeded the configured runtime limit "
+                        "(parse_timeout_ms)."
+                    ),
+                    line=1,
+                    column=0,
+                    source_file=self._source_file,
+                    hint=(
+                        "Increase --parse-timeout-ms (or parse_timeout_ms via API) "
+                        "for trusted large inputs, or set it to 0 to disable."
+                    ),
+                )
+            )
+
+    def LA(self, i: int):
+        self._enforce_deadline()
+        return super().LA(i)
+
+    def LT(self, i: int):
+        self._enforce_deadline()
+        return super().LT(i)
+
+    def consume(self):
+        self._enforce_deadline()
+        return super().consume()
+
+
+def _normalize_frontend_limits(
+    limits: FrontendLimits | None,
+) -> FrontendLimits:
+    resolved = limits or FrontendLimits()
+    return FrontendLimits(
+        max_source_bytes=(
+            resolved.max_source_bytes
+            if resolved.max_source_bytes and resolved.max_source_bytes > 0
+            else None
+        ),
+        parse_timeout_ms=(
+            resolved.parse_timeout_ms
+            if resolved.parse_timeout_ms and resolved.parse_timeout_ms > 0
+            else None
+        ),
+        max_expression_nesting=(
+            resolved.max_expression_nesting
+            if resolved.max_expression_nesting and resolved.max_expression_nesting > 0
+            else None
+        ),
+    )
+
+
+def _enforce_source_size_limit(
+    source_code: str,
+    *,
+    source_file: str,
+    limits: FrontendLimits,
+) -> None:
+    if limits.max_source_bytes is None:
+        return
+    source_size = len(source_code.encode("utf-8"))
+    if source_size <= limits.max_source_bytes:
+        return
+    diagnostic = LockstepDiagnostic(
+        severity="error",
+        code="LCK003",
+        message=(
+            "Source size exceeds the configured limit "
+            f"({source_size} bytes > {limits.max_source_bytes} bytes)."
+        ),
+        line=1,
+        column=0,
+        source_file=source_file,
+        hint=(
+            "Increase --max-source-bytes (or max_source_bytes via API) for trusted "
+            "inputs, or set it to 0 to disable."
+        ),
+    )
+    raise LockstepCompileError(
+        [diagnostic],
+        diagnostics=[diagnostic],
+        phase="parse",
+        source_file=source_file,
+    )
+
+
+def _max_expression_nesting(parse_tree: Any) -> int:
+    if not hasattr(parse_tree, "getChildCount"):
+        return 0
+
+    max_depth = 0
+
+    def _walk(node: Any, depth: int) -> None:
+        nonlocal max_depth
+        class_name = node.__class__.__name__
+        depth_increase = 0
+        if class_name == "PrimaryExprContext" and node.getChildCount() >= 3:
+            if node.getChild(0).getText() == "(" and node.getChild(2).getText() == ")":
+                depth_increase = 1
+        elif class_name == "UnaryExprContext" and node.getChildCount() >= 2:
+            if node.getChild(1).__class__.__name__ == "UnaryExprContext":
+                depth_increase = 1
+        current_depth = depth + depth_increase
+        if current_depth > max_depth:
+            max_depth = current_depth
+        for index in range(node.getChildCount()):
+            child = node.getChild(index)
+            if hasattr(child, "getChildCount"):
+                _walk(child, current_depth)
+
+    _walk(parse_tree, 0)
+    return max_depth
+
+
+def _enforce_expression_nesting_limit(
+    parse_tree: Any,
+    *,
+    source_file: str,
+    limits: FrontendLimits,
+) -> None:
+    if limits.max_expression_nesting is None:
+        return
+    depth = _max_expression_nesting(parse_tree)
+    if depth <= limits.max_expression_nesting:
+        return
+    diagnostic = LockstepDiagnostic(
+        severity="error",
+        code="LCK005",
+        message=(
+            "Expression nesting exceeds the configured limit "
+            f"({depth} > {limits.max_expression_nesting})."
+        ),
+        line=1,
+        column=0,
+        source_file=source_file,
+        hint=(
+            "Reduce nested expressions, raise --max-expr-nesting "
+            "(or max_expression_nesting via API), or set it to 0 to disable."
+        ),
+    )
+    raise LockstepCompileError(
+        [diagnostic],
+        diagnostics=[diagnostic],
+        phase="parse",
+        source_file=source_file,
+    )
 
 
 def _merge_intrinsic_pure_functions_into_ast(program: AstProgram) -> AstProgram:
@@ -237,20 +414,60 @@ def _compile_lockstep_with_dependencies(
     semantic_validator=None,
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
+    frontend_limits: FrontendLimits | None = None,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
+    resolved_limits = _normalize_frontend_limits(frontend_limits)
+    _enforce_source_size_limit(
+        source_code,
+        source_file=source_file,
+        limits=resolved_limits,
+    )
 
     input_stream = InputStream(source_code)
     lexer = lexer_cls(input_stream)
     error_listener = ParseErrorCollector(source_file=None)
     lexer.removeErrorListeners()
     lexer.addErrorListener(error_listener)
-    stream = token_stream_cls(lexer)
+    if resolved_limits.parse_timeout_ms is not None:
+        deadline = time.monotonic() + (resolved_limits.parse_timeout_ms / 1_000)
+
+        def _build_token_stream(inner_lexer):
+            return _DeadlineTokenStream(
+                inner_lexer,
+                deadline=deadline,
+                source_file=source_file,
+            )
+
+        stream_builder = _build_token_stream
+    else:
+        stream_builder = token_stream_cls
+
+    stream = stream_builder(lexer)
 
     parser = parser_cls(stream)
     parser.removeErrorListeners()
     parser.addErrorListener(error_listener)
-    tree = parser.program()
+    try:
+        tree = parser.program()
+    except FrontendLimitExceeded as exc:
+        diagnostic = _remap_diagnostic(
+            exc.diagnostic,
+            source_map,
+            source_file,
+        )
+        raise LockstepCompileError(
+            [diagnostic],
+            diagnostics=[diagnostic],
+            phase="parse",
+            source_file=diagnostic.source_file,
+        ) from exc
+
+    _enforce_expression_nesting_limit(
+        tree,
+        source_file=source_file,
+        limits=resolved_limits,
+    )
 
     if error_listener.errors:
         parse_errors = _remap_diagnostics(
@@ -370,6 +587,7 @@ def compile_lockstep(
     semantic_validator=None,
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
+    frontend_limits: FrontendLimits | None = None,
 ) -> LockstepCompileResult:
     resolved_library_sources: list[str] = list(library_sources or [])
     resolved_library_source_files: list[str] = list(library_source_files or [])
@@ -407,6 +625,7 @@ def compile_lockstep(
         semantic_validator=semantic_validator,
         token_stream_cls=token_stream_cls,
         debug_visitor_cls=debug_visitor_cls,
+        frontend_limits=frontend_limits,
     )
 
 

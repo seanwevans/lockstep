@@ -87,6 +87,24 @@ def build_arg_parser():
         "--simulate-input",
         help="Path to a JSON file containing simulation inputs with `streams` and optional `accumulators` maps.",
     )
+    parser.add_argument(
+        "--max-source-bytes",
+        type=int,
+        default=None,
+        help="Maximum UTF-8 source bytes accepted by parser (0 disables limit).",
+    )
+    parser.add_argument(
+        "--parse-timeout-ms",
+        type=int,
+        default=None,
+        help="Maximum parser runtime in milliseconds (0 disables limit).",
+    )
+    parser.add_argument(
+        "--max-expr-nesting",
+        type=int,
+        default=None,
+        help="Maximum allowed expression nesting depth (0 disables limit).",
+    )
     return parser
 
 
@@ -170,6 +188,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     supports_library_sources = False
     supports_source_file = False
     supports_library_source_files = False
+    supports_frontend_limits = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -196,6 +215,11 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             or parameter.name == "library_source_files"
             for parameter in signature.parameters.values()
         )
+        supports_frontend_limits = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "frontend_limits"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs = {}
     if supports_verbose:
@@ -206,6 +230,14 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         compile_kwargs["source_file"] = str(source_path) if args.path else "<stdin>"
     if supports_library_source_files:
         compile_kwargs["library_source_files"] = library_source_files
+    if supports_frontend_limits:
+        from .compiler import FrontendLimits
+
+        compile_kwargs["frontend_limits"] = FrontendLimits(
+            max_source_bytes=args.max_source_bytes,
+            parse_timeout_ms=args.parse_timeout_ms,
+            max_expression_nesting=args.max_expr_nesting,
+        )
 
     try:
         if compile_kwargs:
