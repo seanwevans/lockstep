@@ -73,6 +73,49 @@ pipeline Simulation {
 
 ```
 
+### Type System (User-Facing Rules)
+
+Lockstep's semantic validator enforces a strict type system with **no implicit coercions**.
+
+#### Primitive types
+
+The currently supported primitive declared types are:
+
+* `int`
+* `float`
+* `bool`
+* `string`
+
+> `uint` and `double` are **not currently supported as declared types** in source-level type annotations (for locals, params, uniforms, struct fields, etc.). Using unknown declared types produces `LCK310`.
+
+#### Composite/struct type composition
+
+Struct members may use:
+
+* primitives,
+* previously declared struct names,
+* array suffixes (`T[4]`), and
+* generic wrappers (`Ctor<T>` / `Ctor<T,4>`), including nested forms.
+
+Examples:
+
+* `Particle[4]`
+* `vector<float,4>`
+* `matrix<vector<Particle,4>,4>`
+
+Type identity is name-based and exact. Field access chains (`a.b.c`) are valid only when each link resolves to a struct type and an existing field.
+
+#### Type matching and coercion policy
+
+Type checking is strict and explicit:
+
+* No implicit widening or narrowing.
+* No implicit `int`⇄`float` promotion.
+* Assignment, variable initialization, pure-function arguments, pure-function returns, and bind argument/target checks all require exact type equality.
+* Mixed numeric operators (`int` with `float`) without an explicit cast are rejected with `LCK424` (`implicit_numeric_widening`).
+
+When conversion is desired, use an explicit cast.
+
 ---
 
 ## 4. Compiler & Backend
@@ -167,8 +210,10 @@ Each diagnostic includes:
   * `LCK415` (`warning`) is emitted for statements that appear after the first `return` in a `pure` function body.
   * `LCK418` (`error`) is emitted when a pure `return` expression type does not match the declared return type.
 * **Type-check mismatches** each have distinct diagnostic codes:
+  * `LCK412` (`error`) is emitted for pure-function argument type mismatches.
   * `LCK416` (`error`) is emitted for variable initializer type mismatches in `visitVarDecl`.
   * `LCK417` (`error`) is emitted for assignment type mismatches in `visitAssignStmt`.
+  * `LCK424` (`error`) is emitted when arithmetic mixes `int` and `float` operands without an explicit cast.
 * **Fatal parse errors** still raise `LockstepCompileError`.
   * `LockstepCompileError.errors` contains parse diagnostics.
   * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.
