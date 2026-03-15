@@ -24,6 +24,11 @@ lockstep-lsp = "lockstep_compiler.lsp:run_lsp_server"
 addopts = "-q -ra --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml"
 testpaths = ["tests"]
 
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+include = "\\.pyi?$"
+
 [tool.coverage.run]
 branch = true
 source = ["."]
