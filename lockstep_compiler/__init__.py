@@ -1,6 +1,11 @@
 from .c_header import emit_c_header
 from .cli import build_arg_parser, run_cli
-from .compiler import compile_lockstep, load_default_parser_classes, validate_semantics
+from .compiler import (
+    ParserResourceLimits,
+    compile_lockstep,
+    load_default_parser_classes,
+    validate_semantics,
+)
 from .errors import LockstepCompileError, ParseErrorCollector
 from .formatter import format_lockstep_source
 from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
@@ -17,6 +22,7 @@ __all__ = [
     "build_debug_visitor",
     "build_semantic_validator",
     "compile_lockstep",
+    "ParserResourceLimits",
     "format_lockstep_source",
     "load_default_parser_classes",
     "normalize_diagnostics",

@@ -5,6 +5,7 @@ import sys
 import traceback
 from pathlib import Path
 
+from .compiler import ParserResourceLimits
 from .errors import LockstepCompileError
 from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
@@ -86,6 +87,24 @@ def build_arg_parser():
     parser.add_argument(
         "--simulate-input",
         help="Path to a JSON file containing simulation inputs with `streams` and optional `accumulators` maps.",
+    )
+    parser.add_argument(
+        "--max-file-size-bytes",
+        type=int,
+        default=1024 * 1024,
+        help="Maximum accepted source size in bytes before parsing (default: 1048576). Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--max-expression-nesting-depth",
+        type=int,
+        default=256,
+        help="Maximum allowed expression nesting depth in typed AST (default: 256). Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--parse-timeout-seconds",
+        type=float,
+        default=2.0,
+        help="Maximum parser runtime in seconds (default: 2.0). Use 0 to disable.",
     )
     return parser
 
@@ -170,6 +189,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     supports_library_sources = False
     supports_source_file = False
     supports_library_source_files = False
+    supports_parser_limits = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -196,6 +216,11 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             or parameter.name == "library_source_files"
             for parameter in signature.parameters.values()
         )
+        supports_parser_limits = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "parser_limits"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs = {}
     if supports_verbose:
@@ -206,6 +231,20 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         compile_kwargs["source_file"] = str(source_path) if args.path else "<stdin>"
     if supports_library_source_files:
         compile_kwargs["library_source_files"] = library_source_files
+    if supports_parser_limits:
+        compile_kwargs["parser_limits"] = ParserResourceLimits(
+            max_file_size_bytes=(
+                None if args.max_file_size_bytes == 0 else args.max_file_size_bytes
+            ),
+            max_expression_nesting_depth=(
+                None
+                if args.max_expression_nesting_depth == 0
+                else args.max_expression_nesting_depth
+            ),
+            parse_timeout_seconds=(
+                None if args.parse_timeout_seconds == 0 else args.parse_timeout_seconds
+            ),
+        )
 
     try:
         if compile_kwargs:

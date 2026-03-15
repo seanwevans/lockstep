@@ -1,4 +1,7 @@
 import functools
+import signal
+from contextlib import contextmanager
+from dataclasses import dataclass
 from dataclasses import replace
 from typing import Any
 
@@ -22,6 +25,117 @@ from .visitors import build_debug_visitor, validate_semantics as _validate_seman
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
+
+
+@dataclass(frozen=True)
+class ParserResourceLimits:
+    """Configurable limits for parser resource consumption."""
+
+    max_file_size_bytes: int | None = 1024 * 1024
+    max_expression_nesting_depth: int | None = 256
+    parse_timeout_seconds: float | None = 2.0
+
+
+class ParserLimitError(RuntimeError):
+    pass
+
+
+def _parser_limit_diagnostic(
+    *,
+    code: str,
+    message: str,
+    source_file: str,
+    hint: str,
+) -> LockstepDiagnostic:
+    return LockstepDiagnostic(
+        severity="error",
+        code=code,
+        message=message,
+        line=1,
+        column=0,
+        source_file=source_file,
+        hint=hint,
+    )
+
+
+def _validate_parser_limits(limits: ParserResourceLimits):
+    if (
+        limits.max_file_size_bytes is not None
+        and limits.max_file_size_bytes <= 0
+    ):
+        raise ValueError("max_file_size_bytes must be positive when provided.")
+    if (
+        limits.max_expression_nesting_depth is not None
+        and limits.max_expression_nesting_depth <= 0
+    ):
+        raise ValueError(
+            "max_expression_nesting_depth must be positive when provided."
+        )
+    if limits.parse_timeout_seconds is not None and limits.parse_timeout_seconds <= 0:
+        raise ValueError("parse_timeout_seconds must be positive when provided.")
+
+
+@contextmanager
+def _parse_timeout(timeout_seconds: float | None):
+    if timeout_seconds is None:
+        yield
+        return
+    if not hasattr(signal, "setitimer"):
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise ParserLimitError(f"Parse timeout exceeded ({timeout_seconds:.3f}s).")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _expr_nesting_depth(expr: Any) -> int:
+    from .ast import AstExprBinary, AstExprCall, AstExprCast, AstExprUnary
+
+    if isinstance(expr, AstExprBinary):
+        return 1 + max(_expr_nesting_depth(expr.left), _expr_nesting_depth(expr.right))
+    if isinstance(expr, AstExprUnary):
+        return 1 + _expr_nesting_depth(expr.operand)
+    if isinstance(expr, AstExprCall):
+        if not expr.args:
+            return 1
+        return 1 + max(_expr_nesting_depth(arg) for arg in expr.args)
+    if isinstance(expr, AstExprCast):
+        return 1 + _expr_nesting_depth(expr.value)
+    return 1
+
+
+def _statement_expr_depth(stmt: Any) -> int:
+    from .ast import AstAssignStmt, AstReturnStmt, AstVarDeclStmt
+
+    if isinstance(stmt, AstAssignStmt):
+        return _expr_nesting_depth(stmt.value)
+    if isinstance(stmt, AstReturnStmt):
+        return _expr_nesting_depth(stmt.value)
+    if isinstance(stmt, AstVarDeclStmt) and stmt.initializer is not None:
+        return _expr_nesting_depth(stmt.initializer)
+    return 0
+
+
+def _typed_ast_max_expr_nesting(typed_ast: Any) -> int:
+    if typed_ast is None:
+        return 0
+    max_depth = 0
+    for pure_decl in getattr(typed_ast, "pure_functions", ()):
+        for stmt in pure_decl.body:
+            max_depth = max(max_depth, _statement_expr_depth(stmt))
+    for kernel_decl in (*getattr(typed_ast, "shaders", ()), *getattr(typed_ast, "filters", ())):
+        for stmt in kernel_decl.body:
+            max_depth = max(max_depth, _statement_expr_depth(stmt))
+    return max_depth
 
 
 def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> PureFunctionEntity:
@@ -150,8 +264,28 @@ def _compile_lockstep_with_dependencies(
     semantic_validator=None,
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
+    parser_limits: ParserResourceLimits | None = None,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
+    parser_limits = parser_limits or ParserResourceLimits()
+    _validate_parser_limits(parser_limits)
+
+    max_file_size_bytes = parser_limits.max_file_size_bytes
+    if max_file_size_bytes is not None and len(source_code.encode("utf-8")) > max_file_size_bytes:
+        file_size_diagnostic = _parser_limit_diagnostic(
+            code="LCK002",
+            message=(
+                "Source file exceeds parser file size limit "
+                f"({max_file_size_bytes} bytes)."
+            ),
+            source_file=source_file,
+            hint="Increase --max-file-size-bytes or reduce input size.",
+        )
+        raise LockstepCompileError(
+            [file_size_diagnostic],
+            diagnostics=[file_size_diagnostic],
+            source_file=source_file,
+        )
 
     input_stream = InputStream(source_code)
     lexer = lexer_cls(input_stream)
@@ -163,7 +297,21 @@ def _compile_lockstep_with_dependencies(
     parser = parser_cls(stream)
     parser.removeErrorListeners()
     parser.addErrorListener(error_listener)
-    tree = parser.program()
+    try:
+        with _parse_timeout(parser_limits.parse_timeout_seconds):
+            tree = parser.program()
+    except ParserLimitError as error:
+        timeout_diagnostic = _parser_limit_diagnostic(
+            code="LCK004",
+            message=str(error),
+            source_file=source_file,
+            hint="Increase --parse-timeout-seconds or simplify pathological input.",
+        )
+        raise LockstepCompileError(
+            [timeout_diagnostic],
+            diagnostics=[timeout_diagnostic],
+            source_file=source_file,
+        ) from error
 
     if error_listener.errors:
         parse_errors = _remap_diagnostics(
@@ -184,6 +332,27 @@ def _compile_lockstep_with_dependencies(
         except TypeError:
             # Keep the legacy parse-tree visitor flow for parser stubs used by unit tests.
             typed_ast = None
+
+    if (
+        parser_limits.max_expression_nesting_depth is not None
+        and typed_ast is not None
+    ):
+        max_depth = _typed_ast_max_expr_nesting(typed_ast)
+        if max_depth > parser_limits.max_expression_nesting_depth:
+            depth_diagnostic = _parser_limit_diagnostic(
+                code="LCK003",
+                message=(
+                    "Expression nesting depth exceeds parser limit "
+                    f"({max_depth} > {parser_limits.max_expression_nesting_depth})."
+                ),
+                source_file=source_file,
+                hint="Increase --max-expression-nesting-depth or simplify nested expressions.",
+            )
+            raise LockstepCompileError(
+                [depth_diagnostic],
+                diagnostics=[depth_diagnostic],
+                source_file=source_file,
+            )
 
     semantic_validator = semantic_validator or (
         lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
@@ -317,6 +486,7 @@ def compile_lockstep(
     semantic_validator=None,
     token_stream_cls=CommonTokenStream,
     debug_visitor_cls=None,
+    parser_limits: ParserResourceLimits | None = None,
 ) -> LockstepCompileResult:
     source_code, source_map = _build_combined_source(
         source_code,
@@ -344,6 +514,7 @@ def compile_lockstep(
         semantic_validator=semantic_validator,
         token_stream_cls=token_stream_cls,
         debug_visitor_cls=debug_visitor_cls,
+        parser_limits=parser_limits,
     )
 
 

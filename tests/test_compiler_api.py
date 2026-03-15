@@ -1041,3 +1041,176 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                 "bind_routes": [],
             }
         )
+
+
+def test_compile_lockstep_rejects_inputs_over_file_size_limit(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    with pytest.raises(compiler_module.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { }",
+            verbose=False,
+            semantic_validator=lambda _tree: [],
+            token_stream_cls=lambda lexer: object(),
+            parser_limits=compiler_module.ParserResourceLimits(max_file_size_bytes=1),
+        )
+
+    assert exc_info.value.errors[0].code == "LCK002"
+
+
+def test_compile_lockstep_rejects_excess_expression_nesting(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    expr = AstExprBinary(
+        op="+",
+        left=AstExprLiteral(kind="int", value="1"),
+        right=AstExprBinary(
+            op="+",
+            left=AstExprLiteral(kind="int", value="2"),
+            right=AstExprLiteral(kind="int", value="3"),
+        ),
+    )
+    # build_program_ast is complex for stubs; provide a lightweight substitute.
+    monkeypatch.setattr(
+        compiler_module,
+        "build_program_ast",
+        lambda *_args, **_kwargs: type(
+            "Program",
+            (),
+            {
+                "pure_functions": (
+                    type("Pure", (), {"body": (AstReturnStmt(value=expr),)})(),
+                ),
+                "shaders": (),
+                "filters": (),
+                "pipelines": (),
+            },
+        )(),
+    )
+
+    with pytest.raises(compiler_module.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { }",
+            verbose=False,
+            semantic_validator=lambda _tree, **_kwargs: [],
+            token_stream_cls=lambda lexer: object(),
+            parser_limits=compiler_module.ParserResourceLimits(
+                max_expression_nesting_depth=2,
+            ),
+        )
+
+    assert exc_info.value.errors[0].code == "LCK003"
+
+
+def test_compile_lockstep_rejects_parse_timeout(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        pass
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    class _ExplodingContext:
+        def __enter__(self):
+            raise compiler_module.ParserLimitError("Parse timeout exceeded (0.001s).")
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(compiler_module, "_parse_timeout", lambda _seconds: _ExplodingContext())
+
+    with pytest.raises(compiler_module.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(
+            "pipeline P { }",
+            verbose=False,
+            semantic_validator=lambda _tree: [],
+            token_stream_cls=lambda lexer: object(),
+            parser_limits=compiler_module.ParserResourceLimits(parse_timeout_seconds=0.001),
+        )
+
+    assert exc_info.value.errors[0].code == "LCK004"

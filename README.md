@@ -156,6 +156,8 @@ lockstepc path/to/program.lock --format
 lockstepc path/to/program.lock --emit-ir
 # emit C host header
 lockstepc path/to/program.lock --emit-header
+# parser resource limits (DoS hardening)
+lockstepc path/to/program.lock --max-file-size-bytes 1048576 --max-expression-nesting-depth 256 --parse-timeout-seconds 2.0
 # print compiler version
 lockstepc --version
 ```
