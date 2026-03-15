@@ -1,6 +1,10 @@
 import json
+import ctypes
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
+
+from llvmlite import binding, ir
 
 from .compiler import compile_lockstep
 
@@ -19,14 +23,98 @@ def _fold_values(operator: str, values: list[Any]) -> Any:
     if not numeric:
         return None
     if operator == "sum":
-        return sum(numeric)
+        return _jit_numeric_reduce("sum", numeric)
     if operator == "avg":
-        return sum(numeric) / len(numeric)
+        return _jit_numeric_reduce("avg", numeric)
     if operator == "min":
         return min(numeric)
     if operator == "max":
         return max(numeric)
     return None
+
+
+@lru_cache(maxsize=1)
+def _get_execution_engine() -> Any:
+    binding.initialize()
+    binding.initialize_native_target()
+    binding.initialize_native_asmprinter()
+    target = binding.Target.from_default_triple()
+    target_machine = target.create_target_machine()
+    backing_module = binding.parse_assembly("")
+    return binding.create_mcjit_compiler(backing_module, target_machine)
+
+
+@lru_cache(maxsize=1)
+def _jit_reduce_callable() -> Any:
+    module = ir.Module(name="lockstep_simulator_fold")
+    float_ty = ir.DoubleType()
+    int_ty = ir.IntType(32)
+    ptr_ty = float_ty.as_pointer()
+    fn_ty = ir.FunctionType(float_ty, [ptr_ty, int_ty])
+    function = ir.Function(module, fn_ty, name="lockstep_fold_sum")
+    data_arg, count_arg = function.args
+    data_arg.name = "data"
+    count_arg.name = "count"
+
+    entry = function.append_basic_block("entry")
+    loop_cond = function.append_basic_block("loop_cond")
+    loop_body = function.append_basic_block("loop_body")
+    loop_exit = function.append_basic_block("loop_exit")
+
+    builder = ir.IRBuilder(entry)
+    builder.branch(loop_cond)
+
+    builder.position_at_end(loop_cond)
+    idx_phi = builder.phi(int_ty, name="idx")
+    acc_phi = builder.phi(float_ty, name="acc")
+    idx_phi.add_incoming(ir.Constant(int_ty, 0), entry)
+    acc_phi.add_incoming(ir.Constant(float_ty, 0.0), entry)
+    should_continue = builder.icmp_signed("<", idx_phi, count_arg, name="cont")
+    builder.cbranch(should_continue, loop_body, loop_exit)
+
+    builder.position_at_end(loop_body)
+    row_ptr = builder.gep(data_arg, [idx_phi], inbounds=True, name="row_ptr")
+    row_value = builder.load(row_ptr, name="row")
+    next_acc = builder.fadd(acc_phi, row_value, name="next_acc")
+    next_acc.fastmath.add("fast")
+    next_idx = builder.add(idx_phi, ir.Constant(int_ty, 1), name="next_idx")
+    builder.branch(loop_cond)
+
+    idx_phi.add_incoming(next_idx, loop_body)
+    acc_phi.add_incoming(next_acc, loop_body)
+
+    builder.position_at_end(loop_exit)
+    builder.ret(acc_phi)
+
+    llvm_module = binding.parse_assembly(str(module))
+    llvm_module.verify()
+    engine = _get_execution_engine()
+    engine.add_module(llvm_module)
+    engine.finalize_object()
+    address = engine.get_function_address("lockstep_fold_sum")
+    if address == 0:
+        raise RuntimeError("failed to JIT compile lockstep_fold_sum")
+    return ctypes.CFUNCTYPE(ctypes.c_double, ctypes.POINTER(ctypes.c_double), ctypes.c_int32)(address)
+
+
+def _jit_numeric_reduce(operator: str, values: list[Any]) -> Any:
+    numeric_values = [float(value) for value in values]
+    if not numeric_values:
+        return None
+
+    try:
+        reduce_fn = _jit_reduce_callable()
+        raw_values = (ctypes.c_double * len(numeric_values))(*numeric_values)
+        reduced = float(reduce_fn(raw_values, len(numeric_values)))
+    except Exception:
+        reduced = float(sum(numeric_values))
+
+    if operator == "avg":
+        reduced /= len(numeric_values)
+
+    if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+        return int(reduced)
+    return reduced
 
 
 def _route_text(route_ir: dict[str, Any]) -> str:

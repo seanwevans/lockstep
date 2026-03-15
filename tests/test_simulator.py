@@ -266,3 +266,84 @@ def test_run_cli_simulate_reports_invalid_simulation_shape(tmp_path):
     assert exit_code == 1
     assert "Invalid simulation input:" in stderr.getvalue()
     assert "streams.s" in stderr.getvalue()
+
+
+def test_fold_values_uses_jit_reduce_for_sum_and_avg(monkeypatch):
+    calls = []
+
+    def fake_reduce(operator, values):
+        calls.append((operator, list(values)))
+        return 42.5 if operator == "sum" else 10.625
+
+    monkeypatch.setattr("lockstep_compiler.simulator._jit_numeric_reduce", fake_reduce)
+
+    entities = {
+        "streams": [],
+        "accumulators": [{"name": "energy", "type": "float"}],
+        "uniforms": [
+            {"name": "total", "type": "float", "initializer": "0"},
+            {"name": "average", "type": "float", "initializer": "0"},
+        ],
+        "shaders": [],
+        "filters": [],
+        "bind_routes": [
+            "uniform float total = fold sum(energy);",
+            "uniform float average = fold avg(energy);",
+        ],
+        "bind_routes_ir": [
+            {
+                "kind": "fold",
+                "uniform_type": "float",
+                "uniform_name": "total",
+                "operator": "sum",
+                "source": "energy",
+                "route": "uniform float total = fold sum(energy);",
+            },
+            {
+                "kind": "fold",
+                "uniform_type": "float",
+                "uniform_name": "average",
+                "operator": "avg",
+                "source": "energy",
+                "route": "uniform float average = fold avg(energy);",
+            },
+        ],
+    }
+
+    simulation = simulate_pipeline_entities(
+        entities,
+        accumulator_inputs={"energy": [1.0, 2.0, 3.0, 4.0]},
+    )
+
+    assert simulation["uniforms"]["total"] == 42.5
+    assert simulation["uniforms"]["average"] == 10.625
+    assert calls == [
+        ("sum", [1.0, 2.0, 3.0, 4.0]),
+        ("avg", [1.0, 2.0, 3.0, 4.0]),
+    ]
+
+
+def test_jit_numeric_reduce_falls_back_to_python_sum_on_error(monkeypatch):
+    monkeypatch.setattr("lockstep_compiler.simulator._jit_reduce_callable", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert simulate_pipeline_entities(
+        {
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float", "initializer": "0"}],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        },
+        accumulator_inputs={"energy": [1.25, 2.75]},
+    )["uniforms"]["total"] == 4.0
