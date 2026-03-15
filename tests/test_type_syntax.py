@@ -52,3 +52,17 @@ pipeline Stage {
     assert exc_info.value.phase == "semantic"
     assert [diag.code for diag in exc_info.value.errors] == ["LCK310"]
     assert "Unknown declared type 'MissingType' in 'vector<MissingType,4>'" in exc_info.value.errors[0].message
+
+
+def test_include_declaration_parses_with_library_aware_syntax():
+    source = """
+import "math.lock";
+
+pipeline Stage {
+    bind { }
+}
+"""
+
+    result = compile_lockstep(source, verbose=False)
+
+    assert all(diag.severity != "error" for diag in result.diagnostics)

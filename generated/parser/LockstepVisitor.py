@@ -19,6 +19,11 @@ class LockstepVisitor(ParseTreeVisitor):
         return self.visitChildren(ctx)
 
 
+    # Visit a parse tree produced by LockstepParser#includeDecl.
+    def visitIncludeDecl(self, ctx:LockstepParser.IncludeDeclContext):
+        return self.visitChildren(ctx)
+
+
     # Visit a parse tree produced by LockstepParser#structDecl.
     def visitStructDecl(self, ctx:LockstepParser.StructDeclContext):
         return self.visitChildren(ctx)

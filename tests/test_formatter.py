@@ -35,3 +35,14 @@ def test_format_lockstep_source_uses_lexer_tokens_for_nested_expressions():
         "    return next;\n"
         "}\n"
     )
+
+
+def test_format_lockstep_source_formats_include_and_string_literals():
+    source = 'import "math.lock";pure string label(){return "ok";}'
+
+    assert format_lockstep_source(source) == (
+        'import "math.lock";\n'
+        'pure string label() {\n'
+        '    return "ok";\n'
+        '}\n'
+    )

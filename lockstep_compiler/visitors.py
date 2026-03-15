@@ -366,7 +366,7 @@ def build_semantic_validator(base_visitor_cls):
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
-            self._primitive_types = {"int", "float", "bool"}
+            self._primitive_types = {"int", "float", "bool", "string"}
             self._current_pure_function: dict[str, str] | None = None
             self._pipeline_resource_stack: list[dict[str, tuple[str, Any]]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
@@ -1219,6 +1219,8 @@ def build_semantic_validator(base_visitor_cls):
                 return "float"
             if hasattr(ctx, "BOOL") and callable(ctx.BOOL) and ctx.BOOL() is not None:
                 return "bool"
+            if hasattr(ctx, "STRING") and callable(ctx.STRING) and ctx.STRING() is not None:
+                return "string"
 
             if hasattr(ctx, "lvalue") and callable(ctx.lvalue) and ctx.lvalue() is not None:
                 return self._resolve_lvalue_type(ctx.lvalue())

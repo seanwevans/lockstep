@@ -39,6 +39,12 @@ Lockstep uses a **Host-Owned Static Arena**. The compiler calculates the exact b
 
 Since `if/else` is banned, conditional logic is performed using branchless intrinsics like `step`, `mix`, `clamp`, `min`, `max`, `abs`, `sign`, and `smoothstep`.
 
+Lockstep source now also supports:
+
+* string literals (for example `"asset://sim/default"`) and `string` type annotations.
+* preserved line comments (`// ...`) in the lexer token stream (hidden channel) so tools can retain comments.
+* explicit dependency declarations using `import "path.lock";` or `#include "path.lock";` at top level.
+
 ```c
 shader ApplyPhysics(in Entity ent, out Entity updated, uniform float dt) {
     // Standard math

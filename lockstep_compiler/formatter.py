@@ -122,6 +122,9 @@ class _FormattingVisitor(LockstepVisitor):
     def visitDeclaration(self, ctx: LockstepParser.DeclarationContext):
         return self.visitChildren(ctx)
 
+    def visitIncludeDecl(self, ctx: LockstepParser.IncludeDeclContext):
+        self._append(f"{ctx.getChild(0).getText()} {ctx.STRING().getText()};")
+
     def visitStructDecl(self, ctx: LockstepParser.StructDeclContext):
         self._open_block(f"struct {ctx.ID().getText()}")
         for member in ctx.structMember():
