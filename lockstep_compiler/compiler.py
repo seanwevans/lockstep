@@ -6,7 +6,7 @@ from antlr4 import CommonTokenStream, InputStream
 
 from .ast import ast_to_entities, build_program_ast
 from .c_header import emit_c_header
-from .codegen import emit_llvm_ir
+from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import LockstepCompileResult, LockstepDiagnostic, normalize_diagnostics
 from .optimizer import optimize_bind_routes
@@ -199,11 +199,30 @@ def _compile_lockstep_with_dependencies(
         "fused_bind_groups": bind_optimization["fused_groups"],
     }
 
+    try:
+        llvm_ir = emit_llvm_ir(typed_ast or entities)
+    except CodegenError as error:
+        codegen_diagnostic = LockstepDiagnostic(
+            severity="error",
+            code="LCK501",
+            message=str(error),
+            line=1,
+            column=0,
+            source_file=source_file,
+            hint="Fix semantic inconsistencies that prevent LLVM IR emission.",
+        )
+        raise LockstepCompileError(
+            [codegen_diagnostic],
+            diagnostics=normalize_diagnostics([*all_diagnostics, codegen_diagnostic]),
+            phase="codegen",
+            source_file=source_file,
+        ) from error
+
     return LockstepCompileResult(
         parse_tree=tree,
         entities=entities,
         ast=typed_ast,
-        llvm_ir=emit_llvm_ir(typed_ast or entities),
+        llvm_ir=llvm_ir,
         c_header=emit_c_header(typed_ast or entities),
         diagnostics=all_diagnostics,
     )
