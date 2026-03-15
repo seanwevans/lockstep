@@ -43,6 +43,43 @@ class SemanticStructField:
     declared_type: str
 
 
+@dataclass(frozen=True)
+class SemanticPureFunctionSignature:
+    return_type: str
+    params: tuple[SemanticKernelParam, ...]
+    intrinsic: bool = False
+
+
+@dataclass(frozen=True)
+class IntrinsicParam:
+    type_name: str
+    name: str
+
+
+@dataclass(frozen=True)
+class IntrinsicSignature:
+    name: str
+    return_type: str
+    params: tuple[IntrinsicParam, ...]
+
+
+@dataclass(frozen=True)
+class ParsedTypeArraySuffix:
+    size: int
+
+
+@dataclass(frozen=True)
+class ParsedTypeName:
+    base: str
+    inner: tuple["ParsedTypeArraySuffix | ParsedTypeGenericSuffix", ...] = ()
+
+
+@dataclass(frozen=True)
+class ParsedTypeGenericSuffix:
+    type_name: ParsedTypeName
+    arity: int | None = None
+
+
 _SEVERITY_PRIORITY = {"error": 0, "warning": 1, "info": 2}
 
 

@@ -24,29 +24,29 @@ from lockstep_compiler.prelude import load_intrinsics
 def test_prelude_declares_min():
     intrinsics = load_intrinsics()
     assert "min" in intrinsics
-    assert intrinsics["min"]["return_type"] == "float"
-    assert len(intrinsics["min"]["params"]) == 2
+    assert intrinsics["min"].return_type == "float"
+    assert len(intrinsics["min"].params) == 2
 
 
 def test_prelude_declares_abs():
     intrinsics = load_intrinsics()
     assert "abs" in intrinsics
-    assert intrinsics["abs"]["return_type"] == "float"
-    assert len(intrinsics["abs"]["params"]) == 1
+    assert intrinsics["abs"].return_type == "float"
+    assert len(intrinsics["abs"].params) == 1
 
 
 def test_prelude_declares_sign():
     intrinsics = load_intrinsics()
     assert "sign" in intrinsics
-    assert intrinsics["sign"]["return_type"] == "float"
-    assert len(intrinsics["sign"]["params"]) == 1
+    assert intrinsics["sign"].return_type == "float"
+    assert len(intrinsics["sign"].params) == 1
 
 
 def test_prelude_declares_smoothstep():
     intrinsics = load_intrinsics()
     assert "smoothstep" in intrinsics
-    assert intrinsics["smoothstep"]["return_type"] == "float"
-    assert len(intrinsics["smoothstep"]["params"]) == 3
+    assert intrinsics["smoothstep"].return_type == "float"
+    assert len(intrinsics["smoothstep"].params) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,19 @@ def test_prelude_declares_smoothstep():
 def _intrinsic_defs():
     """Return intrinsic pure function declarations needed by codegen."""
     intrinsics = load_intrinsics()
-    return [decl for decl in intrinsics.values()]
+    return [
+        {
+            "name": decl.name,
+            "return_type": decl.return_type,
+            "params": [
+                {"type": param.type_name, "name": param.name}
+                for param in decl.params
+            ],
+            "body": [],
+            "intrinsic": True,
+        }
+        for decl in intrinsics.values()
+    ]
 
 
 _CODEGEN_ENTITIES_BASE = {
