@@ -52,3 +52,22 @@ pipeline Stage {
     assert exc_info.value.phase == "semantic"
     assert [diag.code for diag in exc_info.value.errors] == ["LCK310"]
     assert "Unknown declared type 'MissingType' in 'vector<MissingType,4>'" in exc_info.value.errors[0].message
+
+
+def test_local_var_declaration_requires_explicit_type_annotation():
+    source = """
+shader Stage() {
+    localValue;
+}
+
+pipeline Main {
+    bind { }
+}
+"""
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(source, verbose=False)
+
+    assert exc_info.value.phase == "parse"
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK001"]
+    assert "no viable alternative" in exc_info.value.errors[0].message
