@@ -551,7 +551,8 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     bind_routes = entities.get("bind_routes", [])
     bind_routes_ir = entities.get("bind_routes_ir", [])
 
-    module = ir.Module(name="lockstep")
+    context = ir.Context()
+    module = ir.Module(name="lockstep", context=context)
     module.source_filename = "lockstep"
     known_structs: dict[str, ir.IdentifiedStructType] = {}
     struct_fields: dict[str, list[dict[str, str]]] = {}
@@ -718,47 +719,20 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         }
     )
 
-    tick_arg_specs: list[tuple[str, str, ir.Type, bool]] = []
-    for stream in streams:
-        tick_arg_specs.append(
-            (
-                "stream",
-                stream["name"],
-                lowerer._llvm_type(stream["type"], known_structs),
-                True,
-            )
-        )
-    for accum in accumulators:
-        tick_arg_specs.append(
-            (
-                "accum",
-                accum["name"],
-                lowerer._llvm_type(accum["type"], known_structs),
-                True,
-            )
-        )
-    for uniform in uniforms:
-        tick_arg_specs.append(
-            (
-                "uniform",
-                uniform["name"],
-                lowerer._llvm_type(uniform["type"], known_structs),
-                False,
-            )
-        )
+    arena_slots: dict[tuple[str, str], int] = {
+        (kind, name): index for index, (kind, name, _) in enumerate(arena_fields)
+    }
+    arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
+    if arena_struct_ty.is_opaque and arena_fields:
+        arena_struct_ty.set_body(*[field_type for _, _, field_type in arena_fields])
 
-    tick_param_types = [
-        field_type.as_pointer() for _, _, field_type, _ in tick_arg_specs
-    ]
     tick = ir.Function(
-        module, ir.FunctionType(ir.VoidType(), tick_param_types), name="Lockstep_Tick"
+        module,
+        ir.FunctionType(ir.VoidType(), [arena_struct_ty.as_pointer()]),
+        name="Lockstep_Tick",
     )
-    tick_param_ptrs: dict[tuple[str, str], ir.Argument] = {}
-    for arg, (kind, name, _, apply_noalias) in zip(tick.args, tick_arg_specs):
-        arg.name = f"{kind}_{_sanitize_symbol(name)}"
-        if apply_noalias:
-            arg.add_attribute("noalias")
-        tick_param_ptrs[(kind, name)] = arg
+    arena_ptr = tick.args[0]
+    arena_ptr.name = "arena"
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
@@ -770,21 +744,26 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         return ir.Constant(llvm_type, None)
 
     def _load_tick_param(kind: str, name: str, field_type: ir.Type) -> ir.Value:
-        ptr = tick_param_ptrs.get((kind, name))
-        if ptr is None:
+        field_index = arena_slots.get((kind, name))
+        if field_index is None:
             return _zero_value(field_type)
-        return tick_builder.load(ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
+        field_ptr = tick_builder.gep(
+            arena_ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
+            name=f"{kind}_{_sanitize_symbol(name)}_ptr",
+        )
+        return tick_builder.load(field_ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
 
     def _store_arena_slot(field_index: int, value: ir.Value):
         if field_index < 0 or field_index >= len(arena_fields):
             return
         kind, name, _ = arena_fields[field_index]
-        ptr = tick_param_ptrs.get((kind, name))
-        if ptr is None:
-            return
-        slot_ptr = tick_builder.alloca(value.type, name=f"arena_slot_{field_index}")
-        tick_builder.store(value, slot_ptr)
-        tick_builder.store(tick_builder.load(slot_ptr), ptr)
+        field_ptr = tick_builder.gep(
+            arena_ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
+            name=f"{kind}_{_sanitize_symbol(name)}_ptr",
+        )
+        tick_builder.store(value, field_ptr)
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)

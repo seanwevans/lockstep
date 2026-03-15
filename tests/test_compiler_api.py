@@ -109,7 +109,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert 'define void @"Lockstep_Tick"()' in result.llvm_ir
+    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in result.llvm_ir
 
 
 def test_compile_lockstep_falls_back_to_legacy_flow_on_typed_ast_type_error(
@@ -343,7 +343,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define void @"filter_Cull"()' in llvm_ir
     assert (
-        'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
         in llvm_ir
     )
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
@@ -731,7 +731,8 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
+    assert 'store float %"fold_reduce", float* %"uniform_total_ptr"' in llvm_ir
 
 
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
