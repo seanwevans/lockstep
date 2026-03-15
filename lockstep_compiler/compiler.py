@@ -4,71 +4,51 @@ from typing import Any
 
 from antlr4 import CommonTokenStream, InputStream
 
-from .ast import ast_to_entities, build_program_ast
+from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, ast_to_entities, build_program_ast
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
 from .models import (
-    IntrinsicSignature,
     LockstepCompileResult,
     LockstepDiagnostic,
-    PureFunctionEntity,
-    PureFunctionParamEntity,
     normalize_diagnostics,
 )
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
-from .visitors import build_debug_visitor, validate_semantics as _validate_semantics
+from .visitors import validate_semantics as _validate_semantics
 
 
 DEFAULT_SOURCE_FILE = "<stdin>"
 
 
-def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> PureFunctionEntity:
-    return PureFunctionEntity(
-        name=intrinsic.name,
-        return_type=intrinsic.return_type,
-        params=tuple(
-            PureFunctionParamEntity(type=param.type_name, name=param.name)
-            for param in intrinsic.params
-        ),
-        body=(),
-        intrinsic=True,
+def _merge_intrinsic_pure_functions_into_ast(program: AstProgram) -> AstProgram:
+    existing_names = {pure.name for pure in program.pure_functions}
+    intrinsic_decls = tuple(
+        AstPureDecl(
+            name=intrinsic.name,
+            return_type=AstType(name=intrinsic.return_type, kind="primitive"),
+            params=tuple(
+                AstKernelParam(
+                    modifier="value",
+                    declared_type=AstType(name=param.type_name, kind="primitive"),
+                    name=param.name,
+                )
+                for param in intrinsic.params
+            ),
+            intrinsic=True,
+        )
+        for intrinsic in load_intrinsics().values()
+        if intrinsic.name not in existing_names
     )
-
-
-def _pure_function_name(entity: dict[str, Any] | PureFunctionEntity) -> str | None:
-    if isinstance(entity, PureFunctionEntity):
-        return entity.name
-    if isinstance(entity, dict):
-        value = entity.get("name")
-        return value if isinstance(value, str) else None
-    return None
-
-
-def _normalize_pure_function_entity(
-    entity: dict[str, Any] | PureFunctionEntity,
-) -> dict[str, Any] | PureFunctionEntity:
-    if isinstance(entity, PureFunctionEntity):
-        return entity
-    if isinstance(entity, dict):
-        return entity
-    return {}
-
-
-def _merge_intrinsic_pure_functions(
-    pure_functions: list[dict[str, Any] | PureFunctionEntity],
-) -> list[dict[str, Any] | PureFunctionEntity]:
-    merged: dict[str, dict[str, Any] | PureFunctionEntity] = {}
-    for pure_function in pure_functions:
-        normalized = _normalize_pure_function_entity(pure_function)
-        name = _pure_function_name(normalized)
-        if name is not None:
-            merged[name] = normalized
-    for name, intrinsic in load_intrinsics().items():
-        if name not in merged:
-            merged[name] = _intrinsic_to_entity(intrinsic)
-    return list(merged.values())
+    if not intrinsic_decls:
+        return program
+    return AstProgram(
+        structs=program.structs,
+        shaders=program.shaders,
+        filters=program.filters,
+        pure_functions=(*program.pure_functions, *intrinsic_decls),
+        pipelines=program.pipelines,
+    )
 
 
 def _line_count(source: str) -> int:
@@ -177,16 +157,14 @@ def _compile_lockstep_with_dependencies(
             source_file=parse_errors[0].source_file if parse_errors else source_file,
         )
 
-    typed_ast = None
-    if debug_visitor_cls is None:
-        try:
-            typed_ast = build_program_ast(tree, visitor_cls)
-        except TypeError:
-            # Keep the legacy parse-tree visitor flow for parser stubs used by unit tests.
-            typed_ast = None
+    typed_ast = _merge_intrinsic_pure_functions_into_ast(
+        build_program_ast(tree, visitor_cls)
+    )
 
     semantic_validator = semantic_validator or (
-        lambda parse_tree: validate_semantics(parse_tree, visitor_cls)
+        lambda parse_tree, *, typed_ast: validate_semantics(
+            parse_tree, visitor_cls, typed_ast=typed_ast
+        )
     )
     try:
         semantic_diagnostics = normalize_diagnostics(
@@ -208,41 +186,9 @@ def _compile_lockstep_with_dependencies(
             source_file=semantic_errors[0].source_file,
         )
 
-    debug_diagnostics = []
-    entities = None
-    if typed_ast is not None:
-        entities = ast_to_entities(typed_ast)
-    else:
-        debug_visitor_cls = debug_visitor_cls or build_debug_visitor(visitor_cls)
-        visitor = debug_visitor_cls(verbose=verbose)
-        visitor.visit(tree)
-        debug_diagnostics = _remap_diagnostics(
-            visitor.diagnostics,
-            source_map=source_map,
-            default_source_file=source_file,
-        )
-        entities = {
-            "structs": visitor.structs,
-            "shaders": visitor.shaders,
-            "filters": visitor.filters,
-            "pure_functions": visitor.pure_functions,
-            "streams": visitor.streams,
-            "accumulators": visitor.accumulators,
-            "uniforms": visitor.uniforms,
-            "bind_routes": visitor.bind_routes,
-            "bind_routes_ir": getattr(visitor, "bind_routes_ir", []),
-        }
+    entities = ast_to_entities(typed_ast)
 
-    entities["pure_functions"] = [
-        pure_function.to_dict()
-        if isinstance(pure_function, PureFunctionEntity)
-        else pure_function
-        for pure_function in _merge_intrinsic_pure_functions(
-            entities.get("pure_functions", [])
-        )
-    ]
-
-    all_diagnostics = normalize_diagnostics([*semantic_diagnostics, *debug_diagnostics])
+    all_diagnostics = normalize_diagnostics(semantic_diagnostics)
     bind_optimization = optimize_bind_routes(
         entities["bind_routes"],
         shader_names={shader["name"] for shader in entities["shaders"]},
@@ -256,7 +202,7 @@ def _compile_lockstep_with_dependencies(
     }
 
     try:
-        llvm_ir = emit_llvm_ir(typed_ast or entities)
+        llvm_ir = emit_llvm_ir(typed_ast)
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
@@ -279,7 +225,7 @@ def _compile_lockstep_with_dependencies(
         entities=entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
-        c_header=emit_c_header(typed_ast or entities),
+        c_header=emit_c_header(typed_ast),
         diagnostics=all_diagnostics,
     )
 
@@ -298,10 +244,10 @@ def load_default_parser_classes() -> tuple[Any, Any, Any]:
     return LockstepLexer, LockstepParser, LockstepVisitor
 
 
-def validate_semantics(parse_tree: Any, visitor_cls=None):
+def validate_semantics(parse_tree: Any, visitor_cls=None, *, typed_ast=None):
     if visitor_cls is None:
         _, _, visitor_cls = load_default_parser_classes()
-    return _validate_semantics(parse_tree, visitor_cls)
+    return _validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
 
 
 def compile_lockstep(
