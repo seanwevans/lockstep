@@ -342,10 +342,14 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define float @"pure_demo"()' in llvm_ir
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define void @"filter_Cull"()' in llvm_ir
-    assert (
-        'define void @"Lockstep_Tick"(%"struct.Vec3"* noalias %"stream_raw_positions", float* noalias %"accum_energy", float* %"uniform_dt")'
-        in llvm_ir
+    tick_signature = next(
+        line for line in llvm_ir.splitlines() if 'define void @"Lockstep_Tick"' in line
     )
+    assert '%"stream_raw_positions_x"' in tick_signature
+    assert '_y"' in tick_signature and "stream_raw_positions" in tick_signature
+    assert '_z"' in tick_signature and "stream_raw_positions" in tick_signature
+    assert '%"accum_energy"' in tick_signature
+    assert '%"uniform_dt"' in tick_signature
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
     assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
@@ -731,7 +735,7 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert 'store float %"fold_reduce", float* %"arena_slot_1"' in llvm_ir
+    assert 'store float %"fold_reduce", float* %"uniform_total"' in llvm_ir
 
 
 def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
@@ -887,10 +891,82 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "struct Lockstep_Vec3" in header
     assert "struct Lockstep_Arena" in header
     assert "#define LOCKSTEP_ARENA_BYTES 20" in header
-    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS_Y 4" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS_Z 8" in header
     assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
     assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
+
+
+def test_emit_c_header_decomposes_nested_structs_into_soa_fields_and_offsets():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Vec2",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                },
+                {
+                    "name": "Particle",
+                    "fields": [
+                        {"type": "Vec2", "name": "pos"},
+                        {"type": "float", "name": "mass"},
+                    ],
+                },
+            ],
+            "streams": [{"name": "particles", "type": "Particle"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float stream_particles_pos_x;" in header
+    assert "float stream_particles_pos_y;" in header
+    assert "float stream_particles_mass;" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_POS_Y 4" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_MASS 8" in header
+
+
+def test_emit_llvm_ir_decomposes_nested_struct_tick_params_into_soa_pointers():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [
+                {
+                    "name": "Vec2",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                },
+                {
+                    "name": "Particle",
+                    "fields": [
+                        {"type": "Vec2", "name": "pos"},
+                        {"type": "float", "name": "mass"},
+                    ],
+                },
+            ],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [{"name": "particles", "type": "Particle"}],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    tick_signature = next(
+        line for line in llvm_ir.splitlines() if 'define void @"Lockstep_Tick"' in line
+    )
+    assert '%"stream_particles_pos_x"' in tick_signature
+    assert 'pos_y"' in tick_signature and "stream_particles" in tick_signature
+    assert '%"stream_particles' in tick_signature and 'mass"' in tick_signature
 
 
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():

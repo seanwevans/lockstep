@@ -536,6 +536,35 @@ def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatem
     return body_ast
 
 
+def _flatten_llvm_leaf_types(
+    type_name: str,
+    *,
+    lowerer: _FunctionLowerer,
+    known_structs: dict[str, ir.IdentifiedStructType],
+    struct_fields: dict[str, list[dict[str, str]]],
+    prefix: tuple[str, ...] = (),
+    trail: tuple[str, ...] = (),
+) -> list[tuple[tuple[str, ...], ir.Type]]:
+    if type_name not in struct_fields:
+        return [(prefix, lowerer._llvm_type(type_name, known_structs))]
+    if type_name in trail:
+        return [(prefix, ir.IntType(32))]
+
+    flattened: list[tuple[tuple[str, ...], ir.Type]] = []
+    for field in struct_fields.get(type_name, []):
+        flattened.extend(
+            _flatten_llvm_leaf_types(
+                field.get("type", "float"),
+                lowerer=lowerer,
+                known_structs=known_structs,
+                struct_fields=struct_fields,
+                prefix=prefix + (field.get("name", "field"),),
+                trail=trail + (type_name,),
+            )
+        )
+    return flattened or [(prefix, ir.IntType(32))]
+
+
 def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
@@ -677,35 +706,25 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType()
         )
 
-    arena_fields: list[tuple[str, str, ir.Type]] = []
-    stream_slots: dict[str, int] = {}
+    stream_names: set[str] = set()
     stream_capacities: dict[str, int] = {}
+    stream_types: dict[str, str] = {}
     for stream in streams:
-        stream_slots[stream["name"]] = len(arena_fields)
-        arena_fields.append(
-            (
-                "stream",
-                stream["name"],
-                lowerer._llvm_type(stream["type"], known_structs),
-            )
-        )
+        stream_names.add(stream["name"])
+        stream_types[stream["name"]] = stream["type"]
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_slots: dict[str, int] = {}
+
+    accum_names: set[str] = set()
+    accum_types: dict[str, str] = {}
     for accum in accumulators:
-        accum_slots[accum["name"]] = len(arena_fields)
-        arena_fields.append(
-            ("accum", accum["name"], lowerer._llvm_type(accum["type"], known_structs))
-        )
-    uniform_slots: dict[str, int] = {}
+        accum_names.add(accum["name"])
+        accum_types[accum["name"]] = accum["type"]
+
+    uniform_names: set[str] = set()
+    uniform_types: dict[str, str] = {}
     for uniform in uniforms:
-        uniform_slots[uniform["name"]] = len(arena_fields)
-        arena_fields.append(
-            (
-                "uniform",
-                uniform["name"],
-                lowerer._llvm_type(uniform["type"], known_structs),
-            )
-        )
+        uniform_names.add(uniform["name"])
+        uniform_types[uniform["name"]] = uniform["type"]
 
     kernel_signatures = {
         shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
@@ -718,47 +737,39 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         }
     )
 
-    tick_arg_specs: list[tuple[str, str, ir.Type, bool]] = []
+    tick_arg_specs: list[tuple[str, str, tuple[str, ...], ir.Type, bool]] = []
+
+    def _append_tick_args(kind: str, name: str, type_name: str, apply_noalias: bool):
+        for path, leaf_type in _flatten_llvm_leaf_types(
+            type_name,
+            lowerer=lowerer,
+            known_structs=known_structs,
+            struct_fields=struct_fields,
+        ):
+            tick_arg_specs.append((kind, name, path, leaf_type, apply_noalias))
+
     for stream in streams:
-        tick_arg_specs.append(
-            (
-                "stream",
-                stream["name"],
-                lowerer._llvm_type(stream["type"], known_structs),
-                True,
-            )
-        )
+        _append_tick_args("stream", stream["name"], stream["type"], True)
     for accum in accumulators:
-        tick_arg_specs.append(
-            (
-                "accum",
-                accum["name"],
-                lowerer._llvm_type(accum["type"], known_structs),
-                True,
-            )
-        )
+        _append_tick_args("accum", accum["name"], accum["type"], True)
     for uniform in uniforms:
-        tick_arg_specs.append(
-            (
-                "uniform",
-                uniform["name"],
-                lowerer._llvm_type(uniform["type"], known_structs),
-                False,
-            )
-        )
+        _append_tick_args("uniform", uniform["name"], uniform["type"], False)
 
     tick_param_types = [
-        field_type.as_pointer() for _, _, field_type, _ in tick_arg_specs
+        field_type.as_pointer() for _, _, _, field_type, _ in tick_arg_specs
     ]
     tick = ir.Function(
         module, ir.FunctionType(ir.VoidType(), tick_param_types), name="Lockstep_Tick"
     )
-    tick_param_ptrs: dict[tuple[str, str], ir.Argument] = {}
-    for arg, (kind, name, _, apply_noalias) in zip(tick.args, tick_arg_specs):
+    tick_param_ptrs: dict[tuple[str, str, tuple[str, ...]], ir.Argument] = {}
+    for arg, (kind, name, path, _, apply_noalias) in zip(tick.args, tick_arg_specs):
+        suffix = "_".join(_sanitize_symbol(part) for part in path)
         arg.name = f"{kind}_{_sanitize_symbol(name)}"
+        if suffix:
+            arg.name = f"{arg.name}_{suffix}"
         if apply_noalias:
             arg.add_attribute("noalias")
-        tick_param_ptrs[(kind, name)] = arg
+        tick_param_ptrs[(kind, name, path)] = arg
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
@@ -769,22 +780,69 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             return ir.Constant(ir.IntType(32), 0)
         return ir.Constant(llvm_type, None)
 
-    def _load_tick_param(kind: str, name: str, field_type: ir.Type) -> ir.Value:
-        ptr = tick_param_ptrs.get((kind, name))
+    def _load_tick_leaf(
+        kind: str, name: str, path: tuple[str, ...], field_type: ir.Type
+    ) -> ir.Value:
+        ptr = tick_param_ptrs.get((kind, name, path))
         if ptr is None:
             return _zero_value(field_type)
-        return tick_builder.load(ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
+        leaf_name = "_".join(_sanitize_symbol(part) for part in path)
+        value_name = f"{kind}_{_sanitize_symbol(name)}_val"
+        if leaf_name:
+            value_name = f"{value_name}_{leaf_name}"
+        return tick_builder.load(ptr, name=value_name)
 
-    def _store_arena_slot(field_index: int, value: ir.Value):
-        if field_index < 0 or field_index >= len(arena_fields):
-            return
-        kind, name, _ = arena_fields[field_index]
-        ptr = tick_param_ptrs.get((kind, name))
+    def _load_tick_value(
+        kind: str,
+        name: str,
+        type_name: str,
+        field_type: ir.Type,
+        path: tuple[str, ...] = (),
+    ) -> ir.Value:
+        if type_name not in struct_fields:
+            return _load_tick_leaf(kind, name, path, field_type)
+
+        value = ir.Constant(field_type, None)
+        for index, field in enumerate(struct_fields.get(type_name, [])):
+            child_type_name = field.get("type", "float")
+            child_type = lowerer._llvm_type(child_type_name, known_structs)
+            child = _load_tick_value(
+                kind,
+                name,
+                child_type_name,
+                child_type,
+                path + (field.get("name", "field"),),
+            )
+            value = tick_builder.insert_value(value, child, index, name="soa_insert")
+        return value
+
+    def _store_tick_leaf(kind: str, name: str, path: tuple[str, ...], value: ir.Value):
+        ptr = tick_param_ptrs.get((kind, name, path))
         if ptr is None:
             return
-        slot_ptr = tick_builder.alloca(value.type, name=f"arena_slot_{field_index}")
-        tick_builder.store(value, slot_ptr)
-        tick_builder.store(tick_builder.load(slot_ptr), ptr)
+        tick_builder.store(value, ptr)
+
+    def _store_tick_value(
+        kind: str,
+        name: str,
+        type_name: str,
+        value: ir.Value,
+        path: tuple[str, ...] = (),
+    ):
+        if type_name not in struct_fields:
+            _store_tick_leaf(kind, name, path, value)
+            return
+
+        for index, field in enumerate(struct_fields.get(type_name, [])):
+            child_type_name = field.get("type", "float")
+            child_value = tick_builder.extract_value(value, index, name="soa_extract")
+            _store_tick_value(
+                kind,
+                name,
+                child_type_name,
+                child_value,
+                path + (field.get("name", "field"),),
+            )
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)
@@ -925,12 +983,21 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             arg_name = arg_names[index] if index < len(arg_names) else ""
             modifier = params[index].get("modifier") if index < len(params) else None
             value = None
-            if modifier in {"in", "out"} and arg_name in stream_slots:
-                value = _load_tick_param("stream", arg_name, param.type)
-            elif modifier == "accum" and arg_name in accum_slots:
-                value = _load_tick_param("accum", arg_name, param.type)
-            elif modifier == "uniform" and arg_name in uniform_slots:
-                value = _load_tick_param("uniform", arg_name, param.type)
+            if modifier in {"in", "out"} and arg_name in stream_names:
+                value = _load_tick_value(
+                    "stream", arg_name, stream_types.get(arg_name, "float"), param.type
+                )
+            elif modifier == "accum" and arg_name in accum_names:
+                value = _load_tick_value(
+                    "accum", arg_name, accum_types.get(arg_name, "float"), param.type
+                )
+            elif modifier == "uniform" and arg_name in uniform_names:
+                value = _load_tick_value(
+                    "uniform",
+                    arg_name,
+                    uniform_types.get(arg_name, "float"),
+                    param.type,
+                )
             if value is None:
                 value = _zero_value(param.type)
             call_args.append(value)
@@ -953,16 +1020,23 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
                 source_name = str(route.get("source", ""))
                 uniform_name = str(route.get("uniform_name", ""))
                 operator = str(route.get("operator", ""))
-                source_slot = accum_slots.get(source_name)
-                uniform_slot = uniform_slots.get(uniform_name)
-                if source_slot is None or uniform_slot is None:
+                if source_name not in accum_names or uniform_name not in uniform_names:
                     continue
                 uniform_type_name = str(route.get("uniform_type", "float"))
                 uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                accum_kind, accum_name, _ = arena_fields[source_slot]
-                accum_value = _load_tick_param(accum_kind, accum_name, uniform_type)
+                accum_value = _load_tick_value(
+                    "accum",
+                    source_name,
+                    accum_types.get(source_name, "float"),
+                    uniform_type,
+                )
                 reduced = _reduce_fold(operator, accum_value, uniform_type)
-                _store_arena_slot(uniform_slot, reduced)
+                _store_tick_value(
+                    "uniform",
+                    uniform_name,
+                    uniform_types.get(uniform_name, "float"),
+                    reduced,
+                )
                 continue
             asm_ty = ir.FunctionType(ir.VoidType(), [])
             escaped = (

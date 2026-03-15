@@ -88,6 +88,32 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
     return "void*"
 
 
+def _flatten_struct_fields(
+    type_name: str,
+    struct_map: dict[str, dict[str, Any]],
+    prefix: tuple[str, ...] = (),
+    trail: tuple[str, ...] = (),
+) -> list[tuple[tuple[str, ...], str]]:
+    if type_name not in struct_map:
+        return [(prefix, type_name)]
+    if type_name in trail:
+        return [(prefix, "uint")]
+
+    flattened: list[tuple[tuple[str, ...], str]] = []
+    for field in struct_map[type_name].get("fields", []):
+        field_name = field.get("name", "field")
+        field_type = field.get("type", "float")
+        flattened.extend(
+            _flatten_struct_fields(
+                field_type,
+                struct_map,
+                prefix + (field_name,),
+                trail + (type_name,),
+            )
+        )
+    return flattened or [(prefix, "uint")]
+
+
 def emit_c_header(
     program_or_entities: AstProgram | dict[str, Any],
     guard: str = "LOCKSTEP_GENERATED_H",
@@ -100,20 +126,24 @@ def emit_c_header(
 
     normalized_structs = _normalize_structs(entities.get("structs", []))
     known_structs = {struct["name"] for struct in normalized_structs}
+    struct_map = {struct["name"]: struct for struct in normalized_structs}
     struct_sizes, opaque_structs = _resolve_struct_layouts(normalized_structs)
 
-    arena_fields: list[tuple[str, str, str]] = []
+    arena_fields: list[tuple[str, str, tuple[str, ...], str]] = []
     for stream in entities.get("streams", []):
-        arena_fields.append(("stream", stream["name"], stream["type"]))
+        for path, leaf_type in _flatten_struct_fields(stream["type"], struct_map):
+            arena_fields.append(("stream", stream["name"], path, leaf_type))
     for accumulator in entities.get("accumulators", []):
-        arena_fields.append(("accum", accumulator["name"], accumulator["type"]))
+        for path, leaf_type in _flatten_struct_fields(accumulator["type"], struct_map):
+            arena_fields.append(("accum", accumulator["name"], path, leaf_type))
     for uniform in entities.get("uniforms", []):
-        arena_fields.append(("uniform", uniform["name"], uniform["type"]))
+        for path, leaf_type in _flatten_struct_fields(uniform["type"], struct_map):
+            arena_fields.append(("uniform", uniform["name"], path, leaf_type))
 
-    offsets: list[tuple[str, str, int]] = []
+    offsets: list[tuple[str, str, tuple[str, ...], int]] = []
     cursor = 0
-    for kind, name, type_name in arena_fields:
-        offsets.append((kind, name, cursor))
+    for kind, name, path, type_name in arena_fields:
+        offsets.append((kind, name, path, cursor))
         cursor += _field_size(type_name, struct_sizes)
 
     lines = [
@@ -153,15 +183,24 @@ def emit_c_header(
         lines.append("")
 
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
-    for kind, name, type_name in arena_fields:
+    for kind, name, path, type_name in arena_fields:
         c_type_name = _c_type(type_name, known_structs)
-        lines.append(f"    {c_type_name} {kind}_{_sanitize_symbol(name)};")
+        suffix = "_".join(_sanitize_symbol(part) for part in path)
+        field_name = f"{kind}_{_sanitize_symbol(name)}"
+        if suffix:
+            field_name = f"{field_name}_{suffix}"
+        lines.append(f"    {c_type_name} {field_name};")
     lines.append("});")
     lines.append("")
 
     lines.append(f"#define LOCKSTEP_ARENA_BYTES {cursor}")
-    for kind, name, offset in offsets:
-        macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
+    for kind, name, path, offset in offsets:
+        macro_suffix = f"{kind}_{_sanitize_symbol(name)}"
+        if path:
+            macro_suffix = (
+                f"{macro_suffix}_{'_'.join(_sanitize_symbol(part) for part in path)}"
+            )
+        macro_suffix = macro_suffix.upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
     for stream in entities.get("streams", []):
         stream_name = _sanitize_symbol(stream["name"]).upper()
