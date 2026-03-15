@@ -135,3 +135,54 @@ def test_optimize_bind_routes_uses_liveness_not_global_use_count():
             ],
         },
     ]
+
+
+def test_optimize_bind_routes_fuses_split_join_subgraph_from_dag():
+    result = optimize_bind_routes(
+        [
+            "tmp = Source(inp, tmp);",
+            "left = Left(tmp, left);",
+            "right = Right(tmp, right);",
+            "final = Join(left, right, final);",
+        ],
+        shader_names={"Source", "Left", "Right", "Join"},
+        filter_names=set(),
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "final = FUSED[Source -> Left -> Right -> Join];",
+    ]
+    assert result["fused_groups"] == [
+        {
+            "nodes": ["Source", "Left", "Right", "Join"],
+            "entry_args": ["inp", "tmp"],
+            "output": "final",
+            "eliminated_intermediates": ["tmp", "left", "right"],
+            "source_routes": [
+                "tmp = Source(inp, tmp);",
+                "left = Left(tmp, left);",
+                "right = Right(tmp, right);",
+                "final = Join(left, right, final);",
+            ],
+        }
+    ]
+
+
+def test_optimize_bind_routes_eliminates_overwritten_dead_kernel_routes():
+    result = optimize_bind_routes(
+        [
+            "tmp = Shade(inp, tmp);",
+            "dead = Dead(tmp, dead);",
+            "dead = Reset(seed, scratch);",
+            "out = Keep(tmp, out);",
+        ],
+        shader_names={"Shade", "Dead", "Reset", "Keep"},
+        filter_names=set(),
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "tmp = Shade(inp, tmp);",
+        "dead = Reset(seed, scratch);",
+        "out = Keep(tmp, out);",
+    ]
+    assert result["fused_groups"] == []
