@@ -10,6 +10,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-cov",
+    "hypothesis",
 ]
 lsp = [
     "pygls",
