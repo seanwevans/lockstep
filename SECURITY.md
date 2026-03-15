@@ -50,16 +50,17 @@ The `--emit-header` flag produces a C header file containing struct definitions,
 - **Identifier injection.** Struct names, stream names, and field names from the Lockstep source are embedded in the C header as identifiers and macro names. The `sanitize_symbol()` utility restricts identifiers to `[A-Za-z0-9_]`, but adversarial identifiers in the source could produce confusing or conflicting macro definitions (for example, a stream named `ARENA_BYTES` would collide with `LOCKSTEP_ARENA_BYTES`). Macro names are prefixed with `LOCKSTEP_` to reduce collision risk, but no namespace isolation is enforced.
 - **Integer overflow in arena size calculation.** The arena byte-offset computation sums field sizes without overflow checking. A source program declaring extremely large stream capacities (for example, `stream<Entity, 4294967295>`) could produce a `LOCKSTEP_ARENA_BYTES` value that overflows the host platform's `size_t`. The host application is responsible for validating the arena size before allocation.
 
-### Pipeline simulator and JIT execution
+### Pipeline simulator and subprocess reduction execution
 
-The `--simulate` flag executes a lightweight simulation of the pipeline's bind routes to validate wiring and cardinality. Fold reductions (`fold sum`, `fold avg`) are JIT-compiled via `llvmlite`'s MCJIT engine and executed in-process.
+The `--simulate` flag executes a lightweight simulation of the pipeline's bind routes to validate wiring and cardinality. Fold reductions (`fold sum`, `fold avg`) are lowered to LLVM IR in-process, written to a temporary file, and executed via an external subprocess (`clang`-compiled executable when available, otherwise `lli`).
 
 **Trust assumption:** The simulator operates on data derived from the developer's own source program. It is a development-time validation tool, not a production execution environment.
 
 **Known risks:**
 
-- **In-process native code execution.** The JIT compiler generates and executes native machine code within the Python process. There is no sandboxing, no address space isolation, and no resource limiting. A bug in the JIT code generation path (for example, incorrect buffer sizing for the fold input array) could cause memory corruption in the compiler process. This is the highest-severity risk in the current toolchain.
-- **No timeout or resource limits.** The simulator does not limit execution time or memory consumption. A program with very large stream capacities could cause the simulator to allocate excessive memory for the fold input buffer.
+- **Native-code execution still occurs, but out-of-process.** The simulator no longer executes generated native code in the compiler process address space. This removes the highest-severity in-process memory-corruption risk from MCJIT execution. However, a subprocess still executes generated code and therefore still carries host-level execution risk if used on untrusted input.
+- **Toolchain dependency and fallback behavior.** Subprocess execution depends on `clang` or `lli` being present at runtime. If neither is available (or subprocess compilation/execution fails), the simulator falls back to Python `sum` semantics for numeric folds to preserve simulator availability.
+- **Timeout-bounded subprocesses.** Compilation and execution subprocess calls are timeout-bounded to reduce runaway execution risk, but they are not cgroup/namespace isolated by Lockstep itself.
 
 ### LSP server
 
@@ -85,7 +86,7 @@ Lockstep depends on two runtime packages:
 - **antlr4-python3-runtime** — the ANTLR4 parser runtime for Python. This is a widely used, mature package maintained by the ANTLR project.
 - **llvmlite** — Python bindings for LLVM, maintained by the Numba project. This package ships platform-specific binary wheels containing compiled LLVM libraries.
 
-Both dependencies are sourced from PyPI. Lockstep does not vendor either dependency. A supply-chain compromise of either package would directly affect Lockstep's security, particularly `llvmlite` which provides the JIT execution capability.
+Both dependencies are sourced from PyPI. Lockstep does not vendor either dependency. A supply-chain compromise of either package would directly affect Lockstep's security, particularly `llvmlite` which is used to construct LLVM IR for code generation and simulator fold reductions.
 
 The optional `lsp` dependency group adds `pygls` and `lsprotocol`, which are used only by the LSP server and do not affect compiler output.
 
@@ -94,7 +95,7 @@ The optional `lsp` dependency group adds `pygls` and `lsprotocol`, which are use
 The following improvements are planned for future releases:
 
 - **Input size and complexity limits** for the parser frontend (maximum file size, maximum nesting depth, parse timeout).
-- **Sandboxed JIT execution** for the simulator, either via subprocess isolation or by replacing in-process MCJIT with out-of-process compilation and execution.
+- **Stronger process isolation** for simulator subprocesses (for example, optional namespace/cgroup sandboxing when available).
 - **Formal verification** of the `noalias` correctness invariant, confirming that the memory model guarantees no pointer aliasing across all valid Lockstep programs.
 - **Dependency pinning and hash verification** in the build system.
 - **Automated dependency vulnerability scanning** via Dependabot or similar tooling in CI.
