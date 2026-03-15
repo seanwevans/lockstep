@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .ast import AstProgram, ast_to_entities
+from .arena_layout import build_arena_layout
 from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_C_TYPE = {
@@ -20,64 +21,6 @@ _PRIMITIVE_SIZE = {
     "float": 4,
     "double": 8,
 }
-
-
-def _normalize_structs(structs: list[Any]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for struct_decl in structs:
-        if isinstance(struct_decl, str):
-            normalized.append({"name": struct_decl, "fields": []})
-        elif isinstance(struct_decl, dict) and struct_decl.get("name"):
-            fields = (
-                struct_decl.get("fields")
-                if isinstance(struct_decl.get("fields"), list)
-                else []
-            )
-            normalized.append({"name": struct_decl["name"], "fields": fields})
-    return normalized
-
-
-def _field_size(type_name: str, struct_sizes: dict[str, int]) -> int:
-    if type_name in _PRIMITIVE_SIZE:
-        return _PRIMITIVE_SIZE[type_name]
-    if type_name in struct_sizes:
-        return struct_sizes[type_name]
-    return 8
-
-
-def _resolve_struct_layouts(
-    normalized_structs: list[dict[str, Any]],
-) -> tuple[dict[str, int], set[str]]:
-    struct_sizes: dict[str, int] = {}
-    unresolved = {struct["name"] for struct in normalized_structs}
-    struct_map = {struct["name"]: struct for struct in normalized_structs}
-    opaque_structs: set[str] = set()
-
-    while unresolved:
-        progress = False
-        for struct_name in list(unresolved):
-            fields = struct_map[struct_name].get("fields", [])
-            can_resolve = True
-            size = 0
-            for field in fields:
-                field_type_name = field.get("type", "float")
-                if field_type_name in unresolved:
-                    can_resolve = False
-                    break
-                size += _field_size(field_type_name, struct_sizes)
-            if not can_resolve:
-                continue
-            struct_sizes[struct_name] = size
-            unresolved.remove(struct_name)
-            progress = True
-
-        if not progress:
-            for struct_name in unresolved:
-                struct_sizes[struct_name] = 1
-                opaque_structs.add(struct_name)
-            break
-
-    return struct_sizes, opaque_structs
 
 
 def _c_type(type_name: str, known_structs: set[str]) -> str:
@@ -98,23 +41,10 @@ def emit_c_header(
         else program_or_entities
     )
 
-    normalized_structs = _normalize_structs(entities.get("structs", []))
-    known_structs = {struct["name"] for struct in normalized_structs}
-    struct_sizes, opaque_structs = _resolve_struct_layouts(normalized_structs)
-
-    arena_fields: list[tuple[str, str, str]] = []
-    for stream in entities.get("streams", []):
-        arena_fields.append(("stream", stream["name"], stream["type"]))
-    for accumulator in entities.get("accumulators", []):
-        arena_fields.append(("accum", accumulator["name"], accumulator["type"]))
-    for uniform in entities.get("uniforms", []):
-        arena_fields.append(("uniform", uniform["name"], uniform["type"]))
-
-    offsets: list[tuple[str, str, int]] = []
-    cursor = 0
-    for kind, name, type_name in arena_fields:
-        offsets.append((kind, name, cursor))
-        cursor += _field_size(type_name, struct_sizes)
+    layout = build_arena_layout(entities)
+    normalized_structs = layout.normalized_structs
+    known_structs = layout.known_structs
+    opaque_structs = layout.opaque_structs
 
     lines = [
         f"#ifndef {guard}",
@@ -153,16 +83,24 @@ def emit_c_header(
         lines.append("")
 
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
-    for kind, name, type_name in arena_fields:
-        c_type_name = _c_type(type_name, known_structs)
-        lines.append(f"    {c_type_name} {kind}_{_sanitize_symbol(name)};")
+    for leaf in layout.leaves:
+        c_type_name = _c_type(leaf.type_name, known_structs)
+        path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
+        field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
+        lines.append(f"    {c_type_name} {field_name};")
     lines.append("});")
     lines.append("")
 
-    lines.append(f"#define LOCKSTEP_ARENA_BYTES {cursor}")
-    for kind, name, offset in offsets:
+    lines.append(f"#define LOCKSTEP_ARENA_BYTES {layout.total_size}")
+    for kind, name, offset in layout.top_level_offsets:
         macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
+    for leaf in layout.leaves:
+        if not leaf.path:
+            continue
+        leaf_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path).upper()
+        macro_suffix = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{leaf_suffix}".upper()
+        lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {leaf.offset}")
     for stream in entities.get("streams", []):
         stream_name = _sanitize_symbol(stream["name"]).upper()
         stream_capacity = (
