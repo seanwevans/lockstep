@@ -99,6 +99,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
         "abs",
         "sign",
         "smoothstep",
+        "select",
     }
     assert result.entities["streams"] == []
     assert result.entities["accumulators"] == []
@@ -1041,3 +1042,33 @@ def test_emit_llvm_ir_raises_on_intrinsic_type_mismatch():
                 "bind_routes": [],
             }
         )
+
+
+def test_compile_lockstep_accepts_select_builtin_for_struct_values():
+    source = """
+struct Pair { int x; int y; };
+
+pure Pair choose(bool cond, Pair a, Pair b) {
+    return select(cond, a, b);
+}
+
+pipeline Main { bind { } }
+"""
+    result = lockstep_compiler.compile_lockstep(source, verbose=False)
+    assert 'define %"struct.Pair" @"pure_choose"' in result.llvm_ir
+    assert '= select  i1' in result.llvm_ir
+
+
+def test_compile_lockstep_reports_select_condition_type_mismatch():
+    source = """
+pure int choose(int cond, int a, int b) {
+    return select(cond, a, b);
+}
+
+pipeline Main { bind { } }
+"""
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        lockstep_compiler.compile_lockstep(source, verbose=False)
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK501"]
+    assert "select" in exc_info.value.errors[0].message

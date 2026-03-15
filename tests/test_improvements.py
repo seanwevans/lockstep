@@ -49,6 +49,17 @@ def test_prelude_declares_smoothstep():
     assert len(intrinsics["smoothstep"].params) == 3
 
 
+def test_prelude_declares_select():
+    intrinsics = load_intrinsics()
+    assert "select" in intrinsics
+    assert intrinsics["select"].return_type == "int"
+    assert [param.type_name for param in intrinsics["select"].params] == [
+        "bool",
+        "int",
+        "int",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Codegen intrinsic lowering
 # ---------------------------------------------------------------------------
@@ -153,6 +164,74 @@ def test_codegen_sign_intrinsic():
     )
     ir_text = emit_llvm_ir(entities)
     assert "sign_pos" in ir_text or "sign" in ir_text
+
+
+def test_codegen_select_lowers_to_llvm_select_for_ints():
+    entities = _entities_with_pure(
+        "test_select_int",
+        [
+            {"type": "bool", "name": "cond"},
+            {"type": "int", "name": "a"},
+            {"type": "int", "name": "b"},
+        ],
+        [
+            AstReturnStmt(
+                value=AstExprCall(
+                    name="select",
+                    args=(
+                        AstExprVar(path=("cond",)),
+                        AstExprVar(path=("a",)),
+                        AstExprVar(path=("b",)),
+                    ),
+                )
+            )
+        ],
+        return_type="int",
+    )
+    ir_text = emit_llvm_ir(entities)
+    assert "= select  i1" in ir_text
+
+
+def test_codegen_select_lowers_to_llvm_select_for_structs():
+    entities = {
+        **_CODEGEN_ENTITIES_BASE,
+        "structs": [
+            {
+                "name": "Pair",
+                "fields": [
+                    {"type": "int", "name": "x"},
+                    {"type": "int", "name": "y"},
+                ],
+            }
+        ],
+        "pure_functions": [
+            {
+                "name": "pick_pair",
+                "return_type": "Pair",
+                "params": [
+                    {"type": "bool", "name": "cond"},
+                    {"type": "Pair", "name": "a"},
+                    {"type": "Pair", "name": "b"},
+                ],
+                "body_ast": [
+                    AstReturnStmt(
+                        value=AstExprCall(
+                            name="select",
+                            args=(
+                                AstExprVar(path=("cond",)),
+                                AstExprVar(path=("a",)),
+                                AstExprVar(path=("b",)),
+                            ),
+                        )
+                    )
+                ],
+                "intrinsic": False,
+            },
+            *_intrinsic_defs(),
+        ],
+    }
+    ir_text = emit_llvm_ir(entities)
+    assert '= select  i1' in ir_text
 
 
 def test_codegen_smoothstep_intrinsic():

@@ -9,3 +9,4 @@ intrinsic float min(float x, float y);
 intrinsic float abs(float x);
 intrinsic float sign(float x);
 intrinsic float smoothstep(float edge0, float edge1, float x);
+intrinsic int select(bool condition, int true_value, int false_value);

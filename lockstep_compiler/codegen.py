@@ -344,6 +344,26 @@ class _FunctionLowerer:
         self._compiler_error(f"undefined variable '{parts[0]}'")
 
     def _lower_call(self, name: str, args: list[ir.Value]) -> ir.Value:
+        if name == "select":
+            if len(args) != 3:
+                self._compiler_error(
+                    f"function 'select' expects 3 argument(s), got {len(args)}"
+                )
+            condition, true_value, false_value = args
+            if not isinstance(condition.type, ir.IntType) or condition.type.width != 1:
+                self._compiler_error(
+                    "builtin 'select' expects a boolean condition as the first argument"
+                )
+            if true_value.type != false_value.type:
+                self._compiler_error(
+                    "builtin 'select' expects matching true/false value types"
+                )
+            if not isinstance(true_value.type, (ir.IntType, ir.IdentifiedStructType)):
+                self._compiler_error(
+                    "builtin 'select' currently supports integer and struct values"
+                )
+            return self.builder.select(condition, true_value, false_value, name="select")
+
         if name in self.intrinsic_names:
             lowered_intrinsic = self._lower_intrinsic_call(name, args)
             if lowered_intrinsic is not None:

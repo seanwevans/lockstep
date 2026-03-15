@@ -1062,6 +1062,55 @@ def build_semantic_validator(base_visitor_cls):
                 ):
                     function_name = ctx.ID().getText()
                     args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                    if function_name == "select":
+                        if len(args) != 3:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    "Pure function 'select' expects 3 argument(s), "
+                                    f"but got {len(args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Call select(condition, true_value, false_value) with exactly three arguments.",
+                            )
+                            return None
+                        condition_type = self._resolve_expr_type(args[0])
+                        if condition_type is not None and condition_type != "bool":
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_type_mismatch"
+                                ],
+                                message=(
+                                    "Type mismatch for argument 1 in pure call 'select': "
+                                    f"expected bool, got {condition_type}."
+                                ),
+                                ctx=ctx,
+                                hint="Use a boolean expression for select's condition argument.",
+                            )
+                            return None
+                        true_type = self._resolve_expr_type(args[1])
+                        false_type = self._resolve_expr_type(args[2])
+                        if true_type is None or false_type is None:
+                            return None
+                        if true_type != false_type:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_type_mismatch"
+                                ],
+                                message=(
+                                    "Type mismatch for value arguments in pure call 'select': "
+                                    f"expected matching types, got {true_type} and {false_type}."
+                                ),
+                                ctx=ctx,
+                                hint="Ensure select true_value and false_value have the same type.",
+                            )
+                            return None
+                        return true_type
                     if _is_cast_function_name(function_name):
                         if len(args) != 1:
                             self._add_diagnostic(
@@ -1101,6 +1150,51 @@ def build_semantic_validator(base_visitor_cls):
                     return self._resolve_expr_type(child_expr)
 
             return None
+
+        def _type_check_select_call(self, ctx):
+            actual_args = []
+            if ctx.exprList() is not None:
+                actual_args = ctx.exprList().expr()
+
+            if len(actual_args) != 3:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                    message=(
+                        f"Pure function 'select' expects 3 argument(s), "
+                        f"but got {len(actual_args)}."
+                    ),
+                    ctx=ctx,
+                    hint="Call select(condition, true_value, false_value) with exactly three arguments.",
+                )
+                return
+
+            condition_type = self._resolve_expr_type(actual_args[0])
+            if condition_type is not None and condition_type != "bool":
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_type_mismatch"],
+                    message=(
+                        "Type mismatch for argument 1 in pure call 'select': "
+                        f"expected bool, got {condition_type}."
+                    ),
+                    ctx=ctx,
+                    hint="Use a boolean expression for select's condition argument.",
+                )
+
+            true_type = self._resolve_expr_type(actual_args[1])
+            false_type = self._resolve_expr_type(actual_args[2])
+            if true_type is not None and false_type is not None and true_type != false_type:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_type_mismatch"],
+                    message=(
+                        "Type mismatch for value arguments in pure call 'select': "
+                        f"expected matching types, got {true_type} and {false_type}."
+                    ),
+                    ctx=ctx,
+                    hint="Ensure select true_value and false_value have the same type.",
+                )
 
         def _type_check_pure_call(self, ctx):
             callee_name = ctx.ID().getText()
@@ -1492,6 +1586,8 @@ def build_semantic_validator(base_visitor_cls):
                                 ctx=ctx,
                                 hint="Pass exactly one expression to a cast.",
                             )
+                    elif callee_name == "select":
+                        self._type_check_select_call(ctx)
                     else:
                         self._type_check_pure_call(ctx)
                 return self.visitChildren(ctx)
