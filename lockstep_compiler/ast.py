@@ -113,6 +113,7 @@ class AstKernelParam:
 class AstStructField:
     declared_type: AstType
     name: str
+    location: AstLocation = AstLocation()
 
     def __post_init__(self):
         object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
@@ -407,7 +408,14 @@ class AstBuilder(_AstBuilderMixin):
     def visitStructDecl(self, ctx: Any):
         members = self._call(ctx, "structMember", []) or []
         fields = tuple(
-            AstStructField(declared_type=self._resolve_type(self._call(member, "typeName").getText()), name=self._call(member, "ID").getText())
+            AstStructField(
+                declared_type=self._resolve_type(self._call(member, "typeName").getText()),
+                name=self._call(member, "ID").getText(),
+                location=AstLocation(
+                    line=getattr(getattr(self._call(member, "ID"), "symbol", None), "line", 0),
+                    column=getattr(getattr(self._call(member, "ID"), "symbol", None), "column", 0),
+                ),
+            )
             for member in members
         )
         self._structs.append(
@@ -632,7 +640,12 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
             {
                 "name": decl.name,
                 "fields": [
-                    {"type": _type_name(field.declared_type), "name": field.name}
+                    {
+                        "type": _type_name(field.declared_type),
+                        "name": field.name,
+                        "line": field.location.line,
+                        "column": field.location.column,
+                    }
                     for field in decl.fields
                 ],
             }
