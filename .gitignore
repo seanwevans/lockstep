@@ -1,9 +1,46 @@
+# ANTLR generated artifacts at repo root (stale duplicates of generated/parser/)
+# These get created when antlr4 runs in the project root instead of via `make generate-parser`
+/Lockstep.interp
+/Lockstep.tokens
+/LockstepLexer.interp
+/LockstepLexer.py
+/LockstepLexer.tokens
+/LockstepListener.py
+/LockstepParser.py
+/LockstepVisitor.py
+
+# ANTLR intermediate files inside the generated directory
+# (the .py files are committed; the .interp and .tokens are not)
 generated/parser/*.interp
 generated/parser/*.tokens
+
+# ANTLR tool
+tools/*.jar
+
+# Python
 __pycache__/
 *.pyc
-.coverage
-coverage.xml
-tools/*.jar
-build/
+*.pyo
 *.egg-info/
+dist/
+build/
+*.egg
+
+# Testing and coverage
+.coverage
+.coverage.*
+coverage.xml
+pytest-junit.xml
+htmlcov/
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
