@@ -151,6 +151,10 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         library_source_files.append(str(Path(library_path)))
 
     if args.format:
+        print(
+            "warning: --format currently strips comments from output.",
+            file=stderr,
+        )
         print(format_lockstep_source(source), end="", file=stdout)
         return 0
 

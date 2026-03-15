@@ -115,6 +115,8 @@ lockstepc path/to/program.lock --emit-header
 lockstepc --version
 ```
 
+> ⚠️ `--format` currently strips source comments from the emitted output.
+
 `debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
 
 * `parse_tree`: ANTLR parse tree for the source.
