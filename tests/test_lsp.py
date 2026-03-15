@@ -1,6 +1,7 @@
 from lockstep_compiler.lsp import (
     build_analysis_context,
     build_struct_member_index,
+    find_definition_target,
     find_member_definition,
     provide_bind_completion_items,
     provide_hover_info,
@@ -207,3 +208,65 @@ def test_large_source_hover_matches_default_and_context_path():
 
     assert expected == "(field) `Payload.value: float`"
     assert actual == expected
+
+
+def test_find_definition_target_resolves_shader_filter_and_pure_function_names():
+    source = """
+shader Integrate(in float src, out float dst) { dst = src; }
+
+filter Blur(in float src, out float dst) { dst = src; }
+
+pure float
+blend(float a, float b)
+{
+    return a;
+}
+
+pipeline P {
+    stream<float, 32> src;
+    stream<float, 32> dst;
+
+    bind {
+        dst = Integrate(src, dst);
+        dst = Blur(src, dst);
+    }
+}
+
+shader Wrap(in float src, out float dst) {
+    dst = blend(src, src);
+}
+"""
+
+    lines = source.splitlines()
+    integrate_line = next(i for i, text in enumerate(lines) if "Integrate(src, dst)" in text)
+    blur_line = next(i for i, text in enumerate(lines) if "Blur(src, dst)" in text)
+    blend_line = next(i for i, text in enumerate(lines) if "blend(src, src)" in text)
+
+    integrate_target = find_definition_target(
+        source,
+        integrate_line,
+        lines[integrate_line].index("Integrate") + 1,
+    )
+    blur_target = find_definition_target(
+        source,
+        blur_line,
+        lines[blur_line].index("Blur") + 1,
+    )
+    blend_target = find_definition_target(
+        source,
+        blend_line,
+        lines[blend_line].index("blend") + 1,
+    )
+
+    assert integrate_target is not None
+    assert (integrate_target.line, integrate_target.column, integrate_target.symbol) == (
+        1,
+        7,
+        "Integrate",
+    )
+
+    assert blur_target is not None
+    assert (blur_target.line, blur_target.column, blur_target.symbol) == (3, 7, "Blur")
+
+    assert blend_target is not None
+    assert (blend_target.line, blend_target.column, blend_target.symbol) == (6, 0, "blend")
