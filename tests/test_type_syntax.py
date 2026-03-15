@@ -76,7 +76,7 @@ pipeline Main {
     assert "no viable alternative" in exc_info.value.errors[0].message
 
 
-def test_dependency_declarations_and_string_literals_compile_successfully(monkeypatch):
+def test_dependency_declarations_and_string_literals_compile_successfully():
     source = """
 import "core/math.lock";
 #include "runtime/platform.lock";
@@ -92,15 +92,9 @@ pipeline Main {
 }
 """
 
-    monkeypatch.setattr(
-        "lockstep_compiler.compiler.emit_llvm_ir", lambda *_args, **_kwargs: "; mock"
-    )
-    monkeypatch.setattr(
-        "lockstep_compiler.compiler.emit_c_header",
-        lambda *_args, **_kwargs: "/* mock */",
-    )
-
     result = compile_lockstep(source, verbose=False)
 
     assert all(diag.severity != "error" for diag in result.diagnostics)
     assert any(uniform["type"] == "string" for uniform in result.entities["uniforms"])
+    assert "private unnamed_addr constant" in result.llvm_ir
+    assert "c\"asset://textures/noise\\00\"" in result.llvm_ir

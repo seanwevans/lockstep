@@ -28,6 +28,7 @@ _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "uint": ir.IntType(32),
     "float": ir.FloatType(),
     "double": ir.DoubleType(),
+    "string": ir.IntType(8).as_pointer(),
 }
 
 
@@ -55,6 +56,7 @@ class _FunctionLowerer:
         self.intrinsic_names = intrinsic_names or set()
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
+        self._string_literal_counter = 0
 
     def _compiler_error(self, message: str) -> None:
         raise CodegenError(message)
@@ -290,6 +292,30 @@ class _FunctionLowerer:
 
         self._compiler_error(f"operator '{op}' is unsupported for type '{lhs.type}'")
 
+    @staticmethod
+    def _decode_string_literal(token_text: str) -> str:
+        if len(token_text) >= 2 and token_text[0] == '"' and token_text[-1] == '"':
+            token_text = token_text[1:-1]
+        return bytes(token_text, "utf-8").decode("unicode_escape")
+
+    def _lower_string_literal(self, token_text: str) -> ir.Value:
+        decoded = self._decode_string_literal(token_text)
+        payload = decoded.encode("utf-8") + b"\x00"
+        array_type = ir.ArrayType(ir.IntType(8), len(payload))
+        global_name = f".str.{self._string_literal_counter}"
+        self._string_literal_counter += 1
+        global_value = ir.GlobalVariable(self.module, array_type, name=global_name)
+        global_value.global_constant = True
+        global_value.linkage = "private"
+        global_value.unnamed_addr = True
+        global_value.initializer = ir.Constant(array_type, bytearray(payload))
+        return self.builder.gep(
+            global_value,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            inbounds=True,
+            name="strptr",
+        )
+
     def _emit_relational_compare(
         self, op: str, lhs: ir.Value, rhs: ir.Value
     ) -> ir.Value:
@@ -389,6 +415,8 @@ class _FunctionLowerer:
                 return ir.Constant(ir.FloatType(), float(node.value))
             if node.kind == "int":
                 return ir.Constant(ir.IntType(32), int(node.value))
+            if node.kind == "string":
+                return self._lower_string_literal(node.value)
             return ir.Constant(ir.IntType(1), int(node.value == "true"))
         if isinstance(node, AstExprVar):
             return self._load_var(".".join(node.path))
