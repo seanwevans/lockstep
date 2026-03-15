@@ -62,8 +62,7 @@ def _intrinsic_defs():
             "name": decl.name,
             "return_type": decl.return_type,
             "params": [
-                {"type": param.type_name, "name": param.name}
-                for param in decl.params
+                {"type": param.type_name, "name": param.name} for param in decl.params
             ],
             "body": [],
             "intrinsic": True,

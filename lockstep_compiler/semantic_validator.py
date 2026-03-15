@@ -225,7 +225,8 @@ def build_semantic_validator(base_visitor_cls):
             self, parsed_type: ParsedTypeName
         ) -> list[str]:
             has_generic_suffix = any(
-                isinstance(suffix, ParsedTypeGenericSuffix) for suffix in parsed_type.inner
+                isinstance(suffix, ParsedTypeGenericSuffix)
+                for suffix in parsed_type.inner
             )
             referenced_names = [] if has_generic_suffix else [parsed_type.base]
             for suffix in parsed_type.inner:

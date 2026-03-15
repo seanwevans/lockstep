@@ -27,8 +27,7 @@ def _intrinsic_to_entity(intrinsic: IntrinsicSignature) -> dict[str, Any]:
         "name": intrinsic.name,
         "return_type": intrinsic.return_type,
         "params": [
-            {"type": param.type_name, "name": param.name}
-            for param in intrinsic.params
+            {"type": param.type_name, "name": param.name} for param in intrinsic.params
         ],
         "body": [],
         "intrinsic": True,
