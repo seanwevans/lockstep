@@ -160,7 +160,15 @@ lockstepc path/to/program.lock --emit-header
 lockstepc --version
 ```
 
-`debug_compiler.py` exposes `compile_lockstep(source_code, verbose=True)` and returns a `LockstepCompileResult` containing:
+Programmatic frontend usage is available from `lockstep_compiler`:
+
+```python
+from lockstep_compiler import LockstepCompileResult, compile_lockstep
+
+result: LockstepCompileResult = compile_lockstep(source_code, verbose=True)
+```
+
+`compile_lockstep(...)` returns a `LockstepCompileResult` containing:
 
 * `parse_tree`: ANTLR parse tree for the source.
 * `entities`: extracted frontend entities (`structs`, `shaders`, `streams`, `accumulators`).
