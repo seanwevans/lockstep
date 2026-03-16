@@ -1,7 +1,5 @@
-import importlib
 import io
 import pathlib
-import runpy
 import sys
 import types
 from unittest.mock import sentinel
@@ -13,6 +11,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+import lockstep_compiler as compiler_api
+from lockstep_compiler import (
+    LockstepCompileError,
+    LockstepCompileResult,
+    LockstepDiagnostic,
+    ParseErrorCollector,
+    compile_lockstep,
+    load_default_parser_classes,
+    normalize_diagnostics,
+    run_cli,
+    validate_semantics,
+)
+from lockstep_compiler.cli import main as cli_main
+
 from lockstep_compiler.models import (
     SemanticKernelParam,
     SemanticPureFunctionSignature,
@@ -21,14 +33,25 @@ from lockstep_compiler.models import (
 )
 
 
-@pytest.fixture
-def debug_compiler_module(monkeypatch):
-    sys.modules.pop("debug_compiler", None)
-    return importlib.import_module("debug_compiler")
+_LockstepLexer, _LockstepParser, _LockstepVisitor = load_default_parser_classes()
 
 
-def _diagnostic(module, line, column, message, *, severity="error", code="LCK001"):
-    return module.LockstepDiagnostic(
+class _CompatibilityVisitor(_LockstepVisitor):
+    """Visitor shim that keeps test doubles lightweight."""
+
+    def visitChildren(self, node):
+        get_child_count = getattr(node, "getChildCount", None)
+        if callable(get_child_count):
+            return super().visitChildren(node)
+        return node
+
+
+LockstepDebugVisitor = compiler_api.build_debug_visitor(_CompatibilityVisitor)
+LockstepSemanticValidator = compiler_api.build_semantic_validator(_CompatibilityVisitor)
+
+
+def _diagnostic(line, column, message, *, severity="error", code="LCK001"):
+    return LockstepDiagnostic(
         severity=severity,
         code=code,
         message=message,
@@ -38,14 +61,14 @@ def _diagnostic(module, line, column, message, *, severity="error", code="LCK001
     )
 
 
-def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_module):
-    one = debug_compiler_module.LockstepCompileError(
-        [_diagnostic(debug_compiler_module, 1, 1, "oops")]
+def test_lockstep_compile_error_formats_singular_and_plural():
+    one = LockstepCompileError(
+        [_diagnostic(1, 1, "oops")]
     )
-    many = debug_compiler_module.LockstepCompileError(
+    many = LockstepCompileError(
         [
-            _diagnostic(debug_compiler_module, 1, 1, "oops"),
-            _diagnostic(debug_compiler_module, 2, 4, "bad"),
+            _diagnostic(1, 1, "oops"),
+            _diagnostic(2, 4, "bad"),
         ]
     )
 
@@ -56,12 +79,12 @@ def test_lockstep_compile_error_formats_singular_and_plural(debug_compiler_modul
     )
 
 
-def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
-    collector = debug_compiler_module.ParseErrorCollector()
+def test_parse_error_collector_captures_diagnostic():
+    collector = ParseErrorCollector()
     collector.syntaxError(None, None, 12, 7, "unexpected token", None)
 
     assert collector.errors == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK001",
             message="unexpected token",
@@ -72,9 +95,7 @@ def test_parse_error_collector_captures_diagnostic(debug_compiler_module):
     ]
 
 
-def test_compile_lockstep_uses_package_compile_function(
-    debug_compiler_module, monkeypatch
-):
+def test_compile_lockstep_uses_package_compile_function(monkeypatch):
     captured = {}
 
     def fake_compile(source_code, *, verbose=True, **kwargs):
@@ -83,17 +104,15 @@ def test_compile_lockstep_uses_package_compile_function(
         captured["kwargs"] = kwargs
         return sentinel.result
 
-    monkeypatch.setattr(debug_compiler_module, "compile_lockstep", fake_compile)
+    monkeypatch.setattr(compiler_api, "compile_lockstep", fake_compile)
 
-    result = debug_compiler_module.compile_lockstep("pipeline P { }", verbose=False)
+    result = compiler_api.compile_lockstep("pipeline P { }", verbose=False)
 
     assert result is sentinel.result
     assert captured == {"source_code": "pipeline P { }", "verbose": False, "kwargs": {}}
 
 
-def test_validate_semantics_uses_package_default_visitor(
-    debug_compiler_module, monkeypatch
-):
+def test_validate_semantics_uses_package_default_visitor(monkeypatch):
     captured = {}
 
     def fake_validate(parse_tree, visitor_cls=None):
@@ -101,19 +120,17 @@ def test_validate_semantics_uses_package_default_visitor(
         captured["visitor_cls"] = visitor_cls
         return [sentinel.diag]
 
-    monkeypatch.setattr(debug_compiler_module, "validate_semantics", fake_validate)
+    monkeypatch.setattr(compiler_api, "validate_semantics", fake_validate)
 
-    diagnostics = debug_compiler_module.validate_semantics("TREE")
+    diagnostics = compiler_api.validate_semantics("TREE")
 
     assert diagnostics == [sentinel.diag]
     assert captured == {"parse_tree": "TREE", "visitor_cls": None}
 
 
-def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity(
-    debug_compiler_module,
-):
+def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity():
     diagnostics = [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK888",
             message="same issue",
@@ -121,7 +138,7 @@ def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity(
             column=3,
             hint="",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK888",
             message="same issue",
@@ -131,8 +148,8 @@ def test_normalize_diagnostics_prefers_non_empty_hint_for_same_severity(
         ),
     ]
 
-    assert debug_compiler_module.normalize_diagnostics(diagnostics) == [
-        debug_compiler_module.LockstepDiagnostic(
+    assert normalize_diagnostics(diagnostics) == [
+        LockstepDiagnostic(
             severity="warning",
             code="LCK888",
             message="same issue",
@@ -153,8 +170,8 @@ def _ctx(start_line=0, start_col=0, **kwargs):
     )
 
 
-def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor()
+def test_visitor_methods_print_expected_output(capsys):
+    visitor = LockstepDebugVisitor()
 
     class _Param:
         def __init__(self, modifier, p_type, p_name):
@@ -253,8 +270,8 @@ def test_visitor_methods_print_expected_output(debug_compiler_module, capsys):
     assert visitor.diagnostics == []
 
 
-def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_module):
-    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+def test_visitor_emits_diagnostics_for_non_fatal_observations():
+    visitor = LockstepDebugVisitor(verbose=False)
 
     visitor.visitStructDecl(_ctx(start_line=2, start_col=1, ID=lambda: _token("Vec3")))
     visitor.visitStructDecl(_ctx(start_line=3, start_col=1, ID=lambda: _token("Vec3")))
@@ -301,7 +318,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     visitor.visitBindBlock(_ctx(start_line=10, start_col=4, bindStmt=lambda: []))
 
     assert visitor.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK201",
             message="Struct 'Vec3' is redeclared.",
@@ -309,7 +326,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate struct declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK205",
             message="Pure function 'add' is redeclared.",
@@ -317,7 +334,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate pure function declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK206",
             message="Filter 'f' is redeclared.",
@@ -325,7 +342,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Rename or remove duplicate filter declarations.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK207",
             message="Uniform 'dt' is redeclared.",
@@ -333,7 +350,7 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
             column=1,
             hint="Each uniform in a pipeline should have a unique name.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="info",
             code="LCK101",
             message="Bind block is empty; pipeline has no executable routes.",
@@ -344,8 +361,8 @@ def test_visitor_emits_diagnostics_for_non_fatal_observations(debug_compiler_mod
     ]
 
 
-def test_visitor_stream_redeclaration_is_pipeline_local(debug_compiler_module):
-    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+def test_visitor_stream_redeclaration_is_pipeline_local():
+    visitor = LockstepDebugVisitor(verbose=False)
 
     visitor.visitPipelineDecl(_ctx(ID=lambda: _token("P1")))
     visitor.visitStreamDecl(
@@ -371,15 +388,15 @@ def test_visitor_stream_redeclaration_is_pipeline_local(debug_compiler_module):
     assert visitor.diagnostics == []
 
 
-def test_visitor_shader_decl_without_param_list(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor()
+def test_visitor_shader_decl_without_param_list(capsys):
+    visitor = LockstepDebugVisitor()
     visitor.visitShaderDecl(_ctx(ID=lambda: _token("Kernel"), paramList=lambda: None))
     assert "[Shader Kernel] Kernel" in capsys.readouterr().out
     assert visitor.shaders == [{"name": "Kernel", "params": [], "body": []}]
 
 
-def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
-    visitor = debug_compiler_module.LockstepDebugVisitor(
+def test_visitor_bind_routes_can_be_normalized():
+    visitor = LockstepDebugVisitor(
         verbose=False,
         normalize_bind_routes=True,
     )
@@ -396,8 +413,8 @@ def test_visitor_bind_routes_can_be_normalized(debug_compiler_module):
     assert visitor.bind_routes == ["a =b(c , d ) ;"]
 
 
-def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
-    visitor = debug_compiler_module.LockstepDebugVisitor(verbose=False)
+def test_visitor_can_run_without_printing(capsys):
+    visitor = LockstepDebugVisitor(verbose=False)
     visitor.visitStructDecl(_ctx(ID=lambda: _token("Vec3")))
 
     assert capsys.readouterr().out == ""
@@ -406,13 +423,13 @@ def test_visitor_can_run_without_printing(debug_compiler_module, capsys):
 
 def test_module_main_success_path(monkeypatch, capsys):
     monkeypatch.setattr(
-        "lockstep_compiler.compile_lockstep", lambda *_args, **_kwargs: sentinel.ok
+        "lockstep_compiler.compiler.compile_lockstep", lambda *_args, **_kwargs: sentinel.ok
     )
-    monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
+    monkeypatch.setattr(sys, "argv", ["lockstep_compiler.cli"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("debug_compiler", run_name="__main__")
+        cli_main()
 
     assert exc_info.value.code == 0
     assert capsys.readouterr().err == ""
@@ -436,12 +453,12 @@ def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
             ]
         )
 
-    monkeypatch.setattr("lockstep_compiler.compile_lockstep", failing_compile)
-    monkeypatch.setattr(sys, "argv", ["debug_compiler.py"])
+    monkeypatch.setattr("lockstep_compiler.compiler.compile_lockstep", failing_compile)
+    monkeypatch.setattr(sys, "argv", ["lockstep_compiler.cli"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("pipeline P { }"))
 
     with pytest.raises(SystemExit) as exc_info:
-        runpy.run_module("debug_compiler", run_name="__main__")
+        cli_main()
 
     assert exc_info.value.code == 1
     stderr = capsys.readouterr().err
@@ -449,13 +466,13 @@ def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
     assert "line 7:9 bad syntax" in stderr
 
 
-def test_run_cli_reads_source_from_stdin_when_path_omitted(debug_compiler_module):
+def test_run_cli_reads_source_from_stdin_when_path_omitted():
     captured = {}
 
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline FromStdin { }"),
         compiler=fake_compiler,
@@ -465,7 +482,7 @@ def test_run_cli_reads_source_from_stdin_when_path_omitted(debug_compiler_module
     assert captured["source"] == "pipeline FromStdin { }"
 
 
-def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
+def test_run_cli_reads_source_from_path(tmp_path):
     source_file = tmp_path / "sample.lock"
     source_file.write_text("pipeline FromFile { }", encoding="utf-8")
     captured = {}
@@ -473,7 +490,7 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [str(source_file)], compiler=fake_compiler
     )
 
@@ -481,9 +498,9 @@ def test_run_cli_reads_source_from_path(debug_compiler_module, tmp_path):
     assert captured["source"] == "pipeline FromFile { }"
 
 
-def test_run_cli_dump_prints_compiled_entities(debug_compiler_module):
+def test_run_cli_dump_prints_compiled_entities():
     def fake_compiler(_source):
-        return debug_compiler_module.LockstepCompileResult(
+        return LockstepCompileResult(
             parse_tree=None,
             entities={
                 "streams": [{"name": "positions", "capacity": 1000}],
@@ -493,7 +510,7 @@ def test_run_cli_dump_prints_compiled_entities(debug_compiler_module):
         )
 
     stdout = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         ["--dump"],
         stdin=io.StringIO("pipeline Physics { }"),
         stdout=stdout,
@@ -516,12 +533,12 @@ def test_run_cli_dump_prints_compiled_entities(debug_compiler_module):
     ]
 
 
-def test_run_cli_dump_falls_back_to_compiler_result(debug_compiler_module):
+def test_run_cli_dump_falls_back_to_compiler_result():
     def fake_compiler(_source):
         return {"nodes": ["a", "b"]}
 
     stdout = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         ["--dump"],
         stdin=io.StringIO("pipeline Physics { }"),
         stdout=stdout,
@@ -539,11 +556,11 @@ def test_run_cli_dump_falls_back_to_compiler_result(debug_compiler_module):
     ]
 
 
-def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
+def test_run_cli_returns_non_zero_and_writes_errors():
     def failing_compiler(_source):
-        raise debug_compiler_module.LockstepCompileError(
+        raise LockstepCompileError(
             [
-                debug_compiler_module.LockstepDiagnostic(
+                LockstepDiagnostic(
                     severity="error",
                     code="LCK001",
                     message="unexpected",
@@ -555,7 +572,7 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
         )
 
     stderr = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline Broken {"),
         stderr=stderr,
@@ -569,14 +586,12 @@ def test_run_cli_returns_non_zero_and_writes_errors(debug_compiler_module):
     ]
 
 
-def test_run_cli_internal_error_default_mode_keeps_generic_message(
-    debug_compiler_module,
-):
+def test_run_cli_internal_error_default_mode_keeps_generic_message():
     def failing_compiler(_source):
         raise RuntimeError("kaboom")
 
     stderr = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline Broken {"),
         stderr=stderr,
@@ -589,13 +604,11 @@ def test_run_cli_internal_error_default_mode_keeps_generic_message(
     ]
 
 
-def test_run_cli_debug_mode_emits_exception_details_and_traceback(
-    debug_compiler_module,
-):
+def test_run_cli_debug_mode_emits_exception_details_and_traceback():
     def failing_compiler(_source):
-        raise debug_compiler_module.LockstepCompileError(
+        raise LockstepCompileError(
             [
-                debug_compiler_module.LockstepDiagnostic(
+                LockstepDiagnostic(
                     severity="error",
                     code="LCK001",
                     message="unexpected",
@@ -605,7 +618,7 @@ def test_run_cli_debug_mode_emits_exception_details_and_traceback(
                 )
             ],
             diagnostics=[
-                debug_compiler_module.LockstepDiagnostic(
+                LockstepDiagnostic(
                     severity="warning",
                     code="LCK201",
                     message="Struct redeclared",
@@ -617,7 +630,7 @@ def test_run_cli_debug_mode_emits_exception_details_and_traceback(
         )
 
     stderr = io.StringIO()
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         ["--debug"],
         stdin=io.StringIO("pipeline Broken {"),
         stderr=stderr,
@@ -634,7 +647,7 @@ def test_run_cli_debug_mode_emits_exception_details_and_traceback(
     assert "Traceback (most recent call last):" in output
 
 
-def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_path):
+def test_run_cli_returns_non_zero_for_missing_path(tmp_path):
     missing = tmp_path / "missing.lock"
     stderr = io.StringIO()
     called = {"compiler": False}
@@ -642,7 +655,7 @@ def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_pa
     def fake_compiler(_source):
         called["compiler"] = True
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [str(missing)],
         stderr=stderr,
         compiler=fake_compiler,
@@ -653,9 +666,7 @@ def test_run_cli_returns_non_zero_for_missing_path(debug_compiler_module, tmp_pa
     assert f"Unable to read '{missing}': file not found." in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_for_unreadable_path(
-    debug_compiler_module, monkeypatch
-):
+def test_run_cli_returns_non_zero_for_unreadable_path(monkeypatch):
     stderr = io.StringIO()
     called = {"compiler": False}
 
@@ -667,7 +678,7 @@ def test_run_cli_returns_non_zero_for_unreadable_path(
 
     monkeypatch.setattr("lockstep_compiler.cli.Path.read_text", raise_permission_error)
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         ["locked.lock"],
         stderr=stderr,
         compiler=fake_compiler,
@@ -678,7 +689,7 @@ def test_run_cli_returns_non_zero_for_unreadable_path(
     assert "Unable to read 'locked.lock': permission denied." in stderr.getvalue()
 
 
-def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_path):
+def test_run_cli_returns_non_zero_for_invalid_utf8(tmp_path):
     bad_source = tmp_path / "invalid.lock"
     bad_source.write_bytes(b"\xff\xfe\xfa")
     stderr = io.StringIO()
@@ -687,7 +698,7 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     def fake_compiler(_source):
         called["compiler"] = True
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [str(bad_source)],
         stderr=stderr,
         compiler=fake_compiler,
@@ -698,9 +709,7 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(debug_compiler_module, tmp_pa
     assert f"Unable to read '{bad_source}': invalid UTF-8" in stderr.getvalue()
 
 
-def test_run_cli_uses_default_compiler_when_compiler_missing(
-    debug_compiler_module, monkeypatch
-):
+def test_run_cli_uses_default_compiler_when_compiler_missing(monkeypatch):
     captured = {}
 
     def fake_compiler(source, *, verbose=True):
@@ -711,7 +720,7 @@ def test_run_cli_uses_default_compiler_when_compiler_missing(
 
     monkeypatch.setattr(compiler_module, "compile_lockstep", fake_compiler)
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline MissingCompiler { }"),
         compiler=None,
@@ -724,15 +733,13 @@ def test_run_cli_uses_default_compiler_when_compiler_missing(
     }
 
 
-def test_run_cli_preserves_injected_compiler_without_verbose_parameter(
-    debug_compiler_module,
-):
+def test_run_cli_preserves_injected_compiler_without_verbose_parameter():
     captured = {}
 
     def fake_compiler(source):
         captured["source"] = source
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline CustomCompiler { }"),
         compiler=fake_compiler,
@@ -742,9 +749,7 @@ def test_run_cli_preserves_injected_compiler_without_verbose_parameter(
     assert captured == {"source": "pipeline CustomCompiler { }"}
 
 
-def test_run_cli_default_execution_suppresses_verbose_visitor_logs(
-    debug_compiler_module, monkeypatch
-):
+def test_run_cli_default_execution_suppresses_verbose_visitor_logs(monkeypatch):
     stderr = io.StringIO()
 
     def fake_compiler(_source, *, verbose=True):
@@ -755,7 +760,7 @@ def test_run_cli_default_execution_suppresses_verbose_visitor_logs(
 
     monkeypatch.setattr(compiler_module, "compile_lockstep", fake_compiler)
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline QuietByDefault { }"),
         stderr=stderr,
@@ -766,10 +771,10 @@ def test_run_cli_default_execution_suppresses_verbose_visitor_logs(
     assert stderr.getvalue() == ""
 
 
-def test_run_cli_returns_non_zero_when_compiler_not_callable(debug_compiler_module):
+def test_run_cli_returns_non_zero_when_compiler_not_callable():
     stderr = io.StringIO()
 
-    exit_code = debug_compiler_module.run_cli(
+    exit_code = run_cli(
         [],
         stdin=io.StringIO("pipeline InvalidCompiler { }"),
         stderr=stderr,
@@ -782,8 +787,8 @@ def test_run_cli_returns_non_zero_when_compiler_not_callable(debug_compiler_modu
     ]
 
 
-def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_undefined_identifier_in_bind():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -811,7 +816,7 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
     validator.visitBindStmt(bind_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK301",
             message="Undefined identifier 'missing_stream'.",
@@ -825,8 +830,8 @@ def test_semantic_validator_reports_undefined_identifier_in_bind(debug_compiler_
     ]
 
 
-def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_arity_and_type_errors():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -866,8 +871,8 @@ def test_semantic_validator_reports_bind_arity_and_type_errors(debug_compiler_mo
     assert "expected float, got int" in validator.diagnostics[2].message
 
 
-def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_unknown_target_code():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "KnownKernel": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -893,10 +898,8 @@ def test_semantic_validator_reports_bind_unknown_target_code(debug_compiler_modu
     )
 
 
-def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_bind_failure_modes_keep_dedicated_codes():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -924,10 +927,8 @@ def test_semantic_validator_bind_failure_modes_keep_dedicated_codes(
     ]
 
 
-def test_semantic_validator_reports_bind_modifier_kind_mismatches(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_modifier_kind_mismatches():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -969,8 +970,8 @@ def test_semantic_validator_reports_bind_modifier_kind_mismatches(
     assert "requires accum" in validator.diagnostics[2].message
 
 
-def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_target_output_semantics():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -1007,10 +1008,8 @@ def test_semantic_validator_reports_bind_target_output_semantics(debug_compiler_
     assert "must be a stream" in validator.diagnostics[1].message
 
 
-def test_semantic_validator_allows_bind_when_target_matches_out_argument(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_allows_bind_when_target_matches_out_argument():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -1042,10 +1041,8 @@ def test_semantic_validator_allows_bind_when_target_matches_out_argument(
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_mismatched_target_and_out_argument(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_mismatched_target_and_out_argument():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -1085,8 +1082,8 @@ def test_semantic_validator_reports_mismatched_target_and_out_argument(
     )
 
 
-def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_bind_missing_out_parameter():
+    validator = LockstepSemanticValidator()
     validator.shaders = {
         "Apply": [
             SemanticKernelParam(name="inp", declared_type="Vec3", modifier="in"),
@@ -1112,8 +1109,8 @@ def test_semantic_validator_reports_bind_missing_out_parameter(debug_compiler_mo
     assert "kernel has no out parameter" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_duplicate_pipeline_symbols():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     duplicate_ctx = _ctx(
@@ -1126,7 +1123,7 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     validator.visitUniformDecl(duplicate_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK306",
             message="Duplicate declaration for 'energy' in the same scope.",
@@ -1137,10 +1134,8 @@ def test_semantic_validator_reports_duplicate_pipeline_symbols(debug_compiler_mo
     ]
 
 
-def test_semantic_validator_reports_fold_source_missing_error_code(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_fold_source_missing_error_code():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     missing_source_ctx = _ctx(
@@ -1157,8 +1152,8 @@ def test_semantic_validator_reports_fold_source_missing_error_code(
     assert "is undefined" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_fold_source_kind_error_code(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_fold_source_kind_error_code():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare(
         "not_acc", "float", _ctx(), duplicate_code="LCK306", kind="uniform"
@@ -1178,8 +1173,8 @@ def test_semantic_validator_reports_fold_source_kind_error_code(debug_compiler_m
     assert "must reference an accumulator" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_fold_operator_error_code(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_fold_operator_error_code():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare(
         "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
@@ -1199,10 +1194,8 @@ def test_semantic_validator_reports_fold_operator_error_code(debug_compiler_modu
     assert "Unsupported fold operator 'median'" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_fold_type_mismatch_error_code(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_fold_type_mismatch_error_code():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare(
         "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
@@ -1222,10 +1215,8 @@ def test_semantic_validator_reports_fold_type_mismatch_error_code(
     assert "has type int" in validator.diagnostics[0].message
 
 
-def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declaration_code(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declaration_code():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare(
         "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
@@ -1244,7 +1235,7 @@ def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declara
     validator.visitBindStmt(duplicate_fold_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK306",
             message="Duplicate declaration for 'u0' in the same scope.",
@@ -1255,10 +1246,8 @@ def test_semantic_validator_reports_duplicate_fold_target_with_duplicate_declara
     ]
 
 
-def test_semantic_validator_fold_declares_target_uniform_without_scope(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_fold_declares_target_uniform_without_scope():
+    validator = LockstepSemanticValidator()
     validator._declare(
         "acc_energy", "float", _ctx(), duplicate_code="LCK306", kind="accumulator"
     )
@@ -1281,10 +1270,8 @@ def test_semantic_validator_fold_declares_target_uniform_without_scope(
     )
 
 
-def test_semantic_validator_records_pure_signature_from_declaration(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_records_pure_signature_from_declaration():
+    validator = LockstepSemanticValidator()
 
     pure_param_list_ctx = _ctx(
         typeName=lambda: [_token("float"), _token("int")],
@@ -1320,10 +1307,8 @@ def test_semantic_validator_records_pure_signature_from_declaration(
     }
 
 
-def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_preserves_first_kernel_signature_on_duplicate():
+    validator = LockstepSemanticValidator()
 
     canonical_decl_ctx = _ctx(
         ID=lambda: _token("shade"),
@@ -1365,7 +1350,7 @@ def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(
         SemanticKernelParam(name="out_stream", declared_type="float", modifier="out"),
     ]
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK307",
             message="Duplicate shader/filter declaration for 'shade'.",
@@ -1376,10 +1361,8 @@ def test_semantic_validator_preserves_first_kernel_signature_on_duplicate(
     ]
 
 
-def test_semantic_validator_reports_error_for_pure_function_without_return(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_error_for_pure_function_without_return():
+    validator = LockstepSemanticValidator()
 
     non_return_stmt = _ctx(start_line=40, start_col=2, returnStmt=lambda: None)
     pure_decl_ctx = _ctx(
@@ -1394,7 +1377,7 @@ def test_semantic_validator_reports_error_for_pure_function_without_return(
     validator.visitPureDecl(pure_decl_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK413",
             message="Pure function 'blend' must include a return statement.",
@@ -1405,10 +1388,8 @@ def test_semantic_validator_reports_error_for_pure_function_without_return(
     ]
 
 
-def test_semantic_validator_accepts_pure_function_with_single_return(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_pure_function_with_single_return():
+    validator = LockstepSemanticValidator()
 
     return_stmt = _ctx(start_line=42, start_col=4)
     pure_decl_ctx = _ctx(
@@ -1427,10 +1408,8 @@ def test_semantic_validator_accepts_pure_function_with_single_return(
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code():
+    validator = LockstepSemanticValidator()
 
     first_return_stmt = _ctx(start_line=44, start_col=4)
     second_return_stmt = _ctx(start_line=45, start_col=4)
@@ -1451,7 +1430,7 @@ def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
     validator.visitPureDecl(pure_decl_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK414",
             message=(
@@ -1462,7 +1441,7 @@ def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
             column=4,
             hint="Keep a single terminal return to avoid dead code and ambiguous intent.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK415",
             message="Unreachable statement in pure function 'blend' after return statement.",
@@ -1470,7 +1449,7 @@ def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
             column=4,
             hint="Remove or move statements before the return.",
         ),
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK415",
             message="Unreachable statement in pure function 'blend' after return statement.",
@@ -1481,8 +1460,8 @@ def test_semantic_validator_optional_multi_return_policy_warns_for_dead_code(
     ]
 
 
-def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_undefined_pure_function_call():
+    validator = LockstepSemanticValidator()
 
     call_ctx = _ctx(
         start_line=36,
@@ -1494,7 +1473,7 @@ def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK410",
             message="Undefined pure function 'missing_pure'.",
@@ -1505,8 +1484,8 @@ def test_semantic_validator_reports_undefined_pure_function_call(debug_compiler_
     ]
 
 
-def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_pure_call_arity_mismatch():
+    validator = LockstepSemanticValidator()
     validator.pure_functions = {
         "mix": SemanticPureFunctionSignature(
             return_type="float",
@@ -1527,7 +1506,7 @@ def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_modu
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK411",
             message="Pure function 'mix' expects 2 argument(s), but got 1.",
@@ -1538,10 +1517,8 @@ def test_semantic_validator_reports_pure_call_arity_mismatch(debug_compiler_modu
     ]
 
 
-def test_semantic_validator_reports_pure_call_argument_type_mismatch(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_pure_call_argument_type_mismatch():
+    validator = LockstepSemanticValidator()
     validator.pure_functions = {
         "negate": SemanticPureFunctionSignature(
             return_type="float",
@@ -1563,7 +1540,7 @@ def test_semantic_validator_reports_pure_call_argument_type_mismatch(
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK412",
             message="Type mismatch for argument 1 in pure call 'negate': expected float, got int.",
@@ -1574,8 +1551,8 @@ def test_semantic_validator_reports_pure_call_argument_type_mismatch(
     ]
 
 
-def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_valid_pure_call():
+    validator = LockstepSemanticValidator()
     validator.pure_functions = {
         "dot": SemanticPureFunctionSignature(
             return_type="float",
@@ -1600,8 +1577,8 @@ def test_semantic_validator_accepts_valid_pure_call(debug_compiler_module):
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_accepts_intrinsic_pure_call(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_intrinsic_pure_call():
+    validator = LockstepSemanticValidator()
 
     call_ctx = _ctx(
         start_line=40,
@@ -1619,10 +1596,8 @@ def test_semantic_validator_accepts_intrinsic_pure_call(debug_compiler_module):
 
 
 
-def test_semantic_validator_accepts_select_builtin_for_matching_integer_values(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_select_builtin_for_matching_integer_values():
+    validator = LockstepSemanticValidator()
 
     call_ctx = _ctx(
         start_line=41,
@@ -1642,10 +1617,8 @@ def test_semantic_validator_accepts_select_builtin_for_matching_integer_values(
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_select_builtin_condition_type_mismatch(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_select_builtin_condition_type_mismatch():
+    validator = LockstepSemanticValidator()
 
     call_ctx = _ctx(
         start_line=42,
@@ -1663,7 +1636,7 @@ def test_semantic_validator_reports_select_builtin_condition_type_mismatch(
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK412",
             message="Type mismatch for built-in 'select' condition: expected bool, got int.",
@@ -1674,10 +1647,8 @@ def test_semantic_validator_reports_select_builtin_condition_type_mismatch(
     ]
 
 
-def test_semantic_validator_reports_select_builtin_value_type_mismatch(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_select_builtin_value_type_mismatch():
+    validator = LockstepSemanticValidator()
 
     call_ctx = _ctx(
         start_line=43,
@@ -1695,7 +1666,7 @@ def test_semantic_validator_reports_select_builtin_value_type_mismatch(
     validator.visitPrimaryExpr(call_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK412",
             message=(
@@ -1708,8 +1679,8 @@ def test_semantic_validator_reports_select_builtin_value_type_mismatch(
         )
     ]
 
-def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_struct_types_in_declarations():
+    validator = LockstepSemanticValidator()
 
     class _Param:
         def __init__(self, modifier, declared_type, name):
@@ -1780,10 +1751,8 @@ def test_semantic_validator_accepts_struct_types_in_declarations(debug_compiler_
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_unknown_declared_type_with_hint(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_unknown_declared_type_with_hint():
+    validator = LockstepSemanticValidator()
 
     class _Param:
         def __init__(self, modifier, declared_type, name):
@@ -1887,10 +1856,8 @@ def test_semantic_validator_reports_unknown_declared_type_with_hint(
     )
 
 
-def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     lvalue_ctx = _ctx(
@@ -1917,7 +1884,7 @@ def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
     validator.visitPrimaryExpr(primary_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK301",
             message="Undefined identifier 'missing'.",
@@ -1928,8 +1895,8 @@ def test_semantic_validator_nested_lvalue_reports_single_undefined_identifier(
     ]
 
 
-def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_lvalue_validates_struct_field_chain():
+    validator = LockstepSemanticValidator()
 
     struct_ctx = _ctx(
         ID=lambda: _token("Particle"),
@@ -1962,8 +1929,8 @@ def test_semantic_validator_lvalue_validates_struct_field_chain(debug_compiler_m
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_struct_decl_reports_duplicate_member():
+    validator = LockstepSemanticValidator()
 
     struct_ctx = _ctx(
         ID=lambda: _token("Particle"),
@@ -1986,7 +1953,7 @@ def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_
     validator.visitStructDecl(struct_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK311",
             message="Struct 'Particle' has duplicate field declaration 'position'.",
@@ -1997,10 +1964,8 @@ def test_semantic_validator_struct_decl_reports_duplicate_member(debug_compiler_
     ]
 
 
-def test_semantic_validator_struct_decl_keeps_first_duplicate_member(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_struct_decl_keeps_first_duplicate_member():
+    validator = LockstepSemanticValidator()
 
     struct_ctx = _ctx(
         ID=lambda: _token("Particle"),
@@ -2017,10 +1982,8 @@ def test_semantic_validator_struct_decl_keeps_first_duplicate_member(
     }
 
 
-def test_semantic_validator_struct_decl_reports_duplicate_struct_and_keeps_original(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_struct_decl_reports_duplicate_struct_and_keeps_original():
+    validator = LockstepSemanticValidator()
 
     first_struct_ctx = _ctx(
         start_line=70,
@@ -2043,7 +2006,7 @@ def test_semantic_validator_struct_decl_reports_duplicate_struct_and_keeps_origi
     validator.visitStructDecl(duplicate_struct_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK306",
             message="Duplicate struct declaration for 'Particle'.",
@@ -2057,8 +2020,8 @@ def test_semantic_validator_struct_decl_reports_duplicate_struct_and_keeps_origi
     }
 
 
-def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_lvalue_reports_unknown_struct_field():
+    validator = LockstepSemanticValidator()
 
     struct_ctx = _ctx(
         ID=lambda: _token("Particle"),
@@ -2082,7 +2045,7 @@ def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_m
     validator.visitLvalue(lvalue_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK302",
             message="Struct 'Particle' has no field 'velocity'.",
@@ -2093,8 +2056,8 @@ def test_semantic_validator_lvalue_reports_unknown_struct_field(debug_compiler_m
     ]
 
 
-def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_assignment_type_mismatch():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("x", "int", _ctx(), duplicate_code="LCK306", kind="local")
 
@@ -2108,7 +2071,7 @@ def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_modu
     validator.visitAssignStmt(assign_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK417",
             message="Type mismatch in assignment: left-hand side expects int, got float.",
@@ -2119,10 +2082,8 @@ def test_semantic_validator_reports_assignment_type_mismatch(debug_compiler_modu
     ]
 
 
-def test_semantic_validator_reports_var_initializer_type_mismatch(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_var_initializer_type_mismatch():
+    validator = LockstepSemanticValidator()
 
     var_decl_ctx = _ctx(
         start_line=72,
@@ -2135,7 +2096,7 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(
     validator.visitVarDecl(var_decl_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK416",
             message="Type mismatch in initializer for 'count': expected int, got float.",
@@ -2146,8 +2107,8 @@ def test_semantic_validator_reports_var_initializer_type_mismatch(
     ]
 
 
-def test_semantic_validator_infers_var_type_from_initializer(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_infers_var_type_from_initializer():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     var_decl_ctx = _ctx(
@@ -2164,8 +2125,8 @@ def test_semantic_validator_infers_var_type_from_initializer(debug_compiler_modu
     )
 
 
-def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_uninferrable_var_type():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     var_decl_ctx = _ctx(
@@ -2179,7 +2140,7 @@ def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module)
     validator.visitVarDecl(var_decl_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK423",
             message="Cannot infer type for local variable 'mass' without a typed initializer.",
@@ -2190,8 +2151,8 @@ def test_semantic_validator_reports_uninferrable_var_type(debug_compiler_module)
     ]
 
 
-def test_semantic_validator_reports_unused_local_variables(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_unused_local_variables():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator.visitVarDecl(
         _ctx(
@@ -2206,7 +2167,7 @@ def test_semantic_validator_reports_unused_local_variables(debug_compiler_module
     validator._pop_scope()
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="warning",
             code="LCK421",
             message="Local variable 'unused' is declared but never used.",
@@ -2217,8 +2178,8 @@ def test_semantic_validator_reports_unused_local_variables(debug_compiler_module
     ]
 
 
-def test_semantic_validator_reports_unbound_pipeline_resources(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_unbound_pipeline_resources():
+    validator = LockstepSemanticValidator()
     pipeline_ctx = _ctx(start_line=20, start_col=1)
 
     original_visit_children = validator.visitChildren
@@ -2252,10 +2213,8 @@ def test_semantic_validator_reports_unbound_pipeline_resources(debug_compiler_mo
     ]
 
 
-def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     uniform_decl_ctx = _ctx(
@@ -2269,7 +2228,7 @@ def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(
     validator.visitUniformDecl(uniform_decl_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK419",
             message="Type mismatch in uniform initializer for 'u_count': expected int, got float.",
@@ -2280,8 +2239,8 @@ def test_semantic_validator_reports_pipeline_uniform_initializer_type_mismatch(
     ]
 
 
-def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_pure_return_type_mismatch():
+    validator = LockstepSemanticValidator()
 
     return_ctx = _ctx(
         start_line=74, start_col=5, expr=lambda: _ctx(declared_type="float")
@@ -2308,7 +2267,7 @@ def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_mod
     validator.visitPureDecl(pure_ctx)
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK418",
             message="Return type mismatch in pure function 'compute': expected int, got float.",
@@ -2319,10 +2278,8 @@ def test_semantic_validator_reports_pure_return_type_mismatch(debug_compiler_mod
     ]
 
 
-def test_semantic_validator_accepts_matching_assignment_initializer_and_return(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_matching_assignment_initializer_and_return():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
     validator._declare("x", "int", _ctx(), duplicate_code="LCK306", kind="local")
 
@@ -2371,8 +2328,8 @@ def test_semantic_validator_accepts_matching_assignment_initializer_and_return(
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_rejects_implicit_numeric_widening():
+    validator = LockstepSemanticValidator()
 
     add_ctx = _ctx(
         mulExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="float")],
@@ -2381,7 +2338,7 @@ def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_mod
 
     assert validator._resolve_expr_type(add_ctx) is None
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK424",
             message="Operator '+' mixes numeric operand types without an explicit cast.",
@@ -2392,8 +2349,8 @@ def test_semantic_validator_rejects_implicit_numeric_widening(debug_compiler_mod
     ]
 
 
-def test_semantic_validator_reports_use_before_definition(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_use_before_definition():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     validator.visitVarDecl(
@@ -2416,7 +2373,7 @@ def test_semantic_validator_reports_use_before_definition(debug_compiler_module)
     )
 
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK425",
             message="Local variable 'count' is used before it is assigned.",
@@ -2427,8 +2384,8 @@ def test_semantic_validator_reports_use_before_definition(debug_compiler_module)
     ]
 
 
-def test_semantic_validator_assignment_defines_local(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_assignment_defines_local():
+    validator = LockstepSemanticValidator()
     validator._push_scope()
 
     validator.visitVarDecl(
@@ -2451,10 +2408,8 @@ def test_semantic_validator_assignment_defines_local(debug_compiler_module):
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_invalid_logical_operand_types(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_invalid_logical_operand_types():
+    validator = LockstepSemanticValidator()
 
     logical_and_ctx = _ctx(
         bitwiseOrExpr=lambda: [_ctx(declared_type="bool"), _ctx(declared_type="int")]
@@ -2464,7 +2419,7 @@ def test_semantic_validator_reports_invalid_logical_operand_types(
 
     assert resolved_type is None
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK420",
             message="Operator '&&' expects bool operand type(s), but got [bool, int].",
@@ -2475,10 +2430,8 @@ def test_semantic_validator_reports_invalid_logical_operand_types(
     ]
 
 
-def test_semantic_validator_reports_invalid_bitwise_operand_types(
-    debug_compiler_module,
-):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_invalid_bitwise_operand_types():
+    validator = LockstepSemanticValidator()
 
     bitwise_or_ctx = _ctx(
         bitwiseXorExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="bool")]
@@ -2488,7 +2441,7 @@ def test_semantic_validator_reports_invalid_bitwise_operand_types(
 
     assert resolved_type is None
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK420",
             message="Operator '|' expects integer operand type(s), but got [int, bool].",
@@ -2499,8 +2452,8 @@ def test_semantic_validator_reports_invalid_bitwise_operand_types(
     ]
 
 
-def test_semantic_validator_accepts_bitwise_int_operands(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_accepts_bitwise_int_operands():
+    validator = LockstepSemanticValidator()
 
     bitwise_and_ctx = _ctx(
         equalityExpr=lambda: [_ctx(declared_type="int"), _ctx(declared_type="int")]
@@ -2510,8 +2463,8 @@ def test_semantic_validator_accepts_bitwise_int_operands(debug_compiler_module):
     assert validator.diagnostics == []
 
 
-def test_semantic_validator_reports_invalid_unary_operand_types(debug_compiler_module):
-    validator = debug_compiler_module.LockstepSemanticValidator()
+def test_semantic_validator_reports_invalid_unary_operand_types():
+    validator = LockstepSemanticValidator()
 
     unary_not_ctx = _ctx(
         unaryExpr=lambda: _ctx(declared_type="float"),
@@ -2522,7 +2475,7 @@ def test_semantic_validator_reports_invalid_unary_operand_types(debug_compiler_m
 
     assert resolved_type is None
     assert validator.diagnostics == [
-        debug_compiler_module.LockstepDiagnostic(
+        LockstepDiagnostic(
             severity="error",
             code="LCK420",
             message="Operator '!' expects bool operand type(s), but got [float].",
