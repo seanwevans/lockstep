@@ -132,7 +132,34 @@ def test_run_cli_rejects_simulate_input_without_simulate(tmp_path):
     )
 
     assert exit_code == 2
-    assert "--simulate-input requires --simulate" in stderr.getvalue()
+    assert "--simulate-input requires --simulate or --report" in stderr.getvalue()
+
+
+def test_run_cli_report_accepts_simulate_input_file(tmp_path):
+    input_file = tmp_path / "sim-input.json"
+    input_file.write_text('{"streams": {"s": [10, 20]}}', encoding="utf-8")
+
+    def fake_compiler(_source):
+        return {
+            "streams": [{"name": "s", "type": "int", "capacity": "4"}],
+            "accumulators": [],
+            "uniforms": [],
+            "shaders": [],
+            "filters": [],
+            "bind_routes": [],
+        }
+
+    stdout = io.StringIO()
+    exit_code = run_cli(
+        ["--report", "--simulate-input", str(input_file)],
+        stdin=io.StringIO("pipeline P { }"),
+        stdout=stdout,
+        compiler=fake_compiler,
+    )
+
+    assert exit_code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["simulation"]["streams"]["s"] == [10, 20]
 
 
 def test_run_cli_report_prints_single_json_payload_with_entities_and_simulation():
