@@ -3,7 +3,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, cast
 
 from antlr4 import CommonTokenStream, InputStream
 
@@ -45,8 +45,10 @@ class FrontendLimitExceeded(RuntimeError):
         self.diagnostic = diagnostic
 
 
-class _DeadlineTokenStream(CommonTokenStream):
-    def __init__(self, lexer, *, deadline: float | None = None, source_file: str):
+class _DeadlineTokenStream(CommonTokenStream):  # type: ignore[misc]
+    def __init__(
+        self, lexer: Any, *, deadline: float | None = None, source_file: str
+    ) -> None:
         super().__init__(lexer)
         self._deadline = deadline
         self._source_file = source_file
@@ -73,15 +75,15 @@ class _DeadlineTokenStream(CommonTokenStream):
                 )
             )
 
-    def LA(self, i: int):
+    def LA(self, i: int) -> int:
         self._enforce_deadline()
-        return super().LA(i)
+        return int(super().LA(i))
 
-    def LT(self, i: int):
+    def LT(self, i: int) -> Any:
         self._enforce_deadline()
         return super().LT(i)
 
-    def consume(self):
+    def consume(self) -> Any:
         self._enforce_deadline()
         return super().consume()
 
@@ -446,12 +448,12 @@ def _compile_lockstep_with_dependencies(
     verbose: bool = True,
     source_file: str = DEFAULT_SOURCE_FILE,
     source_map: list[tuple[int, int, str]] | None = None,
-    lexer_cls,
-    parser_cls,
-    visitor_cls,
-    semantic_validator=None,
-    token_stream_cls=CommonTokenStream,
-    debug_visitor_cls=None,
+    lexer_cls: Any,
+    parser_cls: Any,
+    visitor_cls: Any,
+    semantic_validator: Callable[..., Any] | None = None,
+    token_stream_cls: Callable[[Any], Any] = CommonTokenStream,
+    debug_visitor_cls: Any = None,
     frontend_limits: FrontendLimits | None = None,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
@@ -467,10 +469,11 @@ def _compile_lockstep_with_dependencies(
     error_listener = ParseErrorCollector(source_file=None)
     lexer.removeErrorListeners()
     lexer.addErrorListener(error_listener)
+    stream_builder: Callable[[Any], Any]
     if resolved_limits.parse_timeout_ms is not None:
         deadline = time.monotonic() + (resolved_limits.parse_timeout_ms / 1_000)
 
-        def _build_token_stream(inner_lexer):
+        def _build_token_stream(inner_lexer: Any) -> _DeadlineTokenStream:
             return _DeadlineTokenStream(
                 inner_lexer,
                 deadline=deadline,
@@ -523,17 +526,20 @@ def _compile_lockstep_with_dependencies(
         build_program_ast(tree, visitor_cls)
     )
 
-    semantic_validator = semantic_validator or (
-        lambda parse_tree, *, typed_ast: validate_semantics(
+    validator: Callable[..., Any]
+    if semantic_validator is None:
+        validator = lambda parse_tree, *, typed_ast: validate_semantics(
             parse_tree, visitor_cls, typed_ast=typed_ast
         )
-    )
+    else:
+        validator = semantic_validator
     try:
         semantic_diagnostics = normalize_diagnostics(
-            semantic_validator(tree, typed_ast=typed_ast)
+            validator(tree, typed_ast=typed_ast)
         )
     except TypeError:
-        semantic_diagnostics = normalize_diagnostics(semantic_validator(tree))
+        fallback_validator = cast(Callable[[Any], Any], validator)
+        semantic_diagnostics = normalize_diagnostics(fallback_validator(tree))
     semantic_diagnostics = _remap_diagnostics(
         semantic_diagnostics,
         source_map=source_map,
@@ -606,10 +612,15 @@ def load_default_parser_classes() -> tuple[Any, Any, Any]:
     return LockstepLexer, LockstepParser, LockstepVisitor
 
 
-def validate_semantics(parse_tree: Any, visitor_cls=None, *, typed_ast=None):
+def validate_semantics(
+    parse_tree: Any, visitor_cls: Any = None, *, typed_ast: Any = None
+) -> list[LockstepDiagnostic]:
     if visitor_cls is None:
         _, _, visitor_cls = load_default_parser_classes()
-    return _validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
+    return cast(
+        list[LockstepDiagnostic],
+        _validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast),
+    )
 
 
 def compile_lockstep(
@@ -619,12 +630,12 @@ def compile_lockstep(
     source_file: str = DEFAULT_SOURCE_FILE,
     library_sources: list[str] | None = None,
     library_source_files: list[str] | None = None,
-    lexer_cls=None,
-    parser_cls=None,
-    visitor_cls=None,
-    semantic_validator=None,
-    token_stream_cls=CommonTokenStream,
-    debug_visitor_cls=None,
+    lexer_cls: Any = None,
+    parser_cls: Any = None,
+    visitor_cls: Any = None,
+    semantic_validator: Callable[..., Any] | None = None,
+    token_stream_cls: Callable[[Any], Any] = CommonTokenStream,
+    debug_visitor_cls: Any = None,
     frontend_limits: FrontendLimits | None = None,
 ) -> LockstepCompileResult:
     resolved_library_sources: list[str] = list(library_sources or [])
