@@ -348,7 +348,10 @@ def simulate_pipeline_entities(
 
 
 def simulate_pipeline_source(
-    source_code: str, *, stream_inputs=None, accumulator_inputs=None
+    source_code: str,
+    *,
+    stream_inputs: dict[str, list[Any]] | None = None,
+    accumulator_inputs: dict[str, list[Any]] | None = None,
 ) -> dict[str, Any]:
     result = compile_lockstep(source_code, verbose=False)
     return simulate_pipeline_entities(

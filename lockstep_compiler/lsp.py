@@ -505,7 +505,7 @@ def run_lsp_server() -> int:
             message=diag.get("message", ""),
         )
 
-    async def _validate(uri: str, *, debounced: bool):
+    async def _validate(uri: str, *, debounced: bool) -> None:
         if debounced:
             await asyncio.sleep(debounce_seconds)
         document = server.workspace.get_text_document(uri)
@@ -516,13 +516,13 @@ def run_lsp_server() -> int:
         )
         pending_tasks.pop(uri, None)
 
-    def _schedule_validate(uri: str, *, debounced: bool = True):
+    def _schedule_validate(uri: str, *, debounced: bool = True) -> None:
         task = pending_tasks.get(uri)
         if task is not None and not task.done():
             task.cancel()
         pending_tasks[uri] = asyncio.create_task(_validate(uri, debounced=debounced))
 
-    def _clear_document_context(uri: str):
+    def _clear_document_context(uri: str) -> None:
         task = pending_tasks.pop(uri, None)
         if task is not None and not task.done():
             task.cancel()
@@ -535,22 +535,24 @@ def run_lsp_server() -> int:
             doc_contexts[uri] = context
         return context
 
-    @server.feature(types.TEXT_DOCUMENT_DID_OPEN)
-    @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)
-    def validate(params):
+    @server.feature(types.TEXT_DOCUMENT_DID_OPEN)  # type: ignore[untyped-decorator]
+    @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)  # type: ignore[untyped-decorator]
+    def validate(params: Any) -> None:
         _schedule_validate(params.text_document.uri)
 
-    @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
-    def validate_on_save(params):
+    @server.feature(types.TEXT_DOCUMENT_DID_SAVE)  # type: ignore[untyped-decorator]
+    def validate_on_save(params: Any) -> None:
         _schedule_validate(params.text_document.uri, debounced=False)
 
-    @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
-    def close_document(params):
+    @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)  # type: ignore[untyped-decorator]
+    def close_document(params: Any) -> None:
         _clear_document_context(params.text_document.uri)
         server.publish_diagnostics(params.text_document.uri, [])
 
-    @server.feature(types.TEXT_DOCUMENT_COMPLETION)
-    def completion(params: types.CompletionParams):
+    @server.feature(types.TEXT_DOCUMENT_COMPLETION)  # type: ignore[untyped-decorator]
+    def completion(
+        params: types.CompletionParams,
+    ) -> types.CompletionList:
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
         analysis_context = build_analysis_context(
@@ -579,8 +581,8 @@ def run_lsp_server() -> int:
             ],
         )
 
-    @server.feature(types.TEXT_DOCUMENT_HOVER)
-    def hover(params: types.HoverParams):
+    @server.feature(types.TEXT_DOCUMENT_HOVER)  # type: ignore[untyped-decorator]
+    def hover(params: types.HoverParams) -> types.Hover | None:
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
         analysis_context = build_analysis_context(
@@ -601,8 +603,10 @@ def run_lsp_server() -> int:
             ),
         )
 
-    @server.feature(types.TEXT_DOCUMENT_DEFINITION)
-    def definition(params: types.DefinitionParams):
+    @server.feature(types.TEXT_DOCUMENT_DEFINITION)  # type: ignore[untyped-decorator]
+    def definition(
+        params: types.DefinitionParams,
+    ) -> types.Location | None:
         document = server.workspace.get_text_document(params.text_document.uri)
         compiled = _context_for_document(document.uri, document.source)
         analysis_context = build_analysis_context(

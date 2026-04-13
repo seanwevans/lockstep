@@ -4,13 +4,14 @@ import json
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, Callable, TextIO, cast
 
 from .errors import LockstepCompileError
 from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
 
 
-def _read_source_file(path: Path, *, stderr) -> str | None:
+def _read_source_file(path: Path, *, stderr: TextIO) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -26,7 +27,7 @@ def _read_source_file(path: Path, *, stderr) -> str | None:
     return None
 
 
-def build_arg_parser():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Debug parser for Lockstep source files."
     )
@@ -108,7 +109,9 @@ def build_arg_parser():
     return parser
 
 
-def _load_simulation_inputs(args, *, stderr):
+def _load_simulation_inputs(
+    args: argparse.Namespace, *, stderr: TextIO
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]]] | None:
     input_payload = ""
     if args.simulate_input:
         input_path = Path(args.simulate_input)
@@ -126,7 +129,14 @@ def _load_simulation_inputs(args, *, stderr):
     return None
 
 
-def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
+def run_cli(
+    argv: list[str] | None = None,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    compiler: Callable[..., Any] | None = None,
+) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -221,7 +231,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             for parameter in signature.parameters.values()
         )
 
-    compile_kwargs = {}
+    compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
         compile_kwargs["verbose"] = False
     if supports_library_sources:
@@ -301,7 +311,11 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         print(c_header, file=stdout)
         return 0
 
-    entities = getattr(result, "entities", result)
+    entities: dict[str, Any]
+    if hasattr(result, "entities"):
+        entities = cast(dict[str, Any], result.entities)
+    else:
+        entities = cast(dict[str, Any], result)
 
     if args.dump:
         print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
@@ -339,7 +353,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     return 0
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     from .compiler import compile_lockstep
 
     sys.exit(run_cli(argv, compiler=compile_lockstep))
