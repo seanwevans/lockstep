@@ -160,6 +160,31 @@ lockstepc path/to/program.lock --emit-header
 lockstepc --version
 ```
 
+### Reproducible dependency installs (locked + hashed)
+
+Lockstep now tracks pinned lockfiles generated from `pyproject.toml` using `pip-tools`:
+
+* `requirements.lock` (runtime dependencies)
+* `requirements-test.lock` (runtime + `test` optional group)
+* `requirements-lsp.lock` (runtime + `lsp` optional group)
+
+Install using hash verification:
+
+```bash
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --require-hashes -r requirements-test.lock
+python -m pip install --require-hashes -r requirements-lsp.lock
+```
+
+Refresh lockfiles after dependency changes:
+
+```bash
+python -m pip install --upgrade pip pip-tools
+make lock-deps
+```
+
+CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hashes` during installation so builds fail if hashes do not match.
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python

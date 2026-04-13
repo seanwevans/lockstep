@@ -90,6 +90,25 @@ Both dependencies are sourced from PyPI. Lockstep does not vendor either depende
 
 The optional `lsp` dependency group adds `pygls` and `lsprotocol`, which are used only by the LSP server and do not affect compiler output.
 
+### Locked dependency workflow
+
+Dependency resolution is committed to hashed lockfiles generated from `pyproject.toml`:
+
+- `requirements.lock` (runtime)
+- `requirements-test.lock` (runtime + `test`)
+- `requirements-lsp.lock` (runtime + `lsp`)
+
+Update flow:
+
+1. Edit dependency declarations in `pyproject.toml`.
+2. Regenerate lockfiles with `make lock-deps` (uses `pip-compile --generate-hashes`).
+3. Commit `pyproject.toml` + all updated `requirements*.lock` files together.
+
+Verification in CI:
+
+- `make check-lock-deps` regenerates lockfiles and fails if the committed lockfiles are stale relative to `pyproject.toml`.
+- Installation steps use `pip install --require-hashes -r <lockfile>` so tampered or missing hashes fail fast.
+
 ## Hardening roadmap
 
 The following improvements are planned for future releases:
@@ -97,5 +116,4 @@ The following improvements are planned for future releases:
 - **Input size and complexity limits** for the parser frontend (maximum file size, maximum nesting depth, parse timeout).
 - **Stronger process isolation** for simulator subprocesses (for example, optional namespace/cgroup sandboxing when available).
 - **Formal verification** of the `noalias` correctness invariant, confirming that the memory model guarantees no pointer aliasing across all valid Lockstep programs.
-- **Dependency pinning and hash verification** in the build system.
 - **Automated dependency vulnerability scanning** via Dependabot or similar tooling in CI.

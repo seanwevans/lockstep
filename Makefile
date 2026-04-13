@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps
 
 verify: test mypy
 
@@ -13,6 +13,15 @@ check-generated-parser:
 	$(MAKE) verify-parser-toolchain
 	python scripts/generate_parser.py
 	git diff --exit-code -- generated/parser/LockstepLexer.py generated/parser/LockstepListener.py generated/parser/LockstepParser.py generated/parser/LockstepVisitor.py
+
+lock-deps:
+	pip-compile --generate-hashes --strip-extras --output-file requirements.lock pyproject.toml
+	pip-compile --generate-hashes --strip-extras --extra test --output-file requirements-test.lock pyproject.toml
+	pip-compile --generate-hashes --strip-extras --extra lsp --output-file requirements-lsp.lock pyproject.toml
+
+check-lock-deps:
+	$(MAKE) lock-deps
+	git diff --exit-code -- pyproject.toml requirements.lock requirements-test.lock requirements-lsp.lock
 
 build:
 	python -m pip wheel . --no-deps --wheel-dir dist
