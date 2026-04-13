@@ -4,10 +4,28 @@ import json
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, Callable, TextIO, cast
 
 from .errors import LockstepCompileError
 from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
+
+
+def _non_negative_limit_value(flag_name: str):
+    def _parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be an integer."
+            ) from exc
+        if parsed < 0:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be >= 0 (0 disables the limit)."
+            )
+        return parsed
+
+    return _parse
 
 
 def _read_source_file(path: Path, *, stderr) -> str | None:
@@ -26,7 +44,7 @@ def _read_source_file(path: Path, *, stderr) -> str | None:
     return None
 
 
-def build_arg_parser():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Debug parser for Lockstep source files."
     )
@@ -89,26 +107,28 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--max-source-bytes",
-        type=int,
+        type=_non_negative_limit_value("--max-source-bytes"),
         default=None,
         help="Maximum UTF-8 source bytes accepted by parser (0 disables limit).",
     )
     parser.add_argument(
         "--parse-timeout-ms",
-        type=int,
+        type=_non_negative_limit_value("--parse-timeout-ms"),
         default=None,
         help="Maximum parser runtime in milliseconds (0 disables limit).",
     )
     parser.add_argument(
         "--max-expr-nesting",
-        type=int,
+        type=_non_negative_limit_value("--max-expr-nesting"),
         default=None,
         help="Maximum allowed expression nesting depth (0 disables limit).",
     )
     return parser
 
 
-def _load_simulation_inputs(args, *, stderr):
+def _load_simulation_inputs(
+    args: argparse.Namespace, *, stderr: TextIO
+) -> tuple[dict[str, list[Any]], dict[str, list[Any]]] | None:
     input_payload = ""
     if args.simulate_input:
         input_path = Path(args.simulate_input)
@@ -126,7 +146,14 @@ def _load_simulation_inputs(args, *, stderr):
     return None
 
 
-def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
+def run_cli(
+    argv: list[str] | None = None,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    compiler: Callable[..., Any] | None = None,
+) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -134,9 +161,9 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
 
-    if args.simulate_input and not args.simulate:
+    if args.simulate_input and not (args.simulate or args.report):
         print(
-            "usage error: --simulate-input requires --simulate.",
+            "usage error: --simulate-input requires --simulate or --report.",
             file=stderr,
         )
         return 2
@@ -221,7 +248,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
             for parameter in signature.parameters.values()
         )
 
-    compile_kwargs = {}
+    compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
         compile_kwargs["verbose"] = False
     if supports_library_sources:
@@ -301,7 +328,11 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
         print(c_header, file=stdout)
         return 0
 
-    entities = getattr(result, "entities", result)
+    entities: dict[str, Any]
+    if hasattr(result, "entities"):
+        entities = cast(dict[str, Any], result.entities)
+    else:
+        entities = cast(dict[str, Any], result)
 
     if args.dump:
         print(json.dumps(entities, indent=2, sort_keys=True, default=str), file=stdout)
@@ -339,7 +370,7 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     return 0
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> None:
     from .compiler import compile_lockstep
 
     sys.exit(run_cli(argv, compiler=compile_lockstep))

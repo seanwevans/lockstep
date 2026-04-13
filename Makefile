@@ -1,4 +1,6 @@
-.PHONY: verify-parser-toolchain generate-parser check-generated-parser lock-deps check-lock-deps build test test-cov
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps
+
+verify: test mypy
 
 verify-parser-toolchain:
 	python scripts/generate_parser.py --verify-toolchain
@@ -29,3 +31,6 @@ test:
 
 test-cov:
 	pytest --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml
+
+mypy:
+	python -m mypy

@@ -5,6 +5,8 @@ import pathlib
 import sys
 import tempfile
 
+import pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -13,6 +15,9 @@ from lockstep_compiler.cli import build_arg_parser, run_cli
 from lockstep_compiler.ast import AstExprCall, AstExprVar, AstReturnStmt
 from lockstep_compiler.codegen import emit_llvm_ir
 from lockstep_compiler.lsp import provide_hover_info
+from lockstep_compiler import compiler as compiler_module
+from lockstep_compiler.compiler import FrontendLimits, compile_lockstep
+from lockstep_compiler.errors import LockstepCompileError
 from lockstep_compiler.prelude import load_intrinsics
 
 
@@ -328,3 +333,165 @@ def test_hover_returns_none_for_empty_line():
     source = "\n\n\n"
     result = provide_hover_info(source, 0, 0)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Frontend limits validation and CLI parsing
+# ---------------------------------------------------------------------------
+
+_LIMIT_SOURCE = "pipeline P { bind { } }"
+_NESTED_EXPR_SOURCE = """pure float nested(float v) {
+    return (((((((v)))))));
+}
+
+pipeline P {
+    bind {
+    }
+}
+"""
+
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "value"),
+    [
+        ("max_source_bytes", -1),
+        ("parse_timeout_ms", -1),
+        ("max_expression_nesting", -1),
+    ],
+)
+def test_compile_lockstep_rejects_negative_frontend_limits(limit_name, value):
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(_LIMIT_SOURCE, frontend_limits=FrontendLimits(**{limit_name: value}))
+
+    assert exc_info.value.errors[0].code == "LCK006"
+    assert limit_name in exc_info.value.errors[0].message
+
+
+def test_compile_lockstep_zero_disables_source_size_limit():
+    compile_lockstep(
+        _LIMIT_SOURCE,
+        frontend_limits=FrontendLimits(max_source_bytes=0),
+    )
+
+
+def test_compile_lockstep_zero_disables_expression_nesting_limit():
+    compile_lockstep(
+        _NESTED_EXPR_SOURCE,
+        frontend_limits=FrontendLimits(max_expression_nesting=0),
+    )
+
+
+def test_compile_lockstep_zero_disables_parse_timeout(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._stream = stream
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            return "TREE"
+
+    class StubVisitor:
+        def visit(self, _tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+
+    compile_lockstep(
+        _LIMIT_SOURCE,
+        frontend_limits=FrontendLimits(parse_timeout_ms=0),
+    )
+
+
+@pytest.mark.parametrize(
+    ("frontend_limits", "error_code"),
+    [
+        (FrontendLimits(max_source_bytes=8), "LCK003"),
+        (FrontendLimits(max_expression_nesting=2), "LCK005"),
+    ],
+)
+def test_compile_lockstep_positive_frontend_limits_are_enforced(frontend_limits, error_code):
+    source = _NESTED_EXPR_SOURCE if error_code == "LCK005" else _LIMIT_SOURCE
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(source, frontend_limits=frontend_limits)
+
+    assert exc_info.value.errors[0].code == error_code
+
+
+def test_compile_lockstep_positive_parse_timeout_is_enforced(monkeypatch):
+    class StubLexer:
+        def __init__(self, input_stream):
+            self.input_stream = input_stream
+
+        def removeErrorListeners(self):
+            pass
+
+        def addErrorListener(self, listener):
+            pass
+
+    class StubParser:
+        def __init__(self, stream):
+            self._stream = stream
+            self._listeners = []
+
+        def removeErrorListeners(self):
+            self._listeners = []
+
+        def addErrorListener(self, listener):
+            self._listeners.append(listener)
+
+        def program(self):
+            self._stream.LT(1)
+            return "TREE"
+
+    class StubVisitor:
+        def visit(self, _tree):
+            return None
+
+    monkeypatch.setattr(
+        compiler_module,
+        "_load_default_parser_classes",
+        lambda: (StubLexer, StubParser, StubVisitor),
+    )
+    monotonic_values = iter([0.0, 0.002])
+    monkeypatch.setattr(compiler_module.time, "monotonic", lambda: next(monotonic_values))
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            _LIMIT_SOURCE,
+            frontend_limits=FrontendLimits(parse_timeout_ms=1),
+        )
+
+    assert exc_info.value.errors[0].code == "LCK004"
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ["--max-source-bytes", "--parse-timeout-ms", "--max-expr-nesting"],
+)
+def test_cli_rejects_negative_limit_values(flag, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        run_cli(["--simulate", flag, "-1"], stdin=io.StringIO(_LIMIT_SOURCE))
+
+    assert exc_info.value.code == 2
+    assert "must be >= 0 (0 disables the limit)" in capsys.readouterr().err
