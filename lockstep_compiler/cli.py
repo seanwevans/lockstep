@@ -11,7 +11,24 @@ from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
 
 
-def _read_source_file(path: Path, *, stderr: TextIO) -> str | None:
+def _non_negative_limit_value(flag_name: str):
+    def _parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be an integer."
+            ) from exc
+        if parsed < 0:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be >= 0 (0 disables the limit)."
+            )
+        return parsed
+
+    return _parse
+
+
+def _read_source_file(path: Path, *, stderr) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -90,19 +107,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-source-bytes",
-        type=int,
+        type=_non_negative_limit_value("--max-source-bytes"),
         default=None,
         help="Maximum UTF-8 source bytes accepted by parser (0 disables limit).",
     )
     parser.add_argument(
         "--parse-timeout-ms",
-        type=int,
+        type=_non_negative_limit_value("--parse-timeout-ms"),
         default=None,
         help="Maximum parser runtime in milliseconds (0 disables limit).",
     )
     parser.add_argument(
         "--max-expr-nesting",
-        type=int,
+        type=_non_negative_limit_value("--max-expr-nesting"),
         default=None,
         help="Maximum allowed expression nesting depth (0 disables limit).",
     )
@@ -144,9 +161,9 @@ def run_cli(
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
 
-    if args.simulate_input and not args.simulate:
+    if args.simulate_input and not (args.simulate or args.report):
         print(
-            "usage error: --simulate-input requires --simulate.",
+            "usage error: --simulate-input requires --simulate or --report.",
             file=stderr,
         )
         return 2

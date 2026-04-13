@@ -25,6 +25,7 @@ DEFAULT_SOURCE_FILE = "<stdin>"
 DEFAULT_MAX_SOURCE_BYTES = 1_048_576
 DEFAULT_PARSE_TIMEOUT_MS = 2_000
 DEFAULT_MAX_EXPRESSION_NESTING = 128
+DEFAULT_INVALID_FRONTEND_LIMIT_CODE = "LCK006"
 _DEPENDENCY_DECL_PATTERN = re.compile(
     r'^\s*(?:import|#include)\s+"((?:[^"\\]|\\.)+)"\s*;\s*$',
     re.MULTILINE,
@@ -87,25 +88,62 @@ class _DeadlineTokenStream(CommonTokenStream):  # type: ignore[misc]
         return super().consume()
 
 
+def _normalize_frontend_limit_value(
+    value: int | None,
+    *,
+    name: str,
+    source_file: str,
+) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        diagnostic = LockstepDiagnostic(
+            severity="error",
+            code=DEFAULT_INVALID_FRONTEND_LIMIT_CODE,
+            message=(
+                f"Invalid frontend limit '{name}': {value}. "
+                "Expected a non-negative integer."
+            ),
+            line=1,
+            column=0,
+            source_file=source_file,
+            hint=(
+                f"Set {name} to 0 to disable, or provide a positive integer "
+                "to enforce the limit."
+            ),
+        )
+        raise LockstepCompileError(
+            [diagnostic],
+            diagnostics=[diagnostic],
+            phase="parse",
+            source_file=source_file,
+        )
+    if value == 0:
+        return None
+    return value
+
+
 def _normalize_frontend_limits(
     limits: FrontendLimits | None,
+    *,
+    source_file: str,
 ) -> FrontendLimits:
     resolved = limits or FrontendLimits()
     return FrontendLimits(
-        max_source_bytes=(
-            resolved.max_source_bytes
-            if resolved.max_source_bytes and resolved.max_source_bytes > 0
-            else None
+        max_source_bytes=_normalize_frontend_limit_value(
+            resolved.max_source_bytes,
+            name="max_source_bytes",
+            source_file=source_file,
         ),
-        parse_timeout_ms=(
-            resolved.parse_timeout_ms
-            if resolved.parse_timeout_ms and resolved.parse_timeout_ms > 0
-            else None
+        parse_timeout_ms=_normalize_frontend_limit_value(
+            resolved.parse_timeout_ms,
+            name="parse_timeout_ms",
+            source_file=source_file,
         ),
-        max_expression_nesting=(
-            resolved.max_expression_nesting
-            if resolved.max_expression_nesting and resolved.max_expression_nesting > 0
-            else None
+        max_expression_nesting=_normalize_frontend_limit_value(
+            resolved.max_expression_nesting,
+            name="max_expression_nesting",
+            source_file=source_file,
         ),
     )
 
@@ -419,7 +457,7 @@ def _compile_lockstep_with_dependencies(
     frontend_limits: FrontendLimits | None = None,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
-    resolved_limits = _normalize_frontend_limits(frontend_limits)
+    resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
     _enforce_source_size_limit(
         source_code,
         source_file=source_file,
