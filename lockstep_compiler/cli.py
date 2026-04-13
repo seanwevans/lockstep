@@ -134,9 +134,9 @@ def run_cli(argv=None, *, stdin=None, stdout=None, stderr=None, compiler=None):
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
 
-    if args.simulate_input and not args.simulate:
+    if args.simulate_input and not (args.simulate or args.report):
         print(
-            "usage error: --simulate-input requires --simulate.",
+            "usage error: --simulate-input requires --simulate or --report.",
             file=stderr,
         )
         return 2
