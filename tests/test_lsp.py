@@ -270,3 +270,83 @@ shader Wrap(in float src, out float dst) {
 
     assert blend_target is not None
     assert (blend_target.line, blend_target.column, blend_target.symbol) == (6, 0, "blend")
+
+
+def test_hover_and_definition_ignore_symbols_in_comments_and_strings():
+    source = """
+shader Integrate(in float src, out float dst) { dst = src; }
+
+shader Use(in float src, out float dst) {
+    // Integrate(src, dst);
+    string note = "Integrate should not resolve";
+    dst = src;
+}
+"""
+    lines = source.splitlines()
+    comment_line = next(i for i, text in enumerate(lines) if "Integrate(src, dst)" in text)
+    string_line = next(i for i, text in enumerate(lines) if "Integrate should not resolve" in text)
+
+    assert provide_hover_info(source, comment_line, lines[comment_line].index("Integrate") + 1) is None
+    assert find_definition_target(
+        source,
+        comment_line,
+        lines[comment_line].index("Integrate") + 1,
+    ) is None
+    assert provide_hover_info(source, string_line, lines[string_line].index("Integrate") + 1) is None
+    assert find_definition_target(
+        source,
+        string_line,
+        lines[string_line].index("Integrate") + 1,
+    ) is None
+
+
+def test_completion_and_callable_resolution_stable_with_unusual_whitespace_layout():
+    source = """
+shader
+   Integrate
+(
+    in float src,
+    out float dst
+)
+{
+    dst = src;
+}
+
+pipeline P {
+    stream<float, 8> src;
+    stream<float, 8> dst;
+
+    bind
+    {
+        dst =
+            Integrate
+            (
+                src,
+                dst
+            );
+    }
+}
+"""
+    lines = source.splitlines()
+    call_line = next(i for i, text in enumerate(lines) if "Integrate" in text and i > 10)
+    bind_line = next(i for i, text in enumerate(lines) if text.strip() == "dst =")
+
+    definition = find_definition_target(
+        source,
+        call_line,
+        lines[call_line].index("Integrate") + 1,
+    )
+    assert definition is not None
+    decl_line = next(i for i, text in enumerate(lines) if text.strip() == "Integrate")
+    assert (definition.line, definition.symbol) == (decl_line, "Integrate")
+
+    hover = provide_hover_info(
+        source,
+        call_line,
+        lines[call_line].index("Integrate") + 1,
+    )
+    assert hover == "(shader) `shader Integrate(...)`"
+
+    items = provide_bind_completion_items(source, line=bind_line, column=8)
+    labels = [item["label"] for item in items]
+    assert "dst=Integrate(src,dst);" in labels

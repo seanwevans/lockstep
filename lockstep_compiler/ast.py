@@ -198,6 +198,7 @@ class AstKernelBindRoute:
     kernel: str
     args: tuple[str, ...]
     route: str
+    location: AstLocation = AstLocation()
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,7 @@ class AstFoldBindRoute:
     operator: str
     source: str
     route: str
+    location: AstLocation = AstLocation()
 
     def __post_init__(self):
         object.__setattr__(self, "uniform_type", _normalize_type(self.uniform_type))
@@ -501,6 +503,7 @@ class AstBuilder(_AstBuilderMixin):
         return self.visitChildren(ctx)
 
     def visitPureDecl(self, ctx: Any):
+        name_token = getattr(self._call(ctx, "ID"), "symbol", None)
         params: list[AstKernelParam] = []
         pure_param_list = self._call(ctx, "pureParamList")
         if pure_param_list:
@@ -521,29 +524,40 @@ class AstBuilder(_AstBuilderMixin):
                 return_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 params=tuple(params),
                 body=self._parse_statement_text(ctx),
-                location=self._location(ctx),
+                location=AstLocation(
+                    line=getattr(name_token, "line", 0),
+                    column=getattr(name_token, "column", 0),
+                ),
             )
         )
         return self.visitChildren(ctx)
 
     def visitShaderDecl(self, ctx: Any):
+        name_token = getattr(self._call(ctx, "ID"), "symbol", None)
         self._shaders.append(
             AstKernelDecl(
                 name=self._call(ctx, "ID").getText(),
                 params=self._parse_params(self._call(ctx, "paramList")),
                 body=self._parse_statement_text(ctx),
-                location=self._location(ctx),
+                location=AstLocation(
+                    line=getattr(name_token, "line", 0),
+                    column=getattr(name_token, "column", 0),
+                ),
             )
         )
         return self.visitChildren(ctx)
 
     def visitFilterDecl(self, ctx: Any):
+        name_token = getattr(self._call(ctx, "ID"), "symbol", None)
         self._filters.append(
             AstKernelDecl(
                 name=self._call(ctx, "ID").getText(),
                 params=self._parse_params(self._call(ctx, "paramList")),
                 body=self._parse_statement_text(ctx),
-                location=self._location(ctx),
+                location=AstLocation(
+                    line=getattr(name_token, "line", 0),
+                    column=getattr(name_token, "column", 0),
+                ),
             )
         )
         return self.visitChildren(ctx)
@@ -620,6 +634,7 @@ class AstBuilder(_AstBuilderMixin):
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
                         route=route_text,
+                        location=self._location(bind_stmt),
                     )
                 )
                 continue
@@ -631,6 +646,7 @@ class AstBuilder(_AstBuilderMixin):
                         kernel=id_tokens[1].getText(),
                         args=tuple(token.getText() for token in id_tokens[2:]),
                         route=route_text,
+                        location=self._location(bind_stmt),
                     )
                 )
         return self.visitChildren(ctx)
@@ -721,6 +737,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                         "kernel": route.kernel,
                         "args": list(route.args),
                         "route": route.route,
+                        "line": route.location.line,
+                        "column": route.location.column,
                     }
                 )
             else:
@@ -732,6 +750,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                         "operator": route.operator,
                         "source": route.source,
                         "route": route.route,
+                        "line": route.location.line,
+                        "column": route.location.column,
                     }
                 )
 
@@ -754,6 +774,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         "shaders": [
             {
                 "name": shader.name,
+                "line": shader.location.line,
+                "column": shader.location.column,
                 "params": [
                     {
                         "modifier": param.modifier,
@@ -770,6 +792,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         "filters": [
             {
                 "name": flt.name,
+                "line": flt.location.line,
+                "column": flt.location.column,
                 "params": [
                     {
                         "modifier": param.modifier,
@@ -786,6 +810,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         "pure_functions": [
             {
                 "name": pure.name,
+                "line": pure.location.line,
+                "column": pure.location.column,
                 "return_type": _type_name(pure.return_type),
                 "params": [
                     {"type": _type_name(param.declared_type), "name": param.name}
