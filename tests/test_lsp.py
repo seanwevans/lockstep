@@ -270,3 +270,116 @@ shader Wrap(in float src, out float dst) {
 
     assert blend_target is not None
     assert (blend_target.line, blend_target.column, blend_target.symbol) == (6, 0, "blend")
+
+
+def test_hover_and_definition_ignore_symbols_in_comments_and_strings():
+    source = """
+shader Step(in float src, out float dst) {
+    // Step(src, dst);
+    string msg = "Step(src, dst)";
+    dst = src;
+}
+"""
+    lines = source.splitlines()
+    comment_line = next(i for i, text in enumerate(lines) if "// Step(" in text)
+    string_line = next(i for i, text in enumerate(lines) if '"Step(src, dst)"' in text)
+
+    assert provide_hover_info(source, comment_line, lines[comment_line].index("Step") + 1) is None
+    assert (
+        find_definition_target(
+            source,
+            comment_line,
+            lines[comment_line].index("Step") + 1,
+        )
+        is None
+    )
+    assert provide_hover_info(source, string_line, lines[string_line].index("Step") + 1) is None
+    assert (
+        find_definition_target(
+            source,
+            string_line,
+            lines[string_line].index("Step") + 1,
+        )
+        is None
+    )
+
+
+def test_definition_uses_identifier_locations_for_unusual_whitespace_layouts():
+    source = """
+shader
+Warp
+(
+    in float src,
+    out float dst
+) {
+    dst = src;
+}
+
+filter
+Mix
+(
+    in float src,
+    out float dst
+) {
+    dst = src;
+}
+
+pure float
+fuse
+(
+    float a,
+    float b
+) {
+    return a;
+}
+
+shader Use(in float src, out float dst) {
+    dst = fuse(src, src);
+}
+
+pipeline P {
+    stream<float, 8> src;
+    stream<float, 8> dst;
+    bind {
+        dst = Warp(src, dst);
+        dst = Mix(src, dst);
+    }
+}
+"""
+    lines = source.splitlines()
+    warp_call_line = next(i for i, text in enumerate(lines) if "Warp(src, dst)" in text)
+    mix_call_line = next(i for i, text in enumerate(lines) if "Mix(src, dst)" in text)
+    fuse_call_line = next(i for i, text in enumerate(lines) if "fuse(src, src)" in text)
+
+    warp_target = find_definition_target(source, warp_call_line, lines[warp_call_line].index("Warp") + 1)
+    mix_target = find_definition_target(source, mix_call_line, lines[mix_call_line].index("Mix") + 1)
+    fuse_target = find_definition_target(source, fuse_call_line, lines[fuse_call_line].index("fuse") + 1)
+
+    assert warp_target is not None
+    assert (warp_target.line, warp_target.column, warp_target.symbol) == (2, 0, "Warp")
+    assert mix_target is not None
+    assert (mix_target.line, mix_target.column, mix_target.symbol) == (11, 0, "Mix")
+    assert fuse_target is not None
+    assert (fuse_target.line, fuse_target.column, fuse_target.symbol) == (20, 0, "fuse")
+
+
+def test_bind_completion_prefers_bind_route_metadata_with_unusual_spacing():
+    source = """
+shader Step(in float src, out float dst) { dst = src; }
+
+pipeline P {
+    stream<float, 4> src;
+    stream<float, 4> dst;
+    bind {
+        dst
+            =
+            Step(
+                src,
+                dst
+            );
+    }
+}
+"""
+    items = provide_bind_completion_items(source, line=7, column=8)
+
+    assert items[0]["label"] == "dst=Step(src,dst);"
