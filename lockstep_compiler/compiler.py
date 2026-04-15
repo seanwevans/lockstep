@@ -391,6 +391,15 @@ def _resolve_dependency_sources(
 
             try:
                 dependency_source = dependency_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                _dependency_parse_error(
+                    message=(
+                        f"Unable to parse dependency '{reference}' from "
+                        f"'{current_file}': invalid UTF-8 ({exc.reason})"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
             except OSError as exc:
                 _dependency_parse_error(
                     message=(
