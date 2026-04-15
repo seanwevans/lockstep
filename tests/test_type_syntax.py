@@ -176,3 +176,22 @@ def test_circular_imports_raise_compile_error(tmp_path):
     assert exc_info.value.phase == "parse"
     assert [diag.code for diag in exc_info.value.errors] == ["LCK002"]
     assert "Circular dependency detected" in exc_info.value.errors[0].message
+
+
+def test_malformed_utf8_dependency_raises_parse_style_error(tmp_path):
+    dependency = tmp_path / "bad.lock"
+    main_file = tmp_path / "main.lock"
+    dependency.write_bytes(b"\xff\xfe\xfd")
+    main_file.write_text(f'import "{dependency.name}";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main_file.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main_file),
+        )
+
+    assert exc_info.value.phase == "parse"
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK002"]
+    assert "Unable to parse dependency" in exc_info.value.errors[0].message
+    assert "invalid UTF-8" in exc_info.value.errors[0].message
