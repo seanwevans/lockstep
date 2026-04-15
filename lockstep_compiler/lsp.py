@@ -223,6 +223,97 @@ def _offset_to_line_column(source: str, offset: int) -> tuple[int, int]:
     return line, clamped - line_start - 1
 
 
+def _line_column_to_offset(source: str, line: int, column: int) -> int | None:
+    if line < 0 or column < 0:
+        return None
+    lines = source.splitlines(keepends=True)
+    if line >= len(lines):
+        return None
+    return sum(len(existing) for existing in lines[:line]) + min(column, len(lines[line]))
+
+
+def _code_mask(source: str) -> list[bool]:
+    mask = [True] * len(source)
+    in_string = False
+    escaped = False
+    in_comment = False
+    for index, char in enumerate(source):
+        if in_comment:
+            mask[index] = False
+            if char == "\n":
+                in_comment = False
+            continue
+
+        if in_string:
+            mask[index] = False
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == "/" and index + 1 < len(source) and source[index + 1] == "/":
+            mask[index] = False
+            mask[index + 1] = False
+            in_comment = True
+            continue
+
+        if char == '"':
+            mask[index] = False
+            in_string = True
+            escaped = False
+    return mask
+
+
+def _identifier_at_position(source: str, line: int, column: int) -> str | None:
+    offset = _line_column_to_offset(source, line, column)
+    if offset is None or offset >= len(source):
+        return None
+
+    code_mask = _code_mask(source)
+    if not code_mask[offset]:
+        return None
+
+    index = offset
+    if not (source[index].isalnum() or source[index] == "_"):
+        if index > 0 and (source[index - 1].isalnum() or source[index - 1] == "_"):
+            index -= 1
+        else:
+            return None
+
+    start = index
+    while start > 0 and (source[start - 1].isalnum() or source[start - 1] == "_"):
+        start -= 1
+    end = index + 1
+    while end < len(source) and (source[end].isalnum() or source[end] == "_"):
+        end += 1
+
+    if any(not code_mask[pos] for pos in range(start, end)):
+        return None
+    return source[start:end]
+
+
+def _member_access_at_position(source: str, line: int, column: int) -> tuple[str, str] | None:
+    lines = source.splitlines()
+    if line < 0 or line >= len(lines):
+        return None
+    line_text = lines[line]
+    code_mask = _code_mask(source)
+    line_start = _line_column_to_offset(source, line, 0)
+    if line_start is None:
+        return None
+    for match in _MEMBER_ACCESS_RE.finditer(line_text):
+        start, end = match.span(0)
+        if not (start <= column <= end):
+            continue
+        if any(not code_mask[line_start + pos] for pos in range(start, end)):
+            continue
+        return match.group(1), match.group(2)
+    return None
+
+
 def _find_callable_definition(
     source: str,
     pattern: re.Pattern[str],
@@ -236,6 +327,17 @@ def _find_callable_definition(
     return DefinitionTarget(line=line, column=column, symbol=symbol)
 
 
+def _location_target_from_entity(entity: dict[str, Any]) -> DefinitionTarget | None:
+    name = entity.get("name")
+    line = entity.get("line")
+    column = entity.get("column")
+    if not name or not isinstance(line, int) or not isinstance(column, int):
+        return None
+    if line <= 0 or column < 0:
+        return None
+    return DefinitionTarget(line=line - 1, column=column, symbol=name)
+
+
 def _build_callable_index(
     source: str,
     entities: dict[str, Any],
@@ -246,11 +348,13 @@ def _build_callable_index(
         name = shader.get("name")
         if not name or name in callable_index:
             continue
-        target = _find_callable_definition(
-            source,
-            re.compile(rf"\bshader\s+(?P<name>{re.escape(name)})\s*\("),
-            name,
-        )
+        target = _location_target_from_entity(shader)
+        if target is None:
+            target = _find_callable_definition(
+                source,
+                re.compile(rf"\bshader\s+(?P<name>{re.escape(name)})\s*\("),
+                name,
+            )
         if target is not None:
             callable_index[name] = target
 
@@ -258,11 +362,13 @@ def _build_callable_index(
         name = filter_decl.get("name")
         if not name or name in callable_index:
             continue
-        target = _find_callable_definition(
-            source,
-            re.compile(rf"\bfilter\s+(?P<name>{re.escape(name)})\s*\("),
-            name,
-        )
+        target = _location_target_from_entity(filter_decl)
+        if target is None:
+            target = _find_callable_definition(
+                source,
+                re.compile(rf"\bfilter\s+(?P<name>{re.escape(name)})\s*\("),
+                name,
+            )
         if target is not None:
             callable_index[name] = target
 
@@ -270,13 +376,15 @@ def _build_callable_index(
         name = pure.get("name")
         if not name or pure.get("intrinsic") or name in callable_index:
             continue
-        target = _find_callable_definition(
-            source,
-            re.compile(
-                rf"\bpure\b[\s\S]*?\b(?P<name>{re.escape(name)})\s*\("
-            ),
-            name,
-        )
+        target = _location_target_from_entity(pure)
+        if target is None:
+            target = _find_callable_definition(
+                source,
+                re.compile(
+                    rf"\bpure\b[\s\S]*?\b(?P<name>{re.escape(name)})\s*\("
+                ),
+                name,
+            )
         if target is not None:
             callable_index[name] = target
 
@@ -289,23 +397,15 @@ def find_member_definition(
     column: int,
     analysis_context: AnalysisContext | None = None,
 ) -> MemberDefinition | None:
-    lines = source.splitlines()
-    if line < 0 or line >= len(lines):
-        return None
-
-    line_text = lines[line]
     context = analysis_context or build_analysis_context(source)
-
-    for match in _MEMBER_ACCESS_RE.finditer(line_text):
-        start, end = match.span(0)
-        if not (start <= column <= end):
-            continue
-        variable_name, field_name = match.groups()
-        struct_name = context.variable_types.get(variable_name)
-        if not struct_name:
-            return None
-        return context.struct_member_index.get(struct_name, {}).get(field_name)
-    return None
+    member_access = _member_access_at_position(source, line, column)
+    if member_access is None:
+        return None
+    variable_name, field_name = member_access
+    struct_name = context.variable_types.get(variable_name)
+    if not struct_name:
+        return None
+    return context.struct_member_index.get(struct_name, {}).get(field_name)
 
 
 def find_definition_target(
@@ -331,14 +431,11 @@ def find_definition_target(
     if line < 0 or line >= len(lines):
         return None
 
-    line_text = lines[line]
     context = analysis_context or build_analysis_context(source)
-    for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", line_text):
-        start, end = match.span(1)
-        if not (start <= column < end):
-            continue
-        return context.callable_index.get(match.group(1))
-    return None
+    name = _identifier_at_position(source, line, column)
+    if name is None:
+        return None
+    return context.callable_index.get(name)
 
 
 def provide_bind_completion_items(
@@ -360,7 +457,15 @@ def provide_bind_completion_items(
     )
 
     if inside_bind:
-        for route in entities.get("bind_routes", []):
+        bind_route_labels = [
+            entry.get("route")
+            for entry in entities.get("bind_routes_meta", [])
+            if isinstance(entry, dict) and entry.get("route")
+        ]
+        if not bind_route_labels:
+            bind_route_labels = [route for route in entities.get("bind_routes", []) if route]
+
+        for route in bind_route_labels:
             if route in seen_labels:
                 continue
             completion_entries.append(
@@ -422,18 +527,10 @@ def provide_hover_info(
     column: int,
     analysis_context: AnalysisContext | None = None,
 ) -> str | None:
-    lines = source.splitlines()
-    if line < 0 or line >= len(lines):
-        return None
-
-    line_text = lines[line]
     context = analysis_context or build_analysis_context(source)
-
-    for match in _MEMBER_ACCESS_RE.finditer(line_text):
-        start, end = match.span(0)
-        if not (start <= column <= end):
-            continue
-        variable_name, field_name = match.groups()
+    member_access = _member_access_at_position(source, line, column)
+    if member_access is not None:
+        variable_name, field_name = member_access
         struct_name = context.variable_types.get(variable_name)
         if struct_name:
             field_type = context.struct_field_types.get(struct_name, {}).get(field_name)
@@ -442,32 +539,24 @@ def provide_hover_info(
             return f"(field) `{struct_name}.{field_name}`"
         return None
 
-    id_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
-    for match in id_pattern.finditer(line_text):
-        start, end = match.span(1)
-        if not (start <= column < end):
-            continue
-        name = match.group(1)
-        if name in context.variable_types:
-            return f"(variable) `{name}: {context.variable_types[name]}`"
-
-        entities = context.entities
-        if any(struct.get("name") == name for struct in entities.get("structs", [])):
-            return f"(struct) `struct {name}`"
-        if any(shader.get("name") == name for shader in entities.get("shaders", [])):
-            return f"(shader) `shader {name}(...)`"
-        if any(
-            filter_decl.get("name") == name
-            for filter_decl in entities.get("filters", [])
-        ):
-            return f"(filter) `filter {name}(...)`"
-        if any(
-            pure.get("name") == name and not pure.get("intrinsic")
-            for pure in entities.get("pure_functions", [])
-        ):
-            return f"(pure) `pure {name}(...)`"
+    name = _identifier_at_position(source, line, column)
+    if name is None:
         return None
+    if name in context.variable_types:
+        return f"(variable) `{name}: {context.variable_types[name]}`"
 
+    entities = context.entities
+    if any(struct.get("name") == name for struct in entities.get("structs", [])):
+        return f"(struct) `struct {name}`"
+    if any(shader.get("name") == name for shader in entities.get("shaders", [])):
+        return f"(shader) `shader {name}(...)`"
+    if any(filter_decl.get("name") == name for filter_decl in entities.get("filters", [])):
+        return f"(filter) `filter {name}(...)`"
+    if any(
+        pure.get("name") == name and not pure.get("intrinsic")
+        for pure in entities.get("pure_functions", [])
+    ):
+        return f"(pure) `pure {name}(...)`"
     return None
 
 

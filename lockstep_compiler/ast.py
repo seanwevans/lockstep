@@ -147,6 +147,7 @@ class AstPureDecl:
     body: tuple[AstStatement, ...] = ()
     intrinsic: bool = False
     location: AstLocation = AstLocation()
+    identifier_location: AstLocation = AstLocation()
 
     def __post_init__(self):
         object.__setattr__(self, "return_type", _normalize_type(self.return_type))
@@ -158,6 +159,7 @@ class AstKernelDecl:
     params: tuple[AstKernelParam, ...] = ()
     body: tuple[AstStatement, ...] = ()
     location: AstLocation = AstLocation()
+    identifier_location: AstLocation = AstLocation()
 
 
 @dataclass(frozen=True)
@@ -198,6 +200,7 @@ class AstKernelBindRoute:
     kernel: str
     args: tuple[str, ...]
     route: str
+    location: AstLocation = AstLocation()
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,7 @@ class AstFoldBindRoute:
     operator: str
     source: str
     route: str
+    location: AstLocation = AstLocation()
 
     def __post_init__(self):
         object.__setattr__(self, "uniform_type", _normalize_type(self.uniform_type))
@@ -248,6 +252,13 @@ class _AstBuilderMixin:
         if callable(method):
             return method()
         return default
+
+    @staticmethod
+    def _token_location(token: Any) -> AstLocation:
+        symbol = getattr(token, "symbol", token)
+        return AstLocation(
+            line=getattr(symbol, "line", 0), column=getattr(symbol, "column", 0)
+        )
 
 
 class AstBuilder(_AstBuilderMixin):
@@ -501,6 +512,7 @@ class AstBuilder(_AstBuilderMixin):
         return self.visitChildren(ctx)
 
     def visitPureDecl(self, ctx: Any):
+        id_token = self._call(ctx, "ID")
         params: list[AstKernelParam] = []
         pure_param_list = self._call(ctx, "pureParamList")
         if pure_param_list:
@@ -517,33 +529,38 @@ class AstBuilder(_AstBuilderMixin):
                 )
         self._pure_functions.append(
             AstPureDecl(
-                name=self._call(ctx, "ID").getText(),
+                name=id_token.getText(),
                 return_type=self._resolve_type(self._call(ctx, "typeName").getText()),
                 params=tuple(params),
                 body=self._parse_statement_text(ctx),
                 location=self._location(ctx),
+                identifier_location=self._token_location(id_token),
             )
         )
         return self.visitChildren(ctx)
 
     def visitShaderDecl(self, ctx: Any):
+        id_token = self._call(ctx, "ID")
         self._shaders.append(
             AstKernelDecl(
-                name=self._call(ctx, "ID").getText(),
+                name=id_token.getText(),
                 params=self._parse_params(self._call(ctx, "paramList")),
                 body=self._parse_statement_text(ctx),
                 location=self._location(ctx),
+                identifier_location=self._token_location(id_token),
             )
         )
         return self.visitChildren(ctx)
 
     def visitFilterDecl(self, ctx: Any):
+        id_token = self._call(ctx, "ID")
         self._filters.append(
             AstKernelDecl(
-                name=self._call(ctx, "ID").getText(),
+                name=id_token.getText(),
                 params=self._parse_params(self._call(ctx, "paramList")),
                 body=self._parse_statement_text(ctx),
                 location=self._location(ctx),
+                identifier_location=self._token_location(id_token),
             )
         )
         return self.visitChildren(ctx)
@@ -620,6 +637,7 @@ class AstBuilder(_AstBuilderMixin):
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
                         route=route_text,
+                        location=self._token_location(id_tokens[0]),
                     )
                 )
                 continue
@@ -631,6 +649,7 @@ class AstBuilder(_AstBuilderMixin):
                         kernel=id_tokens[1].getText(),
                         args=tuple(token.getText() for token in id_tokens[2:]),
                         route=route_text,
+                        location=self._token_location(id_tokens[0]),
                     )
                 )
         return self.visitChildren(ctx)
@@ -689,6 +708,7 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
     accumulators = []
     uniforms = []
     bind_routes = []
+    bind_routes_meta = []
     bind_routes_ir = []
     for pipeline in program.pipelines:
         streams.extend(
@@ -713,6 +733,13 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         )
         for route in pipeline.bind_routes:
             bind_routes.append(route.route)
+            bind_routes_meta.append(
+                {
+                    "route": route.route,
+                    "line": route.location.line,
+                    "column": route.location.column,
+                }
+            )
             if isinstance(route, AstKernelBindRoute):
                 bind_routes_ir.append(
                     {
@@ -721,6 +748,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                         "kernel": route.kernel,
                         "args": list(route.args),
                         "route": route.route,
+                        "line": route.location.line,
+                        "column": route.location.column,
                     }
                 )
             else:
@@ -732,6 +761,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                         "operator": route.operator,
                         "source": route.source,
                         "route": route.route,
+                        "line": route.location.line,
+                        "column": route.location.column,
                     }
                 )
 
@@ -764,6 +795,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 ],
                 "body": [_statement_to_text(statement) for statement in shader.body],
                 "body_ast": list(shader.body),
+                "line": shader.identifier_location.line,
+                "column": shader.identifier_location.column,
             }
             for shader in program.shaders
         ],
@@ -780,6 +813,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 ],
                 "body": [_statement_to_text(statement) for statement in flt.body],
                 "body_ast": list(flt.body),
+                "line": flt.identifier_location.line,
+                "column": flt.identifier_location.column,
             }
             for flt in program.filters
         ],
@@ -794,6 +829,8 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
                 "body": [_statement_to_text(statement) for statement in pure.body],
                 "body_ast": list(pure.body),
                 "intrinsic": pure.intrinsic,
+                "line": pure.identifier_location.line,
+                "column": pure.identifier_location.column,
             }
             for pure in program.pure_functions
         ],
@@ -801,5 +838,6 @@ def ast_to_entities(program: AstProgram) -> dict[str, Any]:
         "accumulators": accumulators,
         "uniforms": uniforms,
         "bind_routes": bind_routes,
+        "bind_routes_meta": bind_routes_meta,
         "bind_routes_ir": bind_routes_ir,
     }
