@@ -1457,7 +1457,15 @@ def build_semantic_validator(base_visitor_cls):
             if ctx.argList() is not None:
                 target_name = id_tokens[0].getText()
                 callee_name = id_tokens[1].getText()
-                arg_names = [token.getText() for token in id_tokens[2:]]
+
+                arg_tokens = ctx.argList().ID()
+                if isinstance(arg_tokens, list):
+                    arg_names = [token.getText() for token in arg_tokens]
+                elif arg_tokens is None:
+                    arg_names = []
+                else:
+                    arg_names = [arg_tokens.getText()]
+
                 self._type_check_bind_call(ctx, target_name, callee_name, arg_names)
                 return self.visitChildren(ctx)
 

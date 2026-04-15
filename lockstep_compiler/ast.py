@@ -643,11 +643,14 @@ class AstBuilder(_AstBuilderMixin):
                 continue
 
             if len(id_tokens) >= 2:
+                arg_tokens = self._call(self._call(bind_stmt, "argList"), "ID", []) or []
+                if not isinstance(arg_tokens, list):
+                    arg_tokens = [arg_tokens]
                 self._active_bind_routes.append(
                     AstKernelBindRoute(
                         target=id_tokens[0].getText(),
                         kernel=id_tokens[1].getText(),
-                        args=tuple(token.getText() for token in id_tokens[2:]),
+                        args=tuple(token.getText() for token in arg_tokens),
                         route=route_text,
                         location=self._token_location(id_tokens[0]),
                     )
