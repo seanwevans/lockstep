@@ -293,7 +293,12 @@ def build_debug_visitor(base_visitor_cls):
                 }
 
             if len(id_tokens) >= 2:
-                args = [token.getText() for token in id_tokens[2:]]
+                arg_list_getter = getattr(stmt_ctx, "argList", None)
+                arg_list = arg_list_getter() if callable(arg_list_getter) else None
+                arg_tokens = arg_list.ID() if arg_list is not None else []
+                if not isinstance(arg_tokens, list):
+                    arg_tokens = [arg_tokens] if arg_tokens is not None else []
+                args = [token.getText() for token in arg_tokens]
                 return {
                     "kind": "kernel",
                     "target": id_tokens[0].getText(),

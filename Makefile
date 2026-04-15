@@ -40,3 +40,4 @@ bench:
 
 bench-check:
 	PYTHONPATH=. python scripts/check_benchmark_regression.py --baseline benchmarks/baselines/default.json --current benchmark-results.json --threshold 0.10
+	pytest tests/benchmarks -q --benchmark-only

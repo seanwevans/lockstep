@@ -1,0 +1,40 @@
+struct Telemetry {
+    int deviceId;
+    float reading;
+    bool healthy;
+};
+
+filter KeepHealthy(in Telemetry src, out Telemetry dst) {
+    dst.deviceId = src.deviceId;
+    dst.reading = src.reading;
+    dst.healthy = src.healthy;
+}
+
+shader AggregateReadings(
+    in Telemetry src,
+    out Telemetry dst,
+    accum float readingTotal,
+    accum int readingCount
+) {
+    readingTotal = readingTotal + src.reading;
+    readingCount = readingCount + 1;
+
+    dst.deviceId = src.deviceId;
+    dst.reading = src.reading;
+    dst.healthy = src.healthy;
+}
+
+pipeline TelemetryAggregation {
+    stream<Telemetry, 65536> telemetryRaw;
+    stream<Telemetry, 65536> telemetryFiltered;
+    stream<Telemetry, 65536> telemetryAggregated;
+    accumulator<float> readingTotal;
+    accumulator<int> readingCount;
+
+    bind {
+        telemetryFiltered = KeepHealthy(telemetryRaw, telemetryFiltered);
+        telemetryAggregated = AggregateReadings(telemetryFiltered, telemetryAggregated, readingTotal, readingCount);
+        uniform float totalReading = fold sum(readingTotal);
+        uniform int totalEvents = fold sum(readingCount);
+    }
+}

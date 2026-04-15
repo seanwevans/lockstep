@@ -211,6 +211,16 @@ To update the baseline:
 4. Re-run `make bench-check` and commit both the baseline update and rationale in your PR.
 
 The regression check currently runs in **advisory mode** on pull requests (warning-only via `continue-on-error`). Once enough benchmark history is collected, switch it to required by removing `continue-on-error: true` in `.github/workflows/tests.yml` and enabling branch protection for the benchmark job.
+### Benchmarking compiler and simulation latency
+
+Install test dependencies (includes `pytest-benchmark`) and run:
+
+```bash
+python -m pip install --require-hashes -r requirements-test.lock
+make bench
+```
+
+`make bench` executes `pytest tests/benchmarks -q --benchmark-only` and prints a benchmark summary table with per-test timing statistics (for example `min`, `max`, `mean`, and iteration counts). The benchmark suite uses fixed seeds and deterministic row counts (`1k`, `10k`, `100k`) so historical comparisons remain stable across runs.
 
 Programmatic frontend usage is available from `lockstep_compiler`:
 
