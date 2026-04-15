@@ -45,6 +45,31 @@ def test_find_member_definition_resolves_struct_field():
     assert definition.field_name == "x"
 
 
+def test_member_access_position_is_exclusive_of_regex_end():
+    source = """
+struct Vec3 { float x; };
+
+shader Copy(in Vec3 src, out Vec3 dst) {
+    dst.x = src.x;
+}
+"""
+    lines = source.splitlines()
+    access_line = next(i for i, text in enumerate(lines) if "dst.x = src.x;" in text)
+    access_text = lines[access_line]
+    member_start = access_text.index("src.x")
+    member_end = member_start + len("src.x")
+
+    inside_target = find_member_definition(source, access_line, member_start + 1)
+    inside_hover = provide_hover_info(source, access_line, member_start + 1)
+    end_target = find_member_definition(source, access_line, member_end)
+
+    assert inside_target is not None
+    assert inside_target.struct_name == "Vec3"
+    assert inside_target.field_name == "x"
+    assert inside_hover == "(field) `Vec3.x: float`"
+    assert end_target is None
+
+
 def test_provide_bind_completion_items_includes_routes_and_kernels():
     items = provide_bind_completion_items(SOURCE, line=13, column=8)
     labels = [item["label"] for item in items]

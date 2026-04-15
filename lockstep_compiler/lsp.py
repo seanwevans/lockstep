@@ -306,7 +306,7 @@ def _member_access_at_position(source: str, line: int, column: int) -> tuple[str
         return None
     for match in _MEMBER_ACCESS_RE.finditer(line_text):
         start, end = match.span(0)
-        if not (start <= column <= end):
+        if not (start <= column < end):
             continue
         if any(not code_mask[line_start + pos] for pos in range(start, end)):
             continue
