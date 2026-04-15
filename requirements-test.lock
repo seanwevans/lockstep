@@ -303,6 +303,10 @@ pluggy==1.6.0 \
     # via
     #   pytest
     #   pytest-cov
+py-cpuinfo==9.0.0 \
+    --hash=sha256:3cdbbf3fac90dc6f118bfd64384f309edeadd902d7c8fb17f02ffa1fc3f49690 \
+    --hash=sha256:859625bc251f64e21f077d099d4162689c762b5d6a4c3c97553d56241c9674d5
+    # via pytest-benchmark
 pygments==2.20.0 \
     --hash=sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f \
     --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
@@ -312,7 +316,12 @@ pytest==9.0.3 \
     --hash=sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c
     # via
     #   Lockstep (pyproject.toml)
+    #   pytest-benchmark
     #   pytest-cov
+pytest-benchmark==5.2.3 \
+    --hash=sha256:bc839726ad20e99aaa0d11a127445457b4219bdb9e80a1afc4b51da7f96b0803 \
+    --hash=sha256:deb7317998a23c650fd4ff76e1230066a76cb45dcece0aca5607143c619e7779
+    # via Lockstep (pyproject.toml)
 pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678

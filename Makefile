@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench
 
 verify: test mypy
 
@@ -34,3 +34,6 @@ test-cov:
 
 mypy:
 	python -m mypy
+
+bench:
+	pytest tests/benchmarks -q --benchmark-only

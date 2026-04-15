@@ -185,6 +185,17 @@ make lock-deps
 
 CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hashes` during installation so builds fail if hashes do not match.
 
+### Benchmarking compiler and simulation latency
+
+Install test dependencies (includes `pytest-benchmark`) and run:
+
+```bash
+python -m pip install --require-hashes -r requirements-test.lock
+make bench
+```
+
+`make bench` executes `pytest tests/benchmarks -q --benchmark-only` and prints a benchmark summary table with per-test timing statistics (for example `min`, `max`, `mean`, and iteration counts). The benchmark suite uses fixed seeds and deterministic row counts (`1k`, `10k`, `100k`) so historical comparisons remain stable across runs.
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python
