@@ -1,0 +1,61 @@
+struct Event {
+    int deviceId;
+    float value;
+    bool active;
+};
+
+struct Enriched {
+    int deviceId;
+    float normalized;
+    bool active;
+};
+
+struct Alert {
+    int deviceId;
+    float score;
+    bool active;
+};
+
+shader Normalize(in Event src, out Enriched dst) {
+    dst.deviceId = src.deviceId;
+    dst.normalized = src.value * 0.1;
+    dst.active = src.active;
+}
+
+shader Score(
+    in Enriched src,
+    out Alert dst,
+    accum float scoreSum,
+    accum int scoredCount
+) {
+    float score = src.normalized * 1.6;
+    scoreSum = scoreSum + score;
+    scoredCount = scoredCount + 1;
+
+    dst.deviceId = src.deviceId;
+    dst.score = score;
+    dst.active = src.active;
+}
+
+filter KeepActive(in Alert src, out Alert dst) {
+    dst.deviceId = src.deviceId;
+    dst.score = src.score;
+    dst.active = src.active;
+}
+
+pipeline MultiStageTransform {
+    stream<Event, 131072> eventsRaw;
+    stream<Enriched, 131072> eventsEnriched;
+    stream<Alert, 131072> alertsScored;
+    stream<Alert, 131072> alertsActive;
+    accumulator<float> scoreSum;
+    accumulator<int> scoredCount;
+
+    bind {
+        eventsEnriched = Normalize(eventsRaw, eventsEnriched);
+        alertsScored = Score(eventsEnriched, alertsScored, scoreSum, scoredCount);
+        alertsActive = KeepActive(alertsScored, alertsActive);
+        uniform float maxScore = fold max(scoreSum);
+        uniform float totalScore = fold sum(scoreSum);
+    }
+}
