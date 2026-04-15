@@ -185,6 +185,33 @@ make lock-deps
 
 CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hashes` during installation so builds fail if hashes do not match.
 
+### Benchmarking and regression checks
+
+Generate benchmark output locally:
+
+```bash
+make bench
+```
+
+This writes `benchmark-results.json` in the repository root. The CI workflow uploads this file as an artifact for every pull-request benchmark run.
+
+Compare current results against the checked-in baseline with a 10% slowdown threshold:
+
+```bash
+make bench-check
+```
+
+Baseline files live under `benchmarks/baselines/`. The default CI gate uses `benchmarks/baselines/default.json` and tracks KPI metrics listed in that file's `kpis` array.
+
+To update the baseline:
+
+1. Run `make bench` on a representative machine/state.
+2. Review `benchmark-results.json` for outliers.
+3. Copy accepted values into `benchmarks/baselines/default.json`.
+4. Re-run `make bench-check` and commit both the baseline update and rationale in your PR.
+
+The regression check currently runs in **advisory mode** on pull requests (warning-only via `continue-on-error`). Once enough benchmark history is collected, switch it to required by removing `continue-on-error: true` in `.github/workflows/tests.yml` and enabling branch protection for the benchmark job.
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python

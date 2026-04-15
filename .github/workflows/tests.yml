@@ -112,3 +112,47 @@ jobs:
                     coverage.xml
                     pytest-junit.xml
                 if-no-files-found: warn
+
+
+    benchmark:
+        name: Benchmarks (advisory)
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v4
+
+          - name: Setup Python
+            uses: actions/setup-python@v5
+            with:
+              python-version: "3.12"
+              cache: "pip"
+
+          - name: Install dependencies
+            run: |
+              python -m pip install --upgrade pip
+              python -m pip install --require-hashes -r requirements-test.lock
+
+          - name: Run benchmarks
+            run: |
+              make bench
+
+          - name: Upload benchmark JSON
+            if: always()
+            uses: actions/upload-artifact@v4
+            with:
+                name: benchmark-results-pr-${{ github.run_id }}
+                path: benchmark-results.json
+                if-no-files-found: error
+
+          - name: Check benchmark regression (advisory)
+            id: benchmark_regression
+            continue-on-error: true
+            run: |
+              make bench-check
+
+          - name: Benchmark regression advisory
+            if: steps.benchmark_regression.outcome == 'failure'
+            run: |
+              echo "::warning::Benchmark regression threshold exceeded (advisory mode)."

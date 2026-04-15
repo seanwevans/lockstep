@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "description": "Initial advisory baseline for CI benchmark regression checks.",
+  "benchmarks": {
+    "compile_minimal_ms": {
+      "name": "compile_minimal_ms",
+      "value": 6.0,
+      "unit": "ms",
+      "smaller_is_better": true
+    },
+    "simulate_minimal_ms": {
+      "name": "simulate_minimal_ms",
+      "value": 0.01,
+      "unit": "ms",
+      "smaller_is_better": true
+    }
+  },
+  "kpis": [
+    "compile_minimal_ms",
+    "simulate_minimal_ms"
+  ]
+}

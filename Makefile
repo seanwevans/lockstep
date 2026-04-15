@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check
 
 verify: test mypy
 
@@ -34,3 +34,9 @@ test-cov:
 
 mypy:
 	python -m mypy
+
+bench:
+	PYTHONPATH=. python scripts/run_benchmarks.py --output benchmark-results.json
+
+bench-check:
+	PYTHONPATH=. python scripts/check_benchmark_regression.py --baseline benchmarks/baselines/default.json --current benchmark-results.json --threshold 0.10

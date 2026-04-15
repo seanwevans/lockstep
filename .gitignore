@@ -44,3 +44,5 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+# Benchmarks
+benchmark-results.json
