@@ -1,4 +1,5 @@
 # Lockstep (Shader-C)
+![logo.png](logo.png)
 
 **Lockstep** is a data-oriented systems programming language designed for high-throughput, deterministic compute pipelines. It bridges the gap between the productivity of C and the brutal execution efficiency of GPU compute shaders.
 
