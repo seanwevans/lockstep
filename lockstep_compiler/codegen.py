@@ -57,6 +57,8 @@ class _FunctionLowerer:
         self.intrinsic_names = intrinsic_names or set()
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
+        self.local_types: dict[str, str] = {}
+        self.function_return_types: dict[str, str] = {}
         self._string_literal_counter = 0
 
     def _compiler_error(self, message: str) -> None:
@@ -267,7 +269,9 @@ class _FunctionLowerer:
             return self.builder.sub(ir.Constant(value.type, 0), value)
         self._compiler_error(f"unary '-' is unsupported for type '{value.type}'")
 
-    def _emit_numeric_binary(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
+    def _emit_numeric_binary(
+        self, op: str, lhs: ir.Value, rhs: ir.Value, *, type_name: str | None = None
+    ) -> ir.Value:
         if lhs.type != rhs.type:
             self._compiler_error(
                 f"operator '{op}' requires matching operand types, got '{lhs.type}' and '{rhs.type}'"
@@ -283,12 +287,13 @@ class _FunctionLowerer:
             }[op](lhs, rhs)
 
         if isinstance(lhs.type, ir.IntType):
+            is_unsigned = type_name == "uint"
             return {
                 "+": self.builder.add,
                 "-": self.builder.sub,
                 "*": self.builder.mul,
-                "/": self.builder.sdiv,
-                "%": self.builder.srem,
+                "/": self.builder.udiv if is_unsigned else self.builder.sdiv,
+                "%": self.builder.urem if is_unsigned else self.builder.srem,
             }[op](lhs, rhs)
 
         self._compiler_error(f"operator '{op}' is unsupported for type '{lhs.type}'")
@@ -318,7 +323,7 @@ class _FunctionLowerer:
         )
 
     def _emit_relational_compare(
-        self, op: str, lhs: ir.Value, rhs: ir.Value
+        self, op: str, lhs: ir.Value, rhs: ir.Value, *, type_name: str | None = None
     ) -> ir.Value:
         if lhs.type != rhs.type:
             self._compiler_error(
@@ -329,8 +334,32 @@ class _FunctionLowerer:
         if isinstance(lhs.type, (ir.FloatType, ir.DoubleType)):
             return self.builder.fcmp_ordered(rel_map[op], lhs, rhs)
         if isinstance(lhs.type, ir.IntType):
+            if type_name == "uint":
+                return self.builder.icmp_unsigned(rel_map[op], lhs, rhs)
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
+
+    def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
+        if isinstance(node, AstExprLiteral):
+            if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
+                return node.kind
+            return None
+        if isinstance(node, AstExprVar):
+            key = _sanitize_symbol(node.path[0])
+            return self.local_types.get(key)
+        if isinstance(node, AstExprCast):
+            return _type_name(node.target_type)
+        if isinstance(node, AstExprUnary):
+            return self._infer_expr_type(node.operand)
+        if isinstance(node, AstExprCall):
+            if node.name in {"int", "uint", "float", "double", "bool"}:
+                return node.name
+            return self.function_return_types.get(f"pure_{_sanitize_symbol(node.name)}")
+        if isinstance(node, AstExprBinary):
+            if node.op in {"<", "<=", ">", ">=", "==", "!=", "&&", "||"}:
+                return "bool"
+            return self._infer_expr_type(node.left)
+        return None
 
     def _load_var(self, name: str) -> ir.Value:
         parts = name.split(".")
@@ -376,9 +405,11 @@ class _FunctionLowerer:
             return self.builder.call(callee, coerced, name=f"call_{name}")
         self._compiler_error(f"unknown function '{name}'")
 
-    def _lower_binary_op(self, op: str, lhs: ir.Value, rhs: ir.Value) -> ir.Value:
+    def _lower_binary_op(
+        self, op: str, lhs: ir.Value, rhs: ir.Value, *, type_name: str | None = None
+    ) -> ir.Value:
         if op in {"+", "-", "*", "/", "%"}:
-            return self._emit_numeric_binary(op, lhs, rhs)
+            return self._emit_numeric_binary(op, lhs, rhs, type_name=type_name)
         if (
             op in {"&", "|", "^", "<<", ">>"}
             and isinstance(lhs.type, ir.IntType)
@@ -394,7 +425,7 @@ class _FunctionLowerer:
                 return self.builder.shl(lhs, rhs)
             return self.builder.ashr(lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
-            return self._emit_relational_compare(op, lhs, rhs)
+            return self._emit_relational_compare(op, lhs, rhs, type_name=type_name)
         if op == "&&":
             if (
                 not isinstance(lhs.type, ir.IntType)
@@ -452,7 +483,8 @@ class _FunctionLowerer:
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
-        return self._lower_binary_op(node.op, lhs, rhs)
+        expr_type_name = self._infer_expr_type(node.left)
+        return self._lower_binary_op(node.op, lhs, rhs, type_name=expr_type_name)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
         base_name, *field_path = target_name.split(".")
@@ -494,6 +526,7 @@ class _FunctionLowerer:
                 else "float"
             )
             llvm_type = self._llvm_type(declared_type, self.known_structs)
+            self.local_types[key] = declared_type
             if key not in self.locals:
                 slot = self.builder.alloca(llvm_type, name=key)
                 self.locals[key] = slot
@@ -509,15 +542,23 @@ class _FunctionLowerer:
         self._compiler_error(f"unsupported statement node '{type(statement).__name__}'")
 
     def lower_function(
-        self, fn: ir.Function, statements: list[AstStatement], return_type: ir.Type
+        self,
+        fn: ir.Function,
+        statements: list[AstStatement],
+        return_type: ir.Type,
+        param_type_names: list[str] | None = None,
     ):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
-        for arg in fn.args:
-            slot = self.builder.alloca(arg.type, name=_sanitize_symbol(arg.name))
+        self.local_types = {}
+        for idx, arg in enumerate(fn.args):
+            key = _sanitize_symbol(arg.name)
+            slot = self.builder.alloca(arg.type, name=key)
             self.builder.store(arg, slot)
-            self.locals[_sanitize_symbol(arg.name)] = slot
+            self.locals[key] = slot
+            if param_type_names is not None and idx < len(param_type_names):
+                self.local_types[key] = param_type_names[idx]
 
         for statement in statements:
             if self.builder.block.is_terminated:
@@ -656,6 +697,7 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         for idx, param in enumerate(pure.get("params", [])):
             fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
         function_map[fn.name] = fn
+        lowerer.function_return_types[fn.name] = str(pure.get("return_type", "float"))
 
     for shader in shaders:
         params = [
@@ -695,18 +737,25 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
             fn,
             _ast_body_for(pure, entity_kind="pure function"),
             fn.function_type.return_type,
+            [str(param.get("type", "float")) for param in pure.get("params", [])],
         )
 
     for shader in shaders:
         fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
         lowerer.lower_function(
-            fn, _ast_body_for(shader, entity_kind="shader"), ir.VoidType()
+            fn,
+            _ast_body_for(shader, entity_kind="shader"),
+            ir.VoidType(),
+            [str(param.get("type", "float")) for param in shader.get("params", [])],
         )
 
     for flt in filters:
         fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
         lowerer.lower_function(
-            fn, _ast_body_for(flt, entity_kind="filter"), ir.VoidType()
+            fn,
+            _ast_body_for(flt, entity_kind="filter"),
+            ir.VoidType(),
+            [str(param.get("type", "float")) for param in flt.get("params", [])],
         )
 
     layout = build_arena_layout(entities)
