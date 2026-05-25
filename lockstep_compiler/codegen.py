@@ -718,9 +718,6 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
     uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
 
-    leaf_offsets: dict[tuple[str, str, tuple[str, ...]], int] = {
-        (leaf.kind, leaf.binding_name, leaf.path): leaf.offset for leaf in layout.leaves
-    }
     binding_declared_types: dict[tuple[str, str], str] = {}
     for stream in streams:
         binding_declared_types[("stream", stream["name"])] = stream["type"]
@@ -741,9 +738,24 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
     )
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
-    arena_bytes_ty = ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
+
+    arena_field_types: list[ir.Type] = []
+    leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
+    for leaf in layout.leaves:
+        if leaf.type_name in _PRIMITIVE_TYPE_MAP:
+            field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
+        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
+            field_ty = known_structs[leaf.type_name]
+        else:
+            field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
+        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
+        arena_field_types.append(field_ty)
+
+    if not arena_field_types:
+        arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
+
     if arena_struct_ty.is_opaque:
-        arena_struct_ty.set_body(arena_bytes_ty)
+        arena_struct_ty.set_body(*arena_field_types)
 
     tick = ir.Function(
         module,
@@ -763,15 +775,17 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
         return ir.Constant(llvm_type, None)
 
     def _leaf_ptr(kind: str, name: str, path: tuple[str, ...], leaf_type: ir.Type) -> ir.Value | None:
-        offset = leaf_offsets.get((kind, name, path))
-        if offset is None:
+        field_index = leaf_field_indices.get((kind, name, path))
+        if field_index is None:
             return None
-        raw_ptr = tick_builder.gep(
+        typed_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), offset)],
-            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_index)],
+            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_ptr",
         )
-        return tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
+        if typed_ptr.type.pointee != leaf_type:
+            return None
+        return typed_ptr
 
     def _load_value(
         kind: str,
