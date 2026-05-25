@@ -92,6 +92,15 @@ def emit_c_header(
     lines.append("")
 
     lines.append(f"#define LOCKSTEP_ARENA_BYTES {layout.total_size}")
+    lines.extend(
+        [
+            "#if defined(__cplusplus) && (__cplusplus >= 201103L)",
+            'static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
+            "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)",
+            '_Static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
+            "#endif",
+        ]
+    )
     for kind, name, offset in layout.top_level_offsets:
         macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
