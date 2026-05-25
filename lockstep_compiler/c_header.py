@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
 from .utils import sanitize_symbol as _sanitize_symbol
@@ -32,14 +30,10 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 
 
 def emit_c_header(
-    program_or_entities: AstProgram | dict[str, Any],
+    program: AstProgram,
     guard: str = "LOCKSTEP_GENERATED_H",
 ) -> str:
-    entities = (
-        ast_to_entities(program_or_entities)
-        if isinstance(program_or_entities, AstProgram)
-        else program_or_entities
-    )
+    entities = ast_to_entities(program)
 
     layout = build_arena_layout(entities)
     normalized_structs = layout.normalized_structs

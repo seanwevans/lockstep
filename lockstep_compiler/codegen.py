@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from llvmlite import ir
 
 from .ast import (
@@ -533,14 +531,6 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def _normalize_codegen_input(
-    program_or_entities: AstProgram | dict[str, Any],
-) -> dict[str, Any]:
-    if isinstance(program_or_entities, AstProgram):
-        return ast_to_entities(program_or_entities)
-    return program_or_entities
-
-
 def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatement]:
     body_ast = entity.get("body_ast")
     if body_ast is None:
@@ -563,10 +553,10 @@ def _simd_width_for_target_triple(target_triple: str | None) -> int:
     return 8
 
 
-def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
+def emit_llvm_ir(program: AstProgram) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
-    entities = _normalize_codegen_input(program_or_entities)
+    entities = ast_to_entities(program)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
