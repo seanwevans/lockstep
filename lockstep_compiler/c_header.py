@@ -4,6 +4,8 @@ from typing import Any
 
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
+from .errors import LockstepCompileError
+from .models import LockstepDiagnostic
 from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_C_TYPE = {
@@ -21,6 +23,8 @@ _PRIMITIVE_SIZE = {
     "float": 4,
     "double": 8,
 }
+
+_MAX_U64 = (1 << 64) - 1
 
 
 def _c_type(type_name: str, known_structs: set[str]) -> str:
@@ -83,7 +87,32 @@ def emit_c_header(
         lines.append("")
 
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
+    cumulative_layout_total = 0
     for leaf in layout.leaves:
+        leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
+        if cumulative_layout_total > _MAX_U64 - leaf_size:
+            diagnostic = LockstepDiagnostic(
+                severity="error",
+                code="LCK502",
+                message=(
+                    "Arena structural offset generation overflowed the platform "
+                    "allocation threshold (2^64-1 bytes)."
+                ),
+                line=1,
+                column=0,
+                source_file="<c_header>",
+                hint=(
+                    "Reduce aggregate stream or uniform layout size so cumulative "
+                    "arena bytes fit within unsigned 64-bit limits."
+                ),
+            )
+            raise LockstepCompileError(
+                [diagnostic],
+                diagnostics=[diagnostic],
+                phase="codegen",
+                source_file=diagnostic.source_file,
+            )
+        cumulative_layout_total += leaf_size
         c_type_name = _c_type(leaf.type_name, known_structs)
         path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
