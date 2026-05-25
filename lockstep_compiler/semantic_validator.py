@@ -1,8 +1,10 @@
 from difflib import get_close_matches
+from types import SimpleNamespace
 from typing import Any
 
 from .prelude import load_intrinsics
 
+from .ast import AstProgram
 from .models import (
     LockstepDiagnostic,
     ParsedTypeArraySuffix,
@@ -51,6 +53,14 @@ def build_semantic_validator(base_visitor_cls):
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
             return (getattr(token, "line", 0), getattr(token, "column", 0))
+
+        def _ctx_from_location(self, location):
+            return SimpleNamespace(
+                start=SimpleNamespace(
+                    line=getattr(location, "line", 0),
+                    column=getattr(location, "column", 0),
+                )
+            )
 
         def _add_diagnostic(
             self,
@@ -603,13 +613,101 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
         def visitProgram(self, ctx):
+            typed_ast = getattr(self, "typed_ast", None)
+            if isinstance(typed_ast, AstProgram):
+                for struct in typed_ast.structs:
+                    struct_ctx = self._ctx_from_location(struct.location)
+                    if struct.name in self.structs:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                            message=f"Duplicate struct declaration for '{struct.name}'.",
+                            ctx=struct_ctx,
+                            hint="Rename one struct declaration to keep type names unique.",
+                        )
+                        continue
+                    fields = {}
+                    seen_field_names: set[str] = set()
+                    for field in struct.fields:
+                        field_ctx = self._ctx_from_location(field.location)
+                        if field.name in seen_field_names:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                                message=(
+                                    f"Struct '{struct.name}' has duplicate field declaration "
+                                    f"'{field.name}'."
+                                ),
+                                ctx=field_ctx,
+                                hint="Rename or remove duplicate struct member declarations.",
+                            )
+                            continue
+                        seen_field_names.add(field.name)
+                        fields[field.name] = SemanticStructField(
+                            name=field.name, declared_type=field.declared_type.name
+                        )
+                    self.structs[struct.name] = fields
+
+                for shader in typed_ast.shaders:
+                    shader_ctx = self._ctx_from_location(shader.location)
+                    params = [
+                        SemanticKernelParam(
+                            name=param.name,
+                            declared_type=param.declared_type.name,
+                            modifier=param.modifier,
+                        )
+                        for param in shader.params
+                    ]
+                    if shader.name in self.shaders:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            message=f"Duplicate shader/filter declaration for '{shader.name}'.",
+                            ctx=shader_ctx,
+                            hint="Rename one declaration to avoid symbol collisions.",
+                        )
+                    else:
+                        self.shaders[shader.name] = params
+
+                for filter_decl in typed_ast.filters:
+                    filter_ctx = self._ctx_from_location(filter_decl.location)
+                    params = [
+                        SemanticKernelParam(
+                            name=param.name,
+                            declared_type=param.declared_type.name,
+                            modifier=param.modifier,
+                        )
+                        for param in filter_decl.params
+                    ]
+                    if filter_decl.name in self.filters:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            message=f"Duplicate shader/filter declaration for '{filter_decl.name}'.",
+                            ctx=filter_ctx,
+                            hint="Rename one declaration to avoid symbol collisions.",
+                        )
+                    else:
+                        self.filters[filter_decl.name] = params
             self._push_scope()
             result = self.visitChildren(ctx)
             self._pop_scope()
             return result
 
         def visitShaderDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.shaders)
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                params = []
+                if ctx.paramList():
+                    for param in ctx.paramList().param():
+                        params.append(
+                            SemanticKernelParam(
+                                name=param.ID().getText(),
+                                declared_type=param.typeName().getText(),
+                                modifier=param.getChild(0).getText(),
+                            )
+                        )
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.shaders)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -624,6 +722,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStructDecl(self, ctx):
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                return self.visitChildren(ctx)
             struct_name = ctx.ID().getText()
             if struct_name in self.structs:
                 self._add_diagnostic(
@@ -659,7 +759,19 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitFilterDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.filters)
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                params = []
+                if ctx.paramList():
+                    for param in ctx.paramList().param():
+                        params.append(
+                            SemanticKernelParam(
+                                name=param.ID().getText(),
+                                declared_type=param.typeName().getText(),
+                                modifier=param.getChild(0).getText(),
+                            )
+                        )
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.filters)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -1626,4 +1738,5 @@ def validate_semantics(
     parse_tree: Any, visitor_cls, *, typed_ast=None
 ) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()
+    validator.typed_ast = typed_ast
     return validator.validate(parse_tree)
