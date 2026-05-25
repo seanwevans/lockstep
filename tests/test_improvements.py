@@ -251,6 +251,12 @@ def test_arg_parser_has_emit_header():
     assert args.emit_header is True
 
 
+def test_arg_parser_has_target_width_override():
+    parser = build_arg_parser()
+    args = parser.parse_args(["file.lock", "--target-width", "16"])
+    assert args.target_width == 16
+
+
 def test_arg_parser_has_version():
     parser = build_arg_parser()
     args = parser.parse_args(["--version"])

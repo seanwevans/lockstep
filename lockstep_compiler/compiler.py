@@ -464,6 +464,7 @@ def _compile_lockstep_with_dependencies(
     token_stream_cls: Callable[[Any], Any] = CommonTokenStream,
     debug_visitor_cls: Any = None,
     frontend_limits: FrontendLimits | None = None,
+    target_width: int = 8,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
     resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
@@ -579,7 +580,7 @@ def _compile_lockstep_with_dependencies(
     }
 
     try:
-        llvm_ir = emit_llvm_ir(typed_ast)
+        llvm_ir = emit_llvm_ir(typed_ast, target_width=target_width)
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
@@ -602,7 +603,7 @@ def _compile_lockstep_with_dependencies(
         entities=entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
-        c_header=emit_c_header(typed_ast),
+        c_header=emit_c_header(typed_ast, target_width=target_width),
         diagnostics=all_diagnostics,
     )
 
@@ -646,6 +647,7 @@ def compile_lockstep(
     token_stream_cls: Callable[[Any], Any] = CommonTokenStream,
     debug_visitor_cls: Any = None,
     frontend_limits: FrontendLimits | None = None,
+    target_width: int = 8,
 ) -> LockstepCompileResult:
     resolved_library_sources: list[str] = list(library_sources or [])
     resolved_library_source_files: list[str] = list(library_source_files or [])
@@ -684,6 +686,7 @@ def compile_lockstep(
         token_stream_cls=token_stream_cls,
         debug_visitor_cls=debug_visitor_cls,
         frontend_limits=frontend_limits,
+        target_width=target_width,
     )
 
 

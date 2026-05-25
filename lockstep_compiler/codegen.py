@@ -563,7 +563,9 @@ def _simd_width_for_target_triple(target_triple: str | None) -> int:
     return 8
 
 
-def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
+def emit_llvm_ir(
+    program_or_entities: AstProgram | dict[str, Any], *, target_width: int | None = None
+) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
     entities = _normalize_codegen_input(program_or_entities)
@@ -755,7 +757,11 @@ def emit_llvm_ir(program_or_entities: AstProgram | dict[str, Any]) -> str:
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)
-    simd_width = _simd_width_for_target_triple(module.triple)
+    simd_width = (
+        int(target_width)
+        if target_width is not None and int(target_width) > 0
+        else _simd_width_for_target_triple(module.triple)
+    )
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):

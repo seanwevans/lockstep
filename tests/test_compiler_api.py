@@ -878,6 +878,34 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
     assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+
+
+def test_emit_llvm_ir_honors_explicit_target_width_override():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float"}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        },
+        target_width=16,
+    )
+
+    assert 'call fast float @"llvm.vector.reduce.fadd.v16f32"' in llvm_ir
     assert 'store float %"fold_reduce"' in llvm_ir
 
 
@@ -1034,10 +1062,16 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
     assert "struct Lockstep_Vec3" in header
     assert "struct Lockstep_Arena" in header
     assert "#define LOCKSTEP_ARENA_BYTES 20" in header
+    assert "#define LOCKSTEP_SIMD_WIDTH 8" in header
     assert "#define LOCKSTEP_OFFSET_STREAM_RAW_POSITIONS 0" in header
     assert "#define LOCKSTEP_OFFSET_ACCUM_ENERGY 12" in header
     assert "#define LOCKSTEP_OFFSET_UNIFORM_DT 16" in header
     assert "void Lockstep_Tick(struct Lockstep_Arena* arena);" in header
+
+
+def test_emit_c_header_honors_target_width_override_macro():
+    header = emit_c_header({"streams": [], "accumulators": [], "uniforms": []}, target_width=16)
+    assert "#define LOCKSTEP_SIMD_WIDTH 16" in header
 
 
 def test_emit_c_header_exposes_nested_leaf_offsets_for_soa_layout():

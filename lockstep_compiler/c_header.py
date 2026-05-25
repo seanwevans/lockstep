@@ -34,6 +34,8 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 def emit_c_header(
     program_or_entities: AstProgram | dict[str, Any],
     guard: str = "LOCKSTEP_GENERATED_H",
+    *,
+    target_width: int = 8,
 ) -> str:
     entities = (
         ast_to_entities(program_or_entities)
@@ -92,6 +94,7 @@ def emit_c_header(
     lines.append("")
 
     lines.append(f"#define LOCKSTEP_ARENA_BYTES {layout.total_size}")
+    lines.append(f"#define LOCKSTEP_SIMD_WIDTH {int(target_width)}")
     for kind, name, offset in layout.top_level_offsets:
         macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")
