@@ -763,6 +763,10 @@ def emit_llvm_ir(
         (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
         for leaf in layout.leaves
     }
+    accum_sizes: dict[str, int] = {
+        accum["name"]: int(accum.get("size", 1)) if accum.get("size") is not None else 1
+        for accum in accumulators
+    }
     binding_declared_types: dict[tuple[str, str], str] = {}
     for stream in streams:
         binding_declared_types[("stream", stream["name"])] = stream["type"]
@@ -835,7 +839,7 @@ def emit_llvm_ir(
             return None
         base_offset, element_size = leaf_spec
         byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if loop_index_reg is not None:
+        if kind in {"stream", "accum"} and element_index is not None:
             stride = ir.Constant(ir.IntType(32), element_size)
             byte_offset = tick_builder.add(
                 byte_offset,
@@ -917,17 +921,6 @@ def emit_llvm_ir(
         declared_type = binding_declared_types.get((kind, name), "float")
         return _load_value(kind, name, field_type, declared_type, element_index=element_index)
 
-    def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
-        vec_ty = ir.VectorType(value.type, width)
-        seed = tick_builder.insert_element(
-            ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
-        )
-        mask_ty = ir.VectorType(ir.IntType(32), width)
-        mask = ir.Constant(mask_ty, [0] * width)
-        return tick_builder.shuffle_vector(
-            seed, ir.Constant(vec_ty, ir.Undefined), mask, name="fold_splat"
-        )
-
     def _get_vector_reduce_intrinsic(
         name: str, ret_ty: ir.Type, arg_tys: list[ir.Type]
     ) -> ir.Function:
@@ -976,7 +969,24 @@ def emit_llvm_ir(
         if accum_value.type != uniform_type:
             return _zero_value(uniform_type)
 
-        vector_value = _build_vector_splat(accum_value, simd_width)
+        vector_value = ir.Constant(
+            ir.VectorType(uniform_type, simd_width), ir.Undefined
+        )
+        for lane, lane_value in enumerate(lane_values):
+            vector_value = tick_builder.insert_element(
+                vector_value,
+                lane_value,
+                ir.Constant(ir.IntType(32), lane),
+                name=f"fold_lane_{lane}",
+            )
+        if lane_count < simd_width:
+            zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
+            for lane in range(lane_count, simd_width):
+                vector_value = tick_builder.insert_element(
+                    vector_value,
+                    zero_value,
+                    ir.Constant(ir.IntType(32), lane),
+                )
         vector_ty = vector_value.type
 
         # Map (is_float, operator) -> intrinsic suffix for reduction ops.
@@ -1127,8 +1137,7 @@ def emit_llvm_ir(
                     continue
                 uniform_type_name = str(route.get("uniform_type", "float"))
                 uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                accum_value = _load_tick_param("accum", source_name, uniform_type)
-                reduced = _reduce_fold(operator, accum_value, uniform_type)
+                reduced = _reduce_fold(operator, source_name, uniform_type)
                 _store_value("uniform", uniform_name, reduced, uniform_type_name)
                 continue
             asm_ty = ir.FunctionType(ir.VoidType(), [])

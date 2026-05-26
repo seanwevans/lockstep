@@ -132,7 +132,14 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
         capacity = int(stream["capacity"])
         bindings.append(("stream", stream["name"], stream["type"], capacity))
     for accumulator in entities.get("accumulators", []):
-        bindings.append(("accum", accumulator["name"], accumulator["type"], 1))
+        element_count = (
+            int(accumulator.get("size", 1))
+            if accumulator.get("size") is not None
+            else 1
+        )
+        bindings.append(
+            ("accum", accumulator["name"], accumulator["type"], max(element_count, 1))
+        )
     for uniform in entities.get("uniforms", []):
         bindings.append(("uniform", uniform["name"], uniform["type"], 1))
 
