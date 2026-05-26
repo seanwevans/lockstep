@@ -1,4 +1,5 @@
 from lockstep_compiler.lsp import (
+    _infer_variable_types_from_entities,
     build_analysis_context,
     build_struct_member_index,
     find_definition_target,
@@ -6,6 +7,7 @@ from lockstep_compiler.lsp import (
     provide_bind_completion_items,
     provide_hover_info,
 )
+from lockstep_compiler.ast import AstExprCall, AstType, AstVarDeclStmt
 
 
 SOURCE = """
@@ -77,6 +79,49 @@ def test_provide_bind_completion_items_includes_routes_and_kernels():
     assert labels[0] == "dst=Integrate(src,dst,dt);"
     assert "Integrate(...)" in labels
     assert items[0]["detail"] == "Bind route template"
+
+
+def test_infer_variable_types_propagates_from_pure_and_intrinsic_calls():
+    entities = {
+        "shaders": [
+            {
+                "params": [{"name": "src", "type": "float"}],
+                "body_ast": [
+                    AstVarDeclStmt(
+                        declared_type=None,
+                        name="value",
+                        initializer=AstExprCall(name="gain", args=[]),
+                    ),
+                    AstVarDeclStmt(
+                        declared_type=None,
+                        name="masked",
+                        initializer=AstExprCall(name="step", args=[]),
+                    ),
+                    AstVarDeclStmt(
+                        declared_type=None,
+                        name="blended",
+                        initializer=AstExprCall(name="mix", args=[]),
+                    ),
+                    AstVarDeclStmt(
+                        declared_type=AstType("float", "primitive"),
+                        name="typed",
+                        initializer=None,
+                    ),
+                ],
+            }
+        ],
+        "filters": [],
+        "pure_functions": [
+            {"name": "gain", "return_type": "float", "params": []},
+            {"name": "step", "return_type": "float", "params": []},
+            {"name": "mix", "return_type": "float", "params": []},
+        ],
+    }
+    inferred = _infer_variable_types_from_entities(entities)
+
+    assert inferred["value"] == "float"
+    assert inferred["masked"] == "float"
+    assert inferred["blended"] == "float"
 
 
 def test_provide_bind_completion_items_omits_bind_routes_outside_bind_block():
