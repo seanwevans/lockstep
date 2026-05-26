@@ -781,9 +781,24 @@ def emit_llvm_ir(program: AstProgram) -> str:
     )
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
-    arena_bytes_ty = ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
+
+    arena_field_types: list[ir.Type] = []
+    leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
+    for leaf in layout.leaves:
+        if leaf.type_name in _PRIMITIVE_TYPE_MAP:
+            field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
+        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
+            field_ty = known_structs[leaf.type_name]
+        else:
+            field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
+        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
+        arena_field_types.append(field_ty)
+
+    if not arena_field_types:
+        arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
+
     if arena_struct_ty.is_opaque:
-        arena_struct_ty.set_body(arena_bytes_ty)
+        arena_struct_ty.set_body(*arena_field_types)
 
     tick = ir.Function(
         module,
@@ -826,7 +841,9 @@ def emit_llvm_ir(program: AstProgram) -> str:
             [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
-        return tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
+        if typed_ptr.type.pointee != leaf_type:
+            return None
+        return typed_ptr
 
     def _load_value(
         kind: str,

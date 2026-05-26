@@ -877,8 +877,8 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {float, float}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
     assert 'store float %"fold_reduce"' in llvm_ir
 
 
