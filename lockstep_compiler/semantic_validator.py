@@ -2,6 +2,15 @@ from difflib import get_close_matches
 from types import SimpleNamespace
 from typing import Any
 
+from .ast import (
+    AstExpr,
+    AstExprBinary,
+    AstExprCall,
+    AstExprCast,
+    AstExprLiteral,
+    AstExprUnary,
+    AstExprVar,
+)
 from .prelude import load_intrinsics
 
 from .ast import AstProgram
@@ -897,6 +906,8 @@ def build_semantic_validator(base_visitor_cls):
         def _resolve_expr_type(self, ctx):
             if ctx is None:
                 return None
+            if isinstance(ctx, AstExpr):
+                return self._resolve_ast_expr_type(ctx)
 
             def _as_list(value):
                 if value is None:
@@ -1270,6 +1281,90 @@ def build_semantic_validator(base_visitor_cls):
                 if child_expr is not None:
                     return self._resolve_expr_type(child_expr)
 
+            return None
+
+        def _lookup_path(self, path: tuple[str, ...]) -> str | None:
+            if not path:
+                return None
+            symbol = self._lookup(path[0])
+            if symbol is None:
+                return None
+            current_type = symbol.declared_type
+            for field_name in path[1:]:
+                fields = self.structs.get(current_type)
+                if fields is None or field_name not in fields:
+                    return None
+                current_type = fields[field_name].declared_type
+            return current_type
+
+        def _resolve_ast_expr_type(self, expr: AstExpr) -> str | None:
+            numeric_types = {"int", "uint", "float", "double"}
+
+            def _resolve_binary(expr_binary: AstExprBinary) -> str | None:
+                left_type = self._resolve_ast_expr_type(expr_binary.left)
+                right_type = self._resolve_ast_expr_type(expr_binary.right)
+                op = expr_binary.op
+
+                if left_type is None or right_type is None:
+                    return None
+                if op in {"+", "-", "*", "/"}:
+                    if left_type in numeric_types and right_type == left_type:
+                        return left_type
+                    return None
+                if op in {"&", "|", "^"}:
+                    if left_type in {"int", "uint"} and right_type == left_type:
+                        return left_type
+                    return None
+                if op in {"&&", "||"}:
+                    if left_type == "bool" and right_type == "bool":
+                        return "bool"
+                    return None
+                if op in {"==", "!=", "<", "<=", ">", ">="}:
+                    if left_type == right_type:
+                        return "bool"
+                    return None
+                if op in {"<<", ">>"}:
+                    if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                        return left_type
+                    return None
+                return None
+
+            def _resolve_call(expr_call: AstExprCall) -> str | None:
+                if expr_call.name in {"int", "float", "double", "uint", "bool"}:
+                    return expr_call.name if len(expr_call.args) == 1 else None
+                if expr_call.name == "select":
+                    if len(expr_call.args) != 3:
+                        return None
+                    condition_type = self._resolve_ast_expr_type(expr_call.args[0])
+                    true_type = self._resolve_ast_expr_type(expr_call.args[1])
+                    false_type = self._resolve_ast_expr_type(expr_call.args[2])
+                    if condition_type == "bool" and true_type == false_type:
+                        return true_type
+                    return None
+                signature = self.pure_functions.get(expr_call.name)
+                return signature.return_type if signature is not None else None
+
+            type_dispatch = {
+                AstExprLiteral: lambda node: node.kind,
+                AstExprVar: lambda node: self._lookup_path(node.path),
+                AstExprUnary: lambda node: (
+                    "bool"
+                    if node.op == "!"
+                    else self._resolve_ast_expr_type(node.operand)
+                    if (
+                        node.op != "-"
+                        or self._resolve_ast_expr_type(node.operand) in numeric_types
+                    )
+                    else None
+                ),
+                AstExprBinary: _resolve_binary,
+                AstExprCall: _resolve_call,
+                AstExprCast: lambda node: node.target_type,
+            }
+
+            for expr_type, resolver in type_dispatch.items():
+                if isinstance(expr, expr_type):
+                    return resolver(expr)
             return None
 
         def _type_check_pure_call(self, ctx):
