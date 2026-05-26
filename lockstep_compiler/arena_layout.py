@@ -129,8 +129,8 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
 
     bindings: list[tuple[str, str, str, int]] = []
     for stream in entities.get("streams", []):
-        capacity = int(stream.get("capacity", 1) or 1)
-        bindings.append(("stream", stream["name"], stream["type"], max(capacity, 1)))
+        capacity = int(stream["capacity"])
+        bindings.append(("stream", stream["name"], stream["type"], capacity))
     for accumulator in entities.get("accumulators", []):
         bindings.append(("accum", accumulator["name"], accumulator["type"], 1))
     for uniform in entities.get("uniforms", []):
