@@ -7,6 +7,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import lockstep_compiler
+import lockstep_compiler.c_header as c_header_module
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
@@ -1094,6 +1095,24 @@ def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
         'LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : "<unnamed>"'
         in header
     )
+
+
+def test_emit_c_header_raises_lck502_when_cumulative_offsets_overflow(monkeypatch):
+    monkeypatch.setattr(c_header_module, "_MAX_U64", 4)
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        emit_c_header(
+            {
+                "streams": [],
+                "accumulators": [
+                    {"name": "a", "type": "float"},
+                    {"name": "b", "type": "float"},
+                ],
+                "uniforms": [],
+            }
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK502"]
 
 
 def test_compile_result_includes_c_header(monkeypatch):
