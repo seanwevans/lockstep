@@ -123,6 +123,36 @@ def compile_context_for_lsp(source: str) -> CompiledLspContext:
 
 def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, str]:
     inferred: dict[str, str] = {}
+    callable_returns: dict[str, str] = {
+        pure.get("name"): pure.get("return_type")
+        for pure in entities.get("pure_functions", [])
+        if pure.get("name") and pure.get("return_type")
+    }
+
+    def _infer_expr_type(expr: Any) -> str | None:
+        if expr is None:
+            return None
+        expr_type_name = type(expr).__name__
+        if expr_type_name == "AstExprInt":
+            return "int"
+        if expr_type_name == "AstExprFloat":
+            return "float"
+        if expr_type_name == "AstExprBool":
+            return "bool"
+        if expr_type_name == "AstExprString":
+            return "string"
+        if expr_type_name == "AstExprVar":
+            return inferred.get(getattr(expr, "name", ""))
+        if expr_type_name == "AstExprCall":
+            return callable_returns.get(getattr(expr, "name", ""))
+        if expr_type_name == "AstExprUnary":
+            return _infer_expr_type(getattr(expr, "operand", None))
+        if expr_type_name == "AstExprBinary":
+            left_type = _infer_expr_type(getattr(expr, "left", None))
+            right_type = _infer_expr_type(getattr(expr, "right", None))
+            if left_type is not None and left_type == right_type:
+                return left_type
+        return None
 
     for kernel in [*entities.get("shaders", []), *entities.get("filters", [])]:
         for param in kernel.get("params", []):
@@ -138,6 +168,11 @@ def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, s
             declared_type = getattr(stmt, "declared_type", None)
             if declared_type is not None:
                 inferred.setdefault(name, str(declared_type))
+                continue
+            initializer = getattr(stmt, "initializer", None)
+            initializer_type = _infer_expr_type(initializer)
+            if initializer_type is not None:
+                inferred.setdefault(name, initializer_type)
 
     for pure in entities.get("pure_functions", []):
         for param in pure.get("params", []):
