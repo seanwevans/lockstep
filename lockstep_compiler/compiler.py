@@ -7,7 +7,7 @@ from typing import Any, Callable, cast
 
 from antlr4 import CommonTokenStream, InputStream
 
-from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, ast_to_entities, build_program_ast
+from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, build_program_ast
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
@@ -543,13 +543,9 @@ def _compile_lockstep_with_dependencies(
         )
     else:
         validator = semantic_validator
-    try:
-        semantic_diagnostics = normalize_diagnostics(
-            validator(tree, typed_ast=typed_ast)
-        )
-    except TypeError:
-        fallback_validator = cast(Callable[[Any], Any], validator)
-        semantic_diagnostics = normalize_diagnostics(fallback_validator(tree))
+    semantic_diagnostics = normalize_diagnostics(
+        validator(tree, typed_ast=typed_ast)
+    )
     semantic_diagnostics = _remap_diagnostics(
         semantic_diagnostics,
         source_map=source_map,
@@ -564,20 +560,7 @@ def _compile_lockstep_with_dependencies(
             source_file=semantic_errors[0].source_file,
         )
 
-    entities = ast_to_entities(typed_ast)
-
     all_diagnostics = normalize_diagnostics(semantic_diagnostics)
-    bind_optimization = optimize_bind_routes(
-        entities["bind_routes"],
-        shader_names={shader["name"] for shader in entities["shaders"]},
-        filter_names={flt["name"] for flt in entities["filters"]},
-        bind_routes_ir=entities.get("bind_routes_ir"),
-    )
-    entities = {
-        **entities,
-        "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
-        "fused_bind_groups": bind_optimization["fused_groups"],
-    }
 
     try:
         llvm_ir = emit_llvm_ir(typed_ast, target_width=target_width)
@@ -600,7 +583,7 @@ def _compile_lockstep_with_dependencies(
 
     return LockstepCompileResult(
         parse_tree=tree,
-        entities=entities,
+        entities={},
         ast=typed_ast,
         llvm_ir=llvm_ir,
         c_header=emit_c_header(typed_ast, target_width=target_width),

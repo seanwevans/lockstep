@@ -12,7 +12,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from lockstep_compiler.cli import build_arg_parser, run_cli
-from lockstep_compiler.ast import AstExprCall, AstExprVar, AstReturnStmt
+from lockstep_compiler.ast import AstExprCall, AstExprVar, AstReturnStmt, AstKernelParam, AstProgram, AstPureDecl, AstType
 from lockstep_compiler.codegen import emit_llvm_ir
 from lockstep_compiler.lsp import provide_hover_info
 from lockstep_compiler import compiler as compiler_module
@@ -62,50 +62,40 @@ def test_prelude_declares_smoothstep():
 def _intrinsic_defs():
     """Return intrinsic pure function declarations needed by codegen."""
     intrinsics = load_intrinsics()
-    return [
-        {
-            "name": decl.name,
-            "return_type": decl.return_type,
-            "params": [
-                {"type": param.type_name, "name": param.name} for param in decl.params
-            ],
-            "body": [],
-            "intrinsic": True,
-        }
+    return tuple(
+        AstPureDecl(
+            name=decl.name,
+            return_type=AstType(decl.return_type),
+            params=tuple(
+                AstKernelParam(modifier="", declared_type=AstType(param.type_name), name=param.name)
+                for param in decl.params
+            ),
+            body=(),
+            intrinsic=True,
+        )
         for decl in intrinsics.values()
-    ]
+    )
 
 
-_CODEGEN_ENTITIES_BASE = {
-    "structs": [],
-    "shaders": [],
-    "filters": [],
-    "streams": [],
-    "accumulators": [],
-    "uniforms": [],
-    "bind_routes": [],
-    "bind_routes_ir": [],
-}
-
-
-def _entities_with_pure(name, params, body, return_type="float"):
-    return {
-        **_CODEGEN_ENTITIES_BASE,
-        "pure_functions": [
-            {
-                "name": name,
-                "return_type": return_type,
-                "params": params,
-                "body_ast": body,
-                "intrinsic": False,
-            },
+def _program_with_pure(name, params, body, return_type="float"):
+    return AstProgram(
+        pure_functions=(
+            AstPureDecl(
+                name=name,
+                return_type=AstType(return_type),
+                params=tuple(
+                    AstKernelParam(modifier="", declared_type=AstType(p["type"]), name=p["name"])
+                    for p in params
+                ),
+                body=tuple(body),
+            ),
             *_intrinsic_defs(),
-        ],
-    }
+        )
+    )
 
 
 def test_codegen_min_intrinsic():
-    entities = _entities_with_pure(
+    program = _program_with_pure(
         "test_min",
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
         [
@@ -116,12 +106,12 @@ def test_codegen_min_intrinsic():
             )
         ],
     )
-    ir_text = emit_llvm_ir(entities)
+    ir_text = emit_llvm_ir(program)
     assert "llvm.minnum.f32" in ir_text
 
 
 def test_codegen_max_intrinsic():
-    entities = _entities_with_pure(
+    program = _program_with_pure(
         "test_max",
         [{"type": "float", "name": "a"}, {"type": "float", "name": "b"}],
         [
@@ -132,22 +122,22 @@ def test_codegen_max_intrinsic():
             )
         ],
     )
-    ir_text = emit_llvm_ir(entities)
+    ir_text = emit_llvm_ir(program)
     assert "llvm.maxnum.f32" in ir_text
 
 
 def test_codegen_abs_intrinsic():
-    entities = _entities_with_pure(
+    program = _program_with_pure(
         "test_abs",
         [{"type": "float", "name": "x"}],
         [AstReturnStmt(value=AstExprCall(name="abs", args=(AstExprVar(path=("x",)),)))],
     )
-    ir_text = emit_llvm_ir(entities)
+    ir_text = emit_llvm_ir(program)
     assert "llvm.fabs.f32" in ir_text
 
 
 def test_codegen_sign_intrinsic():
-    entities = _entities_with_pure(
+    program = _program_with_pure(
         "test_sign",
         [{"type": "float", "name": "x"}],
         [
@@ -156,12 +146,12 @@ def test_codegen_sign_intrinsic():
             )
         ],
     )
-    ir_text = emit_llvm_ir(entities)
+    ir_text = emit_llvm_ir(program)
     assert "sign_pos" in ir_text or "sign" in ir_text
 
 
 def test_codegen_smoothstep_intrinsic():
-    entities = _entities_with_pure(
+    program = _program_with_pure(
         "test_smoothstep",
         [
             {"type": "float", "name": "e0"},
@@ -181,7 +171,7 @@ def test_codegen_smoothstep_intrinsic():
             )
         ],
     )
-    ir_text = emit_llvm_ir(entities)
+    ir_text = emit_llvm_ir(program)
     assert "smoothstep" in ir_text
 
 

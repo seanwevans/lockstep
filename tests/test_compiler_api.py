@@ -7,6 +7,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import lockstep_compiler
+import lockstep_compiler.c_header as c_header_module
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
 from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
@@ -1107,6 +1108,31 @@ def test_emit_c_header_exposes_nested_leaf_offsets_for_soa_layout():
     assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_MASS 8" in header
 
 
+def test_emit_c_header_uses_parallel_soa_blocks_for_stream_capacity():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Particle",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                }
+            ],
+            "streams": [{"name": "particles", "type": "Particle", "capacity": "4"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float stream_particles_x[4];" in header
+    assert "float stream_particles_y[4];" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_Y 16" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 32" in header
+
+
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     header = emit_c_header(
         {
@@ -1128,6 +1154,24 @@ def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
         'LOCKSTEP_SATURATED_WRITE_LOG(stream_name != NULL ? stream_name : "<unnamed>"'
         in header
     )
+
+
+def test_emit_c_header_raises_lck502_when_cumulative_offsets_overflow(monkeypatch):
+    monkeypatch.setattr(c_header_module, "_MAX_U64", 4)
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        emit_c_header(
+            {
+                "streams": [],
+                "accumulators": [
+                    {"name": "a", "type": "float"},
+                    {"name": "b", "type": "float"},
+                ],
+                "uniforms": [],
+            }
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK502"]
 
 
 def test_compile_result_includes_c_header(monkeypatch):
@@ -1337,3 +1381,24 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
 
     assert exc_info.value.phase == "parse"
     assert exc_info.value.errors[0].code == "LCK004"
+
+def test_codegen_uses_unsigned_ops_for_uint_math():
+    source = """
+    pure uint half(uint value) {
+        return value / uint(2);
+    }
+
+    pure uint remainder(uint value) {
+        return value % uint(3);
+    }
+
+    pure bool less_than(uint a, uint b) {
+        return a < b;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert "udiv i32" in llvm_ir
+    assert "urem i32" in llvm_ir
+    assert "icmp ult i32" in llvm_ir

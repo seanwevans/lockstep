@@ -20,6 +20,7 @@ class ArenaLeaf:
     type_name: str
     offset: int
     size: int
+    element_count: int
 
 
 @dataclass(frozen=True)
@@ -126,18 +127,19 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
     struct_sizes, opaque_structs = resolve_struct_layouts(normalized_structs)
     struct_map = {struct["name"]: struct for struct in normalized_structs}
 
-    bindings: list[tuple[str, str, str]] = []
+    bindings: list[tuple[str, str, str, int]] = []
     for stream in entities.get("streams", []):
-        bindings.append(("stream", stream["name"], stream["type"]))
+        capacity = int(stream.get("capacity", 1) or 1)
+        bindings.append(("stream", stream["name"], stream["type"], max(capacity, 1)))
     for accumulator in entities.get("accumulators", []):
-        bindings.append(("accum", accumulator["name"], accumulator["type"]))
+        bindings.append(("accum", accumulator["name"], accumulator["type"], 1))
     for uniform in entities.get("uniforms", []):
-        bindings.append(("uniform", uniform["name"], uniform["type"]))
+        bindings.append(("uniform", uniform["name"], uniform["type"], 1))
 
     leaves: list[ArenaLeaf] = []
     top_level_offsets: list[tuple[str, str, int]] = []
     cursor = 0
-    for kind, binding_name, type_name in bindings:
+    for kind, binding_name, type_name, element_count in bindings:
         top_level_offsets.append((kind, binding_name, cursor))
         type_leaves = _flatten_type_leaves(type_name, struct_map, opaque_structs)
         for path, leaf_type in type_leaves:
@@ -150,9 +152,10 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
                     type_name=leaf_type,
                     offset=cursor,
                     size=size,
+                    element_count=element_count,
                 )
             )
-            cursor += size
+            cursor += size * element_count
 
     return ArenaLayout(
         normalized_structs=normalized_structs,

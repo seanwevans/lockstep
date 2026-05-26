@@ -1,8 +1,19 @@
 from difflib import get_close_matches
+from types import SimpleNamespace
 from typing import Any
 
+from .ast import (
+    AstExpr,
+    AstExprBinary,
+    AstExprCall,
+    AstExprCast,
+    AstExprLiteral,
+    AstExprUnary,
+    AstExprVar,
+)
 from .prelude import load_intrinsics
 
+from .ast import AstProgram
 from .models import (
     LockstepDiagnostic,
     ParsedTypeArraySuffix,
@@ -51,6 +62,14 @@ def build_semantic_validator(base_visitor_cls):
         def _line_col(self, ctx) -> tuple[int, int]:
             token = getattr(ctx, "start", None)
             return (getattr(token, "line", 0), getattr(token, "column", 0))
+
+        def _ctx_from_location(self, location):
+            return SimpleNamespace(
+                start=SimpleNamespace(
+                    line=getattr(location, "line", 0),
+                    column=getattr(location, "column", 0),
+                )
+            )
 
         def _add_diagnostic(
             self,
@@ -603,13 +622,101 @@ def build_semantic_validator(base_visitor_cls):
                     )
 
         def visitProgram(self, ctx):
+            typed_ast = getattr(self, "typed_ast", None)
+            if isinstance(typed_ast, AstProgram):
+                for struct in typed_ast.structs:
+                    struct_ctx = self._ctx_from_location(struct.location)
+                    if struct.name in self.structs:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                            message=f"Duplicate struct declaration for '{struct.name}'.",
+                            ctx=struct_ctx,
+                            hint="Rename one struct declaration to keep type names unique.",
+                        )
+                        continue
+                    fields = {}
+                    seen_field_names: set[str] = set()
+                    for field in struct.fields:
+                        field_ctx = self._ctx_from_location(field.location)
+                        if field.name in seen_field_names:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                                message=(
+                                    f"Struct '{struct.name}' has duplicate field declaration "
+                                    f"'{field.name}'."
+                                ),
+                                ctx=field_ctx,
+                                hint="Rename or remove duplicate struct member declarations.",
+                            )
+                            continue
+                        seen_field_names.add(field.name)
+                        fields[field.name] = SemanticStructField(
+                            name=field.name, declared_type=field.declared_type.name
+                        )
+                    self.structs[struct.name] = fields
+
+                for shader in typed_ast.shaders:
+                    shader_ctx = self._ctx_from_location(shader.location)
+                    params = [
+                        SemanticKernelParam(
+                            name=param.name,
+                            declared_type=param.declared_type.name,
+                            modifier=param.modifier,
+                        )
+                        for param in shader.params
+                    ]
+                    if shader.name in self.shaders:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            message=f"Duplicate shader/filter declaration for '{shader.name}'.",
+                            ctx=shader_ctx,
+                            hint="Rename one declaration to avoid symbol collisions.",
+                        )
+                    else:
+                        self.shaders[shader.name] = params
+
+                for filter_decl in typed_ast.filters:
+                    filter_ctx = self._ctx_from_location(filter_decl.location)
+                    params = [
+                        SemanticKernelParam(
+                            name=param.name,
+                            declared_type=param.declared_type.name,
+                            modifier=param.modifier,
+                        )
+                        for param in filter_decl.params
+                    ]
+                    if filter_decl.name in self.filters:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            message=f"Duplicate shader/filter declaration for '{filter_decl.name}'.",
+                            ctx=filter_ctx,
+                            hint="Rename one declaration to avoid symbol collisions.",
+                        )
+                    else:
+                        self.filters[filter_decl.name] = params
             self._push_scope()
             result = self.visitChildren(ctx)
             self._pop_scope()
             return result
 
         def visitShaderDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.shaders)
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                params = []
+                if ctx.paramList():
+                    for param in ctx.paramList().param():
+                        params.append(
+                            SemanticKernelParam(
+                                name=param.ID().getText(),
+                                declared_type=param.typeName().getText(),
+                                modifier=param.getChild(0).getText(),
+                            )
+                        )
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.shaders)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -624,6 +731,8 @@ def build_semantic_validator(base_visitor_cls):
             return result
 
         def visitStructDecl(self, ctx):
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                return self.visitChildren(ctx)
             struct_name = ctx.ID().getText()
             if struct_name in self.structs:
                 self._add_diagnostic(
@@ -659,7 +768,19 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def visitFilterDecl(self, ctx):
-            _name, params = self._record_kernel_signature(ctx, self.filters)
+            if isinstance(getattr(self, "typed_ast", None), AstProgram):
+                params = []
+                if ctx.paramList():
+                    for param in ctx.paramList().param():
+                        params.append(
+                            SemanticKernelParam(
+                                name=param.ID().getText(),
+                                declared_type=param.typeName().getText(),
+                                modifier=param.getChild(0).getText(),
+                            )
+                        )
+            else:
+                _name, params = self._record_kernel_signature(ctx, self.filters)
             self._push_scope()
             for param in params:
                 self._declare(
@@ -785,6 +906,8 @@ def build_semantic_validator(base_visitor_cls):
         def _resolve_expr_type(self, ctx):
             if ctx is None:
                 return None
+            if isinstance(ctx, AstExpr):
+                return self._resolve_ast_expr_type(ctx)
 
             def _as_list(value):
                 if value is None:
@@ -1158,6 +1281,90 @@ def build_semantic_validator(base_visitor_cls):
                 if child_expr is not None:
                     return self._resolve_expr_type(child_expr)
 
+            return None
+
+        def _lookup_path(self, path: tuple[str, ...]) -> str | None:
+            if not path:
+                return None
+            symbol = self._lookup(path[0])
+            if symbol is None:
+                return None
+            current_type = symbol.declared_type
+            for field_name in path[1:]:
+                fields = self.structs.get(current_type)
+                if fields is None or field_name not in fields:
+                    return None
+                current_type = fields[field_name].declared_type
+            return current_type
+
+        def _resolve_ast_expr_type(self, expr: AstExpr) -> str | None:
+            numeric_types = {"int", "uint", "float", "double"}
+
+            def _resolve_binary(expr_binary: AstExprBinary) -> str | None:
+                left_type = self._resolve_ast_expr_type(expr_binary.left)
+                right_type = self._resolve_ast_expr_type(expr_binary.right)
+                op = expr_binary.op
+
+                if left_type is None or right_type is None:
+                    return None
+                if op in {"+", "-", "*", "/"}:
+                    if left_type in numeric_types and right_type == left_type:
+                        return left_type
+                    return None
+                if op in {"&", "|", "^"}:
+                    if left_type in {"int", "uint"} and right_type == left_type:
+                        return left_type
+                    return None
+                if op in {"&&", "||"}:
+                    if left_type == "bool" and right_type == "bool":
+                        return "bool"
+                    return None
+                if op in {"==", "!=", "<", "<=", ">", ">="}:
+                    if left_type == right_type:
+                        return "bool"
+                    return None
+                if op in {"<<", ">>"}:
+                    if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                        return left_type
+                    return None
+                return None
+
+            def _resolve_call(expr_call: AstExprCall) -> str | None:
+                if expr_call.name in {"int", "float", "double", "uint", "bool"}:
+                    return expr_call.name if len(expr_call.args) == 1 else None
+                if expr_call.name == "select":
+                    if len(expr_call.args) != 3:
+                        return None
+                    condition_type = self._resolve_ast_expr_type(expr_call.args[0])
+                    true_type = self._resolve_ast_expr_type(expr_call.args[1])
+                    false_type = self._resolve_ast_expr_type(expr_call.args[2])
+                    if condition_type == "bool" and true_type == false_type:
+                        return true_type
+                    return None
+                signature = self.pure_functions.get(expr_call.name)
+                return signature.return_type if signature is not None else None
+
+            type_dispatch = {
+                AstExprLiteral: lambda node: node.kind,
+                AstExprVar: lambda node: self._lookup_path(node.path),
+                AstExprUnary: lambda node: (
+                    "bool"
+                    if node.op == "!"
+                    else self._resolve_ast_expr_type(node.operand)
+                    if (
+                        node.op != "-"
+                        or self._resolve_ast_expr_type(node.operand) in numeric_types
+                    )
+                    else None
+                ),
+                AstExprBinary: _resolve_binary,
+                AstExprCall: _resolve_call,
+                AstExprCast: lambda node: node.target_type,
+            }
+
+            for expr_type, resolver in type_dispatch.items():
+                if isinstance(expr, expr_type):
+                    return resolver(expr)
             return None
 
         def _type_check_pure_call(self, ctx):
@@ -1626,4 +1833,5 @@ def validate_semantics(
     parse_tree: Any, visitor_cls, *, typed_ast=None
 ) -> list[LockstepDiagnostic]:
     validator = build_semantic_validator(visitor_cls)()
+    validator.typed_ast = typed_ast
     return validator.validate(parse_tree)

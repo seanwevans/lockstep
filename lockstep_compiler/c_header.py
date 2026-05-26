@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
-
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
+from .errors import LockstepCompileError
+from .models import LockstepDiagnostic
 from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_C_TYPE = {
@@ -22,6 +22,8 @@ _PRIMITIVE_SIZE = {
     "double": 8,
 }
 
+_MAX_U64 = (1 << 64) - 1
+
 
 def _c_type(type_name: str, known_structs: set[str]) -> str:
     if type_name in _PRIMITIVE_C_TYPE:
@@ -32,16 +34,12 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 
 
 def emit_c_header(
-    program_or_entities: AstProgram | dict[str, Any],
+    program: AstProgram,
     guard: str = "LOCKSTEP_GENERATED_H",
     *,
     target_width: int = 8,
 ) -> str:
-    entities = (
-        ast_to_entities(program_or_entities)
-        if isinstance(program_or_entities, AstProgram)
-        else program_or_entities
-    )
+    entities = ast_to_entities(program)
 
     layout = build_arena_layout(entities)
     normalized_structs = layout.normalized_structs
@@ -85,16 +83,53 @@ def emit_c_header(
         lines.append("")
 
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
+    cumulative_layout_total = 0
     for leaf in layout.leaves:
+        leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
+        if cumulative_layout_total > _MAX_U64 - leaf_size:
+            diagnostic = LockstepDiagnostic(
+                severity="error",
+                code="LCK502",
+                message=(
+                    "Arena structural offset generation overflowed the platform "
+                    "allocation threshold (2^64-1 bytes)."
+                ),
+                line=1,
+                column=0,
+                source_file="<c_header>",
+                hint=(
+                    "Reduce aggregate stream or uniform layout size so cumulative "
+                    "arena bytes fit within unsigned 64-bit limits."
+                ),
+            )
+            raise LockstepCompileError(
+                [diagnostic],
+                diagnostics=[diagnostic],
+                phase="codegen",
+                source_file=diagnostic.source_file,
+            )
+        cumulative_layout_total += leaf_size
         c_type_name = _c_type(leaf.type_name, known_structs)
         path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
-        lines.append(f"    {c_type_name} {field_name};")
+        if leaf.element_count > 1:
+            lines.append(f"    {c_type_name} {field_name}[{leaf.element_count}];")
+        else:
+            lines.append(f"    {c_type_name} {field_name};")
     lines.append("});")
     lines.append("")
 
     lines.append(f"#define LOCKSTEP_ARENA_BYTES {layout.total_size}")
     lines.append(f"#define LOCKSTEP_SIMD_WIDTH {int(target_width)}")
+    lines.extend(
+        [
+            "#if defined(__cplusplus) && (__cplusplus >= 201103L)",
+            'static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
+            "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)",
+            '_Static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
+            "#endif",
+        ]
+    )
     for kind, name, offset in layout.top_level_offsets:
         macro_suffix = f"{kind}_{_sanitize_symbol(name)}".upper()
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {offset}")

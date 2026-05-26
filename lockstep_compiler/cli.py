@@ -358,7 +358,20 @@ def run_cli(
         return 0
 
     entities: dict[str, Any]
-    if hasattr(result, "entities"):
+    if hasattr(result, "ast") and result.ast is not None:
+        entities = ast_to_entities(result.ast)
+        bind_optimization = optimize_bind_routes(
+            entities["bind_routes"],
+            shader_names={shader["name"] for shader in entities["shaders"]},
+            filter_names={flt["name"] for flt in entities["filters"]},
+            bind_routes_ir=entities.get("bind_routes_ir"),
+        )
+        entities = {
+            **entities,
+            "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
+            "fused_bind_groups": bind_optimization["fused_groups"],
+        }
+    elif hasattr(result, "entities"):
         entities = cast(dict[str, Any], result.entities)
     else:
         entities = cast(dict[str, Any], result)
