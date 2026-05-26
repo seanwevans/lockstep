@@ -28,6 +28,21 @@ def _non_negative_limit_value(flag_name: str):
     return _parse
 
 
+def _positive_int_value(flag_name: str):
+    def _parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"{flag_name} must be an integer."
+            ) from exc
+        if parsed <= 0:
+            raise argparse.ArgumentTypeError(f"{flag_name} must be > 0.")
+        return parsed
+
+    return _parse
+
+
 def _read_source_file(path: Path, *, stderr) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -123,6 +138,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum allowed expression nesting depth (0 disables limit).",
     )
+    parser.add_argument(
+        "--target-width",
+        type=_positive_int_value("--target-width"),
+        default=8,
+        help="Override SIMD vector width used by LLVM IR lowering and generated C header macros.",
+    )
     return parser
 
 
@@ -216,6 +237,7 @@ def run_cli(
     supports_source_file = False
     supports_library_source_files = False
     supports_frontend_limits = False
+    supports_target_width = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -247,6 +269,11 @@ def run_cli(
             or parameter.name == "frontend_limits"
             for parameter in signature.parameters.values()
         )
+        supports_target_width = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "target_width"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
@@ -265,6 +292,8 @@ def run_cli(
             parse_timeout_ms=args.parse_timeout_ms,
             max_expression_nesting=args.max_expr_nesting,
         )
+    if supports_target_width:
+        compile_kwargs["target_width"] = args.target_width
 
     try:
         if compile_kwargs:
