@@ -757,8 +757,9 @@ def emit_llvm_ir(program: AstProgram) -> str:
     accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
     uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
 
-    leaf_offsets: dict[tuple[str, str, tuple[str, ...]], int] = {
-        (leaf.kind, leaf.binding_name, leaf.path): leaf.offset for leaf in layout.leaves
+    leaf_specs: dict[tuple[str, str, tuple[str, ...]], tuple[int, int]] = {
+        (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
+        for leaf in layout.leaves
     }
     binding_declared_types: dict[tuple[str, str], str] = {}
     for stream in streams:
@@ -801,13 +802,28 @@ def emit_llvm_ir(program: AstProgram) -> str:
             return ir.Constant(ir.IntType(32), 0)
         return ir.Constant(llvm_type, None)
 
-    def _leaf_ptr(kind: str, name: str, path: tuple[str, ...], leaf_type: ir.Type) -> ir.Value | None:
-        offset = leaf_offsets.get((kind, name, path))
-        if offset is None:
+    def _leaf_ptr(
+        kind: str,
+        name: str,
+        path: tuple[str, ...],
+        leaf_type: ir.Type,
+        element_index: ir.Value | None = None,
+    ) -> ir.Value | None:
+        leaf_spec = leaf_specs.get((kind, name, path))
+        if leaf_spec is None:
             return None
+        base_offset, element_size = leaf_spec
+        byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
+        if kind == "stream" and element_index is not None:
+            stride = ir.Constant(ir.IntType(32), element_size)
+            byte_offset = tick_builder.add(
+                byte_offset,
+                tick_builder.mul(element_index, stride, name="stream_elem_stride"),
+                name="stream_elem_offset",
+            )
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), offset)],
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
         return tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
@@ -818,6 +834,7 @@ def emit_llvm_ir(program: AstProgram) -> str:
         value_type: ir.Type,
         declared_type: str,
         path: tuple[str, ...] = (),
+        element_index: ir.Value | None = None,
     ) -> ir.Value:
         if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
             aggregate = ir.Constant(value_type, ir.Undefined)
@@ -832,11 +849,12 @@ def emit_llvm_ir(program: AstProgram) -> str:
                     element_type,
                     child_type,
                     path + (child_name,),
+                    element_index,
                 )
                 aggregate = tick_builder.insert_value(aggregate, field_value, index)
             return aggregate
 
-        ptr = _leaf_ptr(kind, name, path, value_type)
+        ptr = _leaf_ptr(kind, name, path, value_type, element_index)
         if ptr is None:
             return _zero_value(value_type)
         return tick_builder.load(ptr, name=f"{kind}_{_sanitize_symbol(name)}_val")
@@ -847,6 +865,7 @@ def emit_llvm_ir(program: AstProgram) -> str:
         value: ir.Value,
         declared_type: str,
         path: tuple[str, ...] = (),
+        element_index: ir.Value | None = None,
     ):
         value_type = value.type
         if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
@@ -856,16 +875,23 @@ def emit_llvm_ir(program: AstProgram) -> str:
                 field = fields[index] if index < len(fields) else {}
                 child_name = str(field.get("name", f"field{index}"))
                 child_type = str(field.get("type", "float"))
-                _store_value(kind, name, part, child_type, path + (child_name,))
+                _store_value(
+                    kind, name, part, child_type, path + (child_name,), element_index
+                )
             return
-        ptr = _leaf_ptr(kind, name, path, value_type)
+        ptr = _leaf_ptr(kind, name, path, value_type, element_index)
         if ptr is None:
             return
         tick_builder.store(value, ptr)
 
-    def _load_tick_param(kind: str, name: str, field_type: ir.Type) -> ir.Value:
+    def _load_tick_param(
+        kind: str,
+        name: str,
+        field_type: ir.Type,
+        element_index: ir.Value | None = None,
+    ) -> ir.Value:
         declared_type = binding_declared_types.get((kind, name), "float")
-        return _load_value(kind, name, field_type, declared_type)
+        return _load_value(kind, name, field_type, declared_type, element_index=element_index)
 
     def _build_vector_splat(value: ir.Value, width: int) -> ir.Value:
         vec_ty = ir.VectorType(value.type, width)
@@ -1007,7 +1033,7 @@ def emit_llvm_ir(program: AstProgram) -> str:
             modifier = params[index].get("modifier") if index < len(params) else None
             value = None
             if modifier in {"in", "out"} and arg_name in stream_slots:
-                value = _load_tick_param("stream", arg_name, param.type)
+                value = _load_tick_param("stream", arg_name, param.type, current)
             elif modifier == "accum" and arg_name in accum_slots:
                 value = _load_tick_param("accum", arg_name, param.type)
             elif modifier == "uniform" and arg_name in uniform_slots:

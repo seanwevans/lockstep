@@ -1074,6 +1074,31 @@ def test_emit_c_header_exposes_nested_leaf_offsets_for_soa_layout():
     assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_MASS 8" in header
 
 
+def test_emit_c_header_uses_parallel_soa_blocks_for_stream_capacity():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Particle",
+                    "fields": [
+                        {"type": "float", "name": "x"},
+                        {"type": "float", "name": "y"},
+                    ],
+                }
+            ],
+            "streams": [{"name": "particles", "type": "Particle", "capacity": "4"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float stream_particles_x[4];" in header
+    assert "float stream_particles_y[4];" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_X 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_PARTICLES_Y 16" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 32" in header
+
+
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     header = emit_c_header(
         {

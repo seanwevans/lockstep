@@ -110,7 +110,10 @@ def emit_c_header(
         c_type_name = _c_type(leaf.type_name, known_structs)
         path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
-        lines.append(f"    {c_type_name} {field_name};")
+        if leaf.element_count > 1:
+            lines.append(f"    {c_type_name} {field_name}[{leaf.element_count}];")
+        else:
+            lines.append(f"    {c_type_name} {field_name};")
     lines.append("});")
     lines.append("")
 
