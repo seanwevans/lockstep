@@ -543,9 +543,10 @@ def _compile_lockstep_with_dependencies(
         )
     else:
         validator = semantic_validator
-    semantic_diagnostics = normalize_diagnostics(
-        validator(tree, typed_ast=typed_ast)
-    )
+    # Intentionally do not provide a TypeError compatibility fallback here.
+    # Semantic validator signature mismatches and AST transition bugs must
+    # fail fast so they surface immediately during compilation.
+    semantic_diagnostics = normalize_diagnostics(validator(tree, typed_ast=typed_ast))
     semantic_diagnostics = _remap_diagnostics(
         semantic_diagnostics,
         source_map=source_map,

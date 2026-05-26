@@ -832,7 +832,7 @@ def emit_llvm_ir(
         name: str,
         path: tuple[str, ...],
         leaf_type: ir.Type,
-        element_index: ir.Value | None = None,
+        loop_index_reg: ir.Value | None = None,
     ) -> ir.Value | None:
         leaf_spec = leaf_specs.get((kind, name, path))
         if leaf_spec is None:
@@ -843,14 +843,15 @@ def emit_llvm_ir(
             stride = ir.Constant(ir.IntType(32), element_size)
             byte_offset = tick_builder.add(
                 byte_offset,
-                tick_builder.mul(element_index, stride, name="stream_elem_stride"),
-                name="stream_elem_offset",
+                tick_builder.mul(loop_index_reg, stride, name="loop_elem_stride"),
+                name="loop_elem_offset",
             )
         raw_ptr = tick_builder.gep(
             arena_ptr,
             [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
+        typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
         if typed_ptr.type.pointee != leaf_type:
             return None
         return typed_ptr
@@ -929,20 +930,43 @@ def emit_llvm_ir(
             intrinsic = ir.Function(module, fn_ty, name=name)
         return intrinsic
 
-    def _reduce_fold(operator: str, source_name: str, uniform_type: ir.Type) -> ir.Value:
-        lane_count = max(accum_sizes.get(source_name, 1), 1)
-        lane_count = min(lane_count, simd_width)
-        lane_values: list[ir.Value] = []
-        for lane in range(lane_count):
-            lane_values.append(
-                _load_tick_param(
-                    "accum",
-                    source_name,
-                    uniform_type,
-                    ir.Constant(ir.IntType(32), lane),
-                )
-            )
-        if not lane_values:
+    def _vector_i32_splat(value: ir.Value, width: int = 4) -> ir.Value:
+        vec_ty = ir.VectorType(ir.IntType(32), width)
+        seed = tick_builder.insert_element(
+            ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
+        )
+        mask_ty = ir.VectorType(ir.IntType(32), width)
+        mask = ir.Constant(mask_ty, [0] * width)
+        return tick_builder.shuffle_vector(
+            seed, ir.Constant(vec_ty, ir.Undefined), mask, name="route_i32_splat"
+        )
+
+    def _vector_i32_extract_lane0(vector: ir.Value) -> ir.Value:
+        return tick_builder.extract_element(
+            vector, ir.Constant(ir.IntType(32), 0), name="route_i32_lane0"
+        )
+
+    def _vector_i32_max(lhs: ir.Value, rhs: ir.Value, width: int = 4) -> ir.Value:
+        lhs_vec = _vector_i32_splat(lhs, width)
+        rhs_vec = _vector_i32_splat(rhs, width)
+        pred = tick_builder.icmp_signed(">", lhs_vec, rhs_vec, name="route_vec_max_cmp")
+        merged = tick_builder.select(pred, lhs_vec, rhs_vec, name="route_vec_max")
+        return _vector_i32_extract_lane0(merged)
+
+    def _vector_i32_min(lhs: ir.Value, rhs: ir.Value, width: int = 4) -> ir.Value:
+        lhs_vec = _vector_i32_splat(lhs, width)
+        rhs_vec = _vector_i32_splat(rhs, width)
+        pred = tick_builder.icmp_signed("<", lhs_vec, rhs_vec, name="route_vec_min_cmp")
+        merged = tick_builder.select(pred, lhs_vec, rhs_vec, name="route_vec_min")
+        return _vector_i32_extract_lane0(merged)
+
+    def _vector_i32_clamp(value: ir.Value, lo: ir.Value, hi: ir.Value) -> ir.Value:
+        return _vector_i32_min(_vector_i32_max(value, lo), hi)
+
+    def _reduce_fold(
+        operator: str, accum_value: ir.Value, uniform_type: ir.Type
+    ) -> ir.Value:
+        if accum_value.type != uniform_type:
             return _zero_value(uniform_type)
 
         vector_value = ir.Constant(
@@ -1076,7 +1100,13 @@ def emit_llvm_ir(
             modifier = params[index].get("modifier") if index < len(params) else None
             value = None
             if modifier in {"in", "out"} and arg_name in stream_slots:
-                value = _load_tick_param("stream", arg_name, param.type, current)
+                raw_capacity = stream_capacities.get(arg_name, 0)
+                safe_capacity = max(int(raw_capacity), 1)
+                max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
+                clamped_index = _vector_i32_clamp(
+                    current, ir.Constant(ir.IntType(32), 0), max_index
+                )
+                value = _load_tick_param("stream", arg_name, param.type, clamped_index)
             elif modifier == "accum" and arg_name in accum_slots:
                 value = _load_tick_param("accum", arg_name, param.type)
             elif modifier == "uniform" and arg_name in uniform_slots:
