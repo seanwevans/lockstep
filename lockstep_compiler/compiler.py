@@ -542,13 +542,9 @@ def _compile_lockstep_with_dependencies(
         )
     else:
         validator = semantic_validator
-    try:
-        semantic_diagnostics = normalize_diagnostics(
-            validator(tree, typed_ast=typed_ast)
-        )
-    except TypeError:
-        fallback_validator = cast(Callable[[Any], Any], validator)
-        semantic_diagnostics = normalize_diagnostics(fallback_validator(tree))
+    semantic_diagnostics = normalize_diagnostics(
+        validator(tree, typed_ast=typed_ast)
+    )
     semantic_diagnostics = _remap_diagnostics(
         semantic_diagnostics,
         source_map=source_map,
