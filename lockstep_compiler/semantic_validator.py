@@ -54,7 +54,7 @@ def build_semantic_validator(base_visitor_cls):
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
-            self._primitive_types = {"int", "uint", "float", "double", "bool", "string"}
+            self._primitive_types = {"int", "float", "bool", "string"}
             self._current_pure_function: SemanticPureFunctionContext | None = None
             self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
