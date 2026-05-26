@@ -1303,3 +1303,24 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
 
     assert exc_info.value.phase == "parse"
     assert exc_info.value.errors[0].code == "LCK004"
+
+def test_codegen_uses_unsigned_ops_for_uint_math():
+    source = """
+    pure uint half(uint value) {
+        return value / uint(2);
+    }
+
+    pure uint remainder(uint value) {
+        return value % uint(3);
+    }
+
+    pure bool less_than(uint a, uint b) {
+        return a < b;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert "udiv i32" in llvm_ir
+    assert "urem i32" in llvm_ir
+    assert "icmp ult i32" in llvm_ir
