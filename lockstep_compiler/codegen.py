@@ -65,7 +65,15 @@ class _FunctionLowerer:
     def _declare_llvm_intrinsic(
         self, intrinsic_name: str, arg_type: ir.Type
     ) -> ir.Function:
-        llvm_name = f"llvm.{intrinsic_name}.f32"
+        if isinstance(arg_type, ir.FloatType):
+            suffix = "f32"
+        elif isinstance(arg_type, ir.DoubleType):
+            suffix = "f64"
+        else:
+            self._compiler_error(
+                f"intrinsic '{intrinsic_name}' expects float or double arguments"
+            )
+        llvm_name = f"llvm.{intrinsic_name}.{suffix}"
         intrinsic = self.module.globals.get(llvm_name)
         if intrinsic is not None:
             return intrinsic
