@@ -828,25 +828,26 @@ def emit_llvm_ir(
         name: str,
         path: tuple[str, ...],
         leaf_type: ir.Type,
-        element_index: ir.Value | None = None,
+        loop_index_reg: ir.Value | None = None,
     ) -> ir.Value | None:
         leaf_spec = leaf_specs.get((kind, name, path))
         if leaf_spec is None:
             return None
         base_offset, element_size = leaf_spec
         byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if kind == "stream" and element_index is not None:
+        if loop_index_reg is not None:
             stride = ir.Constant(ir.IntType(32), element_size)
             byte_offset = tick_builder.add(
                 byte_offset,
-                tick_builder.mul(element_index, stride, name="stream_elem_stride"),
-                name="stream_elem_offset",
+                tick_builder.mul(loop_index_reg, stride, name="loop_elem_stride"),
+                name="loop_elem_offset",
             )
         raw_ptr = tick_builder.gep(
             arena_ptr,
             [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
+        typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
         if typed_ptr.type.pointee != leaf_type:
             return None
         return typed_ptr
