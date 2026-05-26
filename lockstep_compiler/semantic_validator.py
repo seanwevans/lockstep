@@ -903,385 +903,12 @@ def build_semantic_validator(base_visitor_cls):
             self._pop_scope()
             return result
 
-        def _resolve_expr_type(self, ctx):
-            if ctx is None:
+        def _resolve_expr_type(self, expr):
+            if expr is None:
                 return None
-            if isinstance(ctx, AstExpr):
-                return self._resolve_ast_expr_type(ctx)
-
-            def _as_list(value):
-                if value is None:
-                    return []
-                return value if isinstance(value, list) else [value]
-
-            def _is_cast_function_name(name: str) -> bool:
-                return name in {"int", "float", "double", "uint", "bool"}
-
-            def _is_select_builtin(name: str) -> bool:
-                return name == "select"
-
-            def _child_text(index: int) -> str | None:
-                if not hasattr(ctx, "getChild"):
-                    return None
-                try:
-                    child = ctx.getChild(index)
-                except Exception:
-                    return None
-                return (
-                    child.getText()
-                    if child is not None and hasattr(child, "getText")
-                    else None
-                )
-
-            def _report_operand_error(
-                operator: str, expected: str, actual_types: list[str | None]
-            ):
-                rendered_types = ", ".join(
-                    type_name if type_name is not None else "<unresolved>"
-                    for type_name in actual_types
-                )
-                self._add_diagnostic(
-                    severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["invalid_operand_types"],
-                    message=(
-                        f"Operator '{operator}' expects {expected} operand type(s), "
-                        f"but got [{rendered_types}]."
-                    ),
-                    ctx=ctx,
-                    hint="Adjust operand types so they match the operator semantics.",
-                )
-
-            def _resolve_numeric_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [
-                    self._resolve_expr_type(operand_ctx)
-                    for operand_ctx in operand_contexts
-                ]
-                known = [
-                    operand_type
-                    for operand_type in operand_types
-                    if operand_type is not None
-                ]
-                numeric_types = {"int", "uint", "float", "double"}
-                if any(operand_type not in numeric_types for operand_type in known):
-                    _report_operand_error(operator, "numeric", operand_types)
-                    return None
-                if len(known) != len(operand_contexts):
-                    return None
-                if len(set(known)) > 1:
-                    self._add_diagnostic(
-                        severity="error",
-                        code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
-                        message=(
-                            f"Operator '{operator}' mixes numeric operand types without an explicit cast."
-                        ),
-                        ctx=ctx,
-                        hint="Use explicit casts so numeric widening is intentional and target-compatible.",
-                    )
-                    return None
-                return known[0] if known else None
-
-            def _resolve_boolean_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [
-                    self._resolve_expr_type(operand_ctx)
-                    for operand_ctx in operand_contexts
-                ]
-                known = [
-                    operand_type
-                    for operand_type in operand_types
-                    if operand_type is not None
-                ]
-                if any(operand_type != "bool" for operand_type in known):
-                    _report_operand_error(operator, "bool", operand_types)
-                    return None
-                if len(known) != len(operand_contexts):
-                    return None
-                return "bool"
-
-            def _resolve_int_sequence(operator: str, operand_contexts: list[Any]):
-                operand_types = [
-                    self._resolve_expr_type(operand_ctx)
-                    for operand_ctx in operand_contexts
-                ]
-                known = [
-                    operand_type
-                    for operand_type in operand_types
-                    if operand_type is not None
-                ]
-                if any(operand_type not in {"int", "uint"} for operand_type in known):
-                    _report_operand_error(operator, "integer", operand_types)
-                    return None
-                if len(known) != len(operand_contexts):
-                    return None
-                return known[0] if known else None
-
-            if hasattr(ctx, "logicalAndExpr") and callable(ctx.logicalAndExpr):
-                operands = _as_list(ctx.logicalAndExpr())
-                if len(operands) > 1:
-                    return _resolve_boolean_sequence("||", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "bitwiseOrExpr") and callable(ctx.bitwiseOrExpr):
-                operands = _as_list(ctx.bitwiseOrExpr())
-                if len(operands) > 1:
-                    return _resolve_boolean_sequence("&&", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "bitwiseXorExpr") and callable(ctx.bitwiseXorExpr):
-                operands = _as_list(ctx.bitwiseXorExpr())
-                if len(operands) > 1:
-                    return _resolve_int_sequence("|", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "bitwiseAndExpr") and callable(ctx.bitwiseAndExpr):
-                operands = _as_list(ctx.bitwiseAndExpr())
-                if len(operands) > 1:
-                    return _resolve_int_sequence("^", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "equalityExpr") and callable(ctx.equalityExpr):
-                operands = _as_list(ctx.equalityExpr())
-                if len(operands) > 1:
-                    return _resolve_int_sequence("&", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "relExpr") and callable(ctx.relExpr):
-                operands = _as_list(ctx.relExpr())
-                if len(operands) > 1:
-                    operand_types = [
-                        self._resolve_expr_type(operand_ctx) for operand_ctx in operands
-                    ]
-                    known = [
-                        operand_type
-                        for operand_type in operand_types
-                        if operand_type is not None
-                    ]
-                    if any(
-                        operand_type not in {"int", "uint", "float", "double", "bool"}
-                        for operand_type in known
-                    ):
-                        operator = _child_text(1) or "=="
-                        _report_operand_error(operator, "comparable", operand_types)
-                        return None
-                    if len(set(known)) > 1:
-                        operator = _child_text(1) or "=="
-                        _report_operand_error(operator, "matching", operand_types)
-                        return None
-                    if len(known) != len(operands):
-                        return None
-                    return "bool"
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "shiftExpr") and callable(ctx.shiftExpr):
-                operands = _as_list(ctx.shiftExpr())
-                if len(operands) > 1:
-                    operator = _child_text(1) or "<"
-                    operand_types = [
-                        self._resolve_expr_type(operand_ctx) for operand_ctx in operands
-                    ]
-                    known = [
-                        operand_type
-                        for operand_type in operand_types
-                        if operand_type is not None
-                    ]
-                    if any(
-                        operand_type not in {"int", "uint", "float", "double", "bool"}
-                        for operand_type in known
-                    ):
-                        _report_operand_error(operator, "comparable", operand_types)
-                        return None
-                    if len(set(known)) > 1:
-                        _report_operand_error(operator, "matching", operand_types)
-                        return None
-                    if len(known) != len(operands):
-                        return None
-                    return "bool"
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "addExpr") and callable(ctx.addExpr):
-                operands = _as_list(ctx.addExpr())
-                if len(operands) > 1:
-                    return _resolve_int_sequence(_child_text(1) or "<<", operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if hasattr(ctx, "mulExpr") and callable(ctx.mulExpr):
-                operands = _as_list(ctx.mulExpr())
-                if len(operands) > 1:
-                    operator = _child_text(1) or "+"
-                    return _resolve_numeric_sequence(operator, operands)
-                if len(operands) == 1:
-                    return self._resolve_expr_type(operands[0])
-
-            if (
-                hasattr(ctx, "unaryExpr")
-                and callable(ctx.unaryExpr)
-                and ctx.unaryExpr() is not None
-            ):
-                operator = _child_text(0) or ""
-                operand_type = self._resolve_expr_type(ctx.unaryExpr())
-                type_name_ctx = (
-                    ctx.typeName()
-                    if hasattr(ctx, "typeName") and callable(ctx.typeName)
-                    else None
-                )
-                if type_name_ctx is not None and _child_text(0) == "(":
-                    cast_target = type_name_ctx.getText()
-                    self._validate_declared_type(
-                        cast_target,
-                        type_name_ctx,
-                        SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
-                    )
-                    return cast_target
-                if operator == "-":
-                    if operand_type is not None and operand_type not in {
-                        "int",
-                        "uint",
-                        "float",
-                        "double",
-                    }:
-                        _report_operand_error(operator, "numeric", [operand_type])
-                        return None
-                    return operand_type
-                if operator == "!":
-                    if operand_type is not None and operand_type != "bool":
-                        _report_operand_error(operator, "bool", [operand_type])
-                        return None
-                    return "bool" if operand_type is not None else None
-                return operand_type
-
-            if hasattr(ctx, "declared_type"):
-                return ctx.declared_type
-
-            if hasattr(ctx, "INT") and callable(ctx.INT) and ctx.INT() is not None:
-                return "int"
-            if (
-                hasattr(ctx, "FLOAT")
-                and callable(ctx.FLOAT)
-                and ctx.FLOAT() is not None
-            ):
-                return "float"
-            if hasattr(ctx, "BOOL") and callable(ctx.BOOL) and ctx.BOOL() is not None:
-                return "bool"
-            if (
-                hasattr(ctx, "STRING")
-                and callable(ctx.STRING)
-                and ctx.STRING() is not None
-            ):
-                return "string"
-
-            if (
-                hasattr(ctx, "lvalue")
-                and callable(ctx.lvalue)
-                and ctx.lvalue() is not None
-            ):
-                return self._resolve_lvalue_type(ctx.lvalue())
-
-            if hasattr(ctx, "ID") and callable(ctx.ID) and ctx.ID() is not None:
-                if (
-                    hasattr(ctx, "exprList")
-                    and callable(ctx.exprList)
-                    and ctx.exprList() is not None
-                ):
-                    function_name = ctx.ID().getText()
-                    args = ctx.exprList().expr() if ctx.exprList() is not None else []
-                    if _is_cast_function_name(function_name):
-                        if len(args) != 1:
-                            self._add_diagnostic(
-                                severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES[
-                                    "pure_argument_count_mismatch"
-                                ],
-                                message=(
-                                    f"Cast '{function_name}(...)' expects 1 argument, "
-                                    f"but got {len(args)}."
-                                ),
-                                ctx=ctx,
-                                hint="Pass exactly one expression to a cast.",
-                            )
-                            return None
-                        return function_name
-                    if _is_select_builtin(function_name):
-                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
-                        if len(args) != 3:
-                            self._add_diagnostic(
-                                severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES[
-                                    "pure_argument_count_mismatch"
-                                ],
-                                message=(
-                                    f"Built-in 'select(...)' expects 3 arguments, but got {len(args)}."
-                                ),
-                                ctx=ctx,
-                                hint="Use `select(condition, when_true, when_false)`.",
-                            )
-                            return None
-
-                        condition_type = self._resolve_expr_type(args[0])
-                        true_type = self._resolve_expr_type(args[1])
-                        false_type = self._resolve_expr_type(args[2])
-                        if condition_type is not None and condition_type != "bool":
-                            self._add_diagnostic(
-                                severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES[
-                                    "pure_argument_type_mismatch"
-                                ],
-                                message=(
-                                    "Type mismatch for built-in 'select' condition: "
-                                    f"expected bool, got {condition_type}."
-                                ),
-                                ctx=ctx,
-                                hint="Pass a boolean condition as the first argument.",
-                            )
-                            return None
-
-                        if true_type is not None and false_type is not None and true_type != false_type:
-                            self._add_diagnostic(
-                                severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES[
-                                    "pure_argument_type_mismatch"
-                                ],
-                                message=(
-                                    "Type mismatch for built-in 'select' value arguments: "
-                                    f"expected matching types, got {true_type} and {false_type}."
-                                ),
-                                ctx=ctx,
-                                hint="Pass true/false values with the same type.",
-                            )
-                            return None
-
-                        if true_type is not None:
-                            return true_type
-                        return false_type
-                    function_signature = self.pure_functions.get(function_name)
-                    if function_signature is not None:
-                        return function_signature.return_type
-                    return None
-                return self._check_expression_identifier(ctx.ID().getText(), ctx)
-
-            if (
-                hasattr(ctx, "primaryExpr")
-                and callable(ctx.primaryExpr)
-                and ctx.primaryExpr() is not None
-            ):
-                return self._resolve_expr_type(ctx.primaryExpr())
-
-            if hasattr(ctx, "expr") and callable(ctx.expr):
-                child_expr = ctx.expr()
-                if isinstance(child_expr, list):
-                    if len(child_expr) == 1:
-                        return self._resolve_expr_type(child_expr[0])
-                    return None
-                if child_expr is not None:
-                    return self._resolve_expr_type(child_expr)
-
-            return None
+            if not isinstance(expr, AstExpr):
+                return None
+            return self._resolve_ast_expr_type(expr)
 
         def _lookup_path(self, path: tuple[str, ...]) -> str | None:
             if not path:
@@ -1359,7 +986,7 @@ def build_semantic_validator(base_visitor_cls):
                 ),
                 AstExprBinary: _resolve_binary,
                 AstExprCall: _resolve_call,
-                AstExprCast: lambda node: node.target_type,
+                AstExprCast: lambda node: node.target_type.name,
             }
 
             for expr_type, resolver in type_dispatch.items():
@@ -1822,8 +1449,58 @@ def build_semantic_validator(base_visitor_cls):
             self._resolve_lvalue_type(ctx)
             return self.visitChildren(ctx)
 
+        def _validate_ast_program(self, program: AstProgram):
+            self._push_scope()
+            for struct in program.structs:
+                struct_ctx = self._ctx_from_location(struct.location)
+                if struct.name in self.structs:
+                    self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"], message=f"Duplicate struct declaration for '{struct.name}'.", ctx=struct_ctx, hint="Rename one struct declaration to keep type names unique.")
+                    continue
+                fields = {}
+                for field in struct.fields:
+                    field_ctx = self._ctx_from_location(field.location)
+                    if field.name in fields:
+                        self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"], message=f"Struct '{struct.name}' has duplicate field declaration '{field.name}'.", ctx=field_ctx, hint="Rename or remove duplicate struct member declarations.")
+                        continue
+                    fields[field.name]=SemanticStructField(name=field.name, declared_type=field.declared_type.name)
+                self.structs[struct.name]=fields
+
+            for collection, target in ((program.shaders, self.shaders), (program.filters, self.filters)):
+                for kernel in collection:
+                    kctx=self._ctx_from_location(kernel.location)
+                    params=[SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier=p.modifier) for p in kernel.params]
+                    if kernel.name in target:
+                        self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"], message=f"Duplicate shader/filter declaration for '{kernel.name}'.", ctx=kctx, hint="Rename one declaration to avoid symbol collisions.")
+                    else:
+                        target[kernel.name]=params
+
+            for pure in program.pure_functions:
+                self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=pure.return_type.name, params=tuple(SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
+
+            for pipeline in program.pipelines:
+                self._push_scope()
+                self._pipeline_resource_stack.append({})
+                self._pipeline_bind_usage_stack.append(set())
+                for stream in pipeline.streams:
+                    ctx=self._ctx_from_location(stream.location)
+                    self._declare(stream.name, stream.declared_type.name, ctx, duplicate_code="LCK306", kind="stream")
+                for accum in pipeline.accumulators:
+                    ctx=self._ctx_from_location(accum.location)
+                    self._declare(accum.name, accum.declared_type.name, ctx, duplicate_code="LCK306", kind="accumulator")
+                for uniform in pipeline.uniforms:
+                    ctx=self._ctx_from_location(uniform.location)
+                    self._declare(uniform.name, uniform.declared_type.name, ctx, duplicate_code="LCK306", kind="uniform")
+                self._pipeline_resource_stack.pop()
+                self._pipeline_bind_usage_stack.pop()
+                self._pop_scope()
+
+            self._pop_scope()
+
         def validate(self, tree):
-            self.visit(tree)
+            typed_ast = getattr(self, "typed_ast", None)
+            if not isinstance(typed_ast, AstProgram):
+                return self.diagnostics
+            self._validate_ast_program(typed_ast)
             return self.diagnostics
 
     return LockstepSemanticValidator
