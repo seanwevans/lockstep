@@ -898,7 +898,7 @@ def emit_llvm_ir(
             return None
         base_offset, element_size = leaf_spec
         byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if kind in {"stream", "accum"} and element_index is not None:
+        if kind in {"stream", "accum"} and loop_index_reg is not None:
             stride = ir.Constant(ir.IntType(32), element_size)
             byte_offset = tick_builder.add(
                 byte_offset,
