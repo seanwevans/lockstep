@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 import shutil
@@ -20,14 +21,14 @@ class RouteSimulation:
     notes: str | None = None
 
 
-def _fold_values(operator: str, values: list[Any]) -> Any:
+def _fold_values(operator: str, values: list[Any], *, use_llvm_runtime: bool = False) -> Any:
     numeric = [value for value in values if isinstance(value, (int, float))]
     if not numeric:
         return None
     if operator == "sum":
-        return _jit_numeric_reduce("sum", numeric)
+        return _jit_numeric_reduce("sum", numeric, use_llvm_runtime=use_llvm_runtime)
     if operator == "avg":
-        return _jit_numeric_reduce("avg", numeric)
+        return _jit_numeric_reduce("avg", numeric, use_llvm_runtime=use_llvm_runtime)
     if operator == "min":
         return min(numeric)
     if operator == "max":
@@ -155,15 +156,44 @@ def _run_reduce_subprocess(values: list[float]) -> float:
     return float(completed.stdout.strip())
 
 
-def _jit_numeric_reduce(operator: str, values: list[Any]) -> Any:
+class SimulatorRuntimeError(RuntimeError):
+    """Raised when optional LLVM-backed simulation fails."""
+
+
+def _python_numeric_reduce(operator: str, values: list[Any]) -> Any:
+    numeric_values = [float(value) for value in values]
+    if not numeric_values:
+        return None
+
+    reduced = float(sum(numeric_values))
+    if operator == "avg":
+        reduced /= len(numeric_values)
+
+    if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+        return int(reduced)
+    return reduced
+
+
+def _jit_numeric_reduce(
+    operator: str,
+    values: list[Any],
+    *,
+    use_llvm_runtime: bool = False,
+) -> Any:
+    reduced_python = _python_numeric_reduce(operator, values)
+    if not use_llvm_runtime:
+        return reduced_python
+
     numeric_values = [float(value) for value in values]
     if not numeric_values:
         return None
 
     try:
         reduced = _run_reduce_subprocess(numeric_values)
-    except Exception:
-        reduced = float(sum(numeric_values))
+    except Exception as exc:
+        raise SimulatorRuntimeError(
+            "LLVM simulation runtime failed; disable llvm runtime or install clang/lli"
+        ) from exc
 
     if operator == "avg":
         reduced /= len(numeric_values)
@@ -195,7 +225,11 @@ def simulate_pipeline_entities(
     *,
     stream_inputs: dict[str, list[Any]] | None = None,
     accumulator_inputs: dict[str, list[Any]] | None = None,
+    use_llvm_runtime: bool | None = None,
 ) -> dict[str, Any]:
+    if use_llvm_runtime is None:
+        use_llvm_runtime = os.getenv("LOCKSTEP_SIM_USE_LLVM", "").lower() in {"1", "true", "yes", "on"}
+
     streams = {
         stream["name"]: {
             "type": stream["type"],
@@ -236,7 +270,9 @@ def simulate_pipeline_entities(
             uniform_name = route_ir.get("uniform_name")
             if isinstance(uniform_name, str) and uniform_name:
                 uniforms[uniform_name] = _fold_values(
-                    str(route_ir.get("operator", "")), source_values
+                    str(route_ir.get("operator", "")),
+                    source_values,
+                    use_llvm_runtime=use_llvm_runtime,
                 )
             routes.append(
                 RouteSimulation(

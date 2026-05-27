@@ -305,7 +305,7 @@ def test_run_cli_simulate_reports_invalid_simulation_shape(tmp_path):
 def test_fold_values_uses_jit_reduce_for_sum_and_avg(monkeypatch):
     calls = []
 
-    def fake_reduce(operator, values):
+    def fake_reduce(operator, values, **_kwargs):
         calls.append((operator, list(values)))
         return 42.5 if operator == "sum" else 10.625
 
@@ -357,11 +357,39 @@ def test_fold_values_uses_jit_reduce_for_sum_and_avg(monkeypatch):
     ]
 
 
-def test_jit_numeric_reduce_falls_back_to_python_sum_on_error(monkeypatch):
+def test_jit_numeric_reduce_has_deterministic_python_behavior_for_mixed_numeric_values():
+    from lockstep_compiler.simulator import _jit_numeric_reduce
+
+    values = [1, 2.5, True, False, 4]
+    assert _jit_numeric_reduce("sum", values) == 8.5
+    assert _jit_numeric_reduce("avg", values) == 1.7
+
+
+def test_jit_numeric_reduce_preserves_int_result_for_non_bool_int_inputs():
+    from lockstep_compiler.simulator import _jit_numeric_reduce
+
+    assert _jit_numeric_reduce("sum", [1, 2, 3]) == 6
+    assert isinstance(_jit_numeric_reduce("sum", [1, 2, 3]), int)
+
+
+def test_jit_numeric_reduce_raises_mode_specific_error_when_llvm_runtime_fails(monkeypatch):
+    from lockstep_compiler.simulator import SimulatorRuntimeError, _jit_numeric_reduce
+
     monkeypatch.setattr(
         "lockstep_compiler.simulator._run_reduce_subprocess",
         lambda _values: (_ for _ in ()).throw(RuntimeError("boom")),
     )
+
+    try:
+        _jit_numeric_reduce("sum", [1.25, 2.75], use_llvm_runtime=True)
+    except SimulatorRuntimeError as err:
+        assert "LLVM simulation runtime failed" in str(err)
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError when LLVM runtime fails")
+
+
+def test_simulate_pipeline_entities_defaults_to_python_mode_without_runtime_binaries(monkeypatch):
+    monkeypatch.setattr("lockstep_compiler.simulator._simulator_runtime_command", lambda: None)
 
     assert (
         simulate_pipeline_entities(
@@ -383,7 +411,7 @@ def test_jit_numeric_reduce_falls_back_to_python_sum_on_error(monkeypatch):
                     }
                 ],
             },
-            accumulator_inputs={"energy": [1.25, 2.75]},
+            accumulator_inputs={"energy": [1.25, 2.75, True]},
         )["uniforms"]["total"]
-        == 4.0
+        == 5.0
     )
