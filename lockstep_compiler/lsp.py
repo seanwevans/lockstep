@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +40,22 @@ class DefinitionTarget:
     column: int
     symbol: str
 
+
+@dataclass(frozen=True)
+class DocumentSnapshotKey:
+    uri: str
+    version: int | None
+    source_hash: str
+
+
+@dataclass
+class CachedLspSnapshot:
+    compiled_context: CompiledLspContext
+    analysis_context: AnalysisContext | None = None
+
+
+_MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
+_BIND_BLOCK_RE = re.compile(r"\bbind\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE)
 
 
 def _diagnostics_to_dicts(diagnostics: list[Any]) -> list[dict[str, Any]]:
@@ -95,27 +113,30 @@ def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def compile_context_for_lsp(source: str) -> CompiledLspContext:
+    compile_diagnostics: list[dict[str, Any]]
+    entities: dict[str, Any]
     try:
         result = compile_lockstep(source, verbose=False)
-        return CompiledLspContext(
-            entities=result.entities,
-            diagnostics=_diagnostics_to_dicts(result.diagnostics),
-        )
+        entities = result.entities
+        compile_diagnostics = _diagnostics_to_dicts(result.diagnostics)
     except LockstepCompileError as error:
-        entities: dict[str, Any] = {}
+        compile_diagnostics = _diagnostics_to_dicts(error.diagnostics)
+        entities = {}
         try:
             recovery = compile_lockstep(
                 source,
                 verbose=False,
                 semantic_validator=lambda *_args, **_kwargs: [],
             )
+            # Keep semantic-index entities from recovery, but preserve diagnostics
+            # from the original compile failure so editors can surface true errors.
             entities = recovery.entities
         except Exception:
             entities = {}
-        return CompiledLspContext(
-            entities=entities,
-            diagnostics=_diagnostics_to_dicts(error.diagnostics),
-        )
+    return CompiledLspContext(
+        entities=entities,
+        diagnostics=compile_diagnostics,
+    )
 
 
 def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, str]:
@@ -592,8 +613,26 @@ def run_lsp_server() -> int:
 
     server = LanguageServer("lockstep-lsp", "0.1.0")
     debounce_seconds = 0.15
-    doc_contexts: dict[str, CompiledLspContext] = {}
+    # Cache strategy:
+    # - Keys are (uri, version, source_hash) snapshots.
+    # - Version is preferred when provided by client; hash guards against stale
+    #   state for clients that omit/skip versions.
+    # - Close events clear all snapshots for that URI.
+    #
+    # Concurrency behavior:
+    # - Handlers execute on the event loop. We avoid duplicate compile work by
+    #   keeping a per-snapshot in-flight task map and awaiting shared tasks.
+    snapshot_cache: dict[DocumentSnapshotKey, CachedLspSnapshot] = {}
+    pending_compiles: dict[DocumentSnapshotKey, asyncio.Task[CompiledLspContext]] = {}
+    latest_snapshot_key_by_uri: dict[str, DocumentSnapshotKey] = {}
     pending_tasks: dict[str, asyncio.Task[Any]] = {}
+
+    def _snapshot_key(uri: str, source: str, version: int | None) -> DocumentSnapshotKey:
+        return DocumentSnapshotKey(
+            uri=uri,
+            version=version,
+            source_hash=hashlib.sha1(source.encode("utf-8")).hexdigest(),
+        )
 
     def _to_lsp_diagnostic(diag: dict[str, Any]) -> types.Diagnostic:
         severity_map = {
@@ -615,12 +654,49 @@ def run_lsp_server() -> int:
             message=diag.get("message", ""),
         )
 
+    async def _compiled_context_for_document(
+        *,
+        uri: str,
+        source: str,
+        version: int | None,
+    ) -> tuple[DocumentSnapshotKey, CompiledLspContext]:
+        key = _snapshot_key(uri, source, version)
+        cached = snapshot_cache.get(key)
+        if cached is not None:
+            latest_snapshot_key_by_uri[uri] = key
+            return key, cached.compiled_context
+
+        task = pending_compiles.get(key)
+        if task is None:
+            task = asyncio.create_task(asyncio.to_thread(compile_context_for_lsp, source))
+            pending_compiles[key] = task
+        compiled = await task
+        pending_compiles.pop(key, None)
+        snapshot_cache[key] = CachedLspSnapshot(compiled_context=compiled)
+        latest_snapshot_key_by_uri[uri] = key
+        return key, compiled
+
+    def _analysis_context_for_snapshot(
+        key: DocumentSnapshotKey,
+        source: str,
+    ) -> AnalysisContext:
+        cached = snapshot_cache[key]
+        if cached.analysis_context is None:
+            cached.analysis_context = build_analysis_context(
+                source,
+                compiled_context=cached.compiled_context,
+            )
+        return cached.analysis_context
+
     async def _validate(uri: str, *, debounced: bool) -> None:
         if debounced:
             await asyncio.sleep(debounce_seconds)
         document = server.workspace.get_text_document(uri)
-        compiled = compile_context_for_lsp(document.source)
-        doc_contexts[uri] = compiled
+        _, compiled = await _compiled_context_for_document(
+            uri=uri,
+            source=document.source,
+            version=getattr(document, "version", None),
+        )
         server.publish_diagnostics(
             uri, [_to_lsp_diagnostic(d) for d in compiled.diagnostics]
         )
@@ -636,14 +712,12 @@ def run_lsp_server() -> int:
         task = pending_tasks.pop(uri, None)
         if task is not None and not task.done():
             task.cancel()
-        doc_contexts.pop(uri, None)
-
-    def _context_for_document(uri: str, source: str) -> CompiledLspContext:
-        context = doc_contexts.get(uri)
-        if context is None:
-            context = compile_context_for_lsp(source)
-            doc_contexts[uri] = context
-        return context
+        latest_snapshot_key_by_uri.pop(uri, None)
+        for key in [existing for existing in snapshot_cache if existing.uri == uri]:
+            snapshot_cache.pop(key, None)
+            pending = pending_compiles.pop(key, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
 
     @server.feature(types.TEXT_DOCUMENT_DID_OPEN)  # type: ignore[untyped-decorator]
     @server.feature(types.TEXT_DOCUMENT_DID_CHANGE)  # type: ignore[untyped-decorator]
@@ -660,14 +734,16 @@ def run_lsp_server() -> int:
         server.publish_diagnostics(params.text_document.uri, [])
 
     @server.feature(types.TEXT_DOCUMENT_COMPLETION)  # type: ignore[untyped-decorator]
-    def completion(
+    async def completion(
         params: types.CompletionParams,
     ) -> types.CompletionList:
         document = server.workspace.get_text_document(params.text_document.uri)
-        compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(
-            document.source, compiled_context=compiled
+        key, _compiled = await _compiled_context_for_document(
+            uri=document.uri,
+            source=document.source,
+            version=getattr(document, "version", None),
         )
+        analysis_context = _analysis_context_for_snapshot(key, document.source)
         entries = provide_bind_completion_items(
             document.source,
             line=params.position.line,
@@ -692,11 +768,16 @@ def run_lsp_server() -> int:
         )
 
     @server.feature(types.TEXT_DOCUMENT_HOVER)  # type: ignore[untyped-decorator]
-    def hover(params: types.HoverParams) -> types.Hover | None:
+    async def hover(params: types.HoverParams) -> types.Hover | None:
         document = server.workspace.get_text_document(params.text_document.uri)
-        compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(
-            document.source, compiled_context=compiled
+        key, _compiled = await _compiled_context_for_document(
+            uri=document.uri,
+            source=document.source,
+            version=getattr(document, "version", None),
+        )
+        analysis_context = _analysis_context_for_snapshot(
+            key,
+            document.source,
         )
         info = provide_hover_info(
             document.source,
@@ -714,13 +795,18 @@ def run_lsp_server() -> int:
         )
 
     @server.feature(types.TEXT_DOCUMENT_DEFINITION)  # type: ignore[untyped-decorator]
-    def definition(
+    async def definition(
         params: types.DefinitionParams,
     ) -> types.Location | None:
         document = server.workspace.get_text_document(params.text_document.uri)
-        compiled = _context_for_document(document.uri, document.source)
-        analysis_context = build_analysis_context(
-            document.source, compiled_context=compiled
+        key, _compiled = await _compiled_context_for_document(
+            uri=document.uri,
+            source=document.source,
+            version=getattr(document, "version", None),
+        )
+        analysis_context = _analysis_context_for_snapshot(
+            key,
+            document.source,
         )
         target = find_definition_target(
             document.source,
