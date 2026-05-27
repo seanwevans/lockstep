@@ -144,6 +144,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=8,
         help="Override SIMD vector width used by LLVM IR lowering and generated C header macros.",
     )
+    parser.add_argument(
+        "--unsafe-allow-external-dependencies",
+        action="store_true",
+        help=(
+            "Disable strict dependency root checks. By default, dependency includes "
+            "must resolve under the source file directory."
+        ),
+    )
     return parser
 
 
@@ -238,6 +246,7 @@ def run_cli(
     supports_library_source_files = False
     supports_frontend_limits = False
     supports_target_width = False
+    supports_dependency_root = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -274,6 +283,11 @@ def run_cli(
             or parameter.name == "target_width"
             for parameter in signature.parameters.values()
         )
+        supports_dependency_root = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "dependency_root"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
@@ -294,6 +308,11 @@ def run_cli(
         )
     if supports_target_width:
         compile_kwargs["target_width"] = args.target_width
+    if supports_dependency_root:
+        dependency_root: Path | None = None
+        if args.path and not args.unsafe_allow_external_dependencies:
+            dependency_root = source_path.resolve().parent
+        compile_kwargs["dependency_root"] = dependency_root
 
     try:
         if compile_kwargs:
