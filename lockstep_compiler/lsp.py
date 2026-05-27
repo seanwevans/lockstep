@@ -8,6 +8,7 @@ from typing import Any
 
 from .compiler import compile_lockstep
 from .errors import LockstepCompileError
+from .type_analysis import build_struct_field_type_index
 
 
 @dataclass(frozen=True)
@@ -230,7 +231,7 @@ def _build_struct_member_index_from_entities(
 def _build_struct_field_type_index_from_entities(
     entities: dict[str, Any],
 ) -> dict[str, dict[str, str]]:
-    return {
+    structs = {
         struct.get("name"): {
             field.get("name"): field.get("type")
             for field in struct.get("fields", [])
@@ -239,6 +240,7 @@ def _build_struct_field_type_index_from_entities(
         for struct in entities.get("structs", [])
         if struct.get("name")
     }
+    return build_struct_field_type_index(structs)
 
 
 def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
@@ -347,36 +349,50 @@ def _identifier_at_position(source: str, line: int, column: int) -> str | None:
     return source[start:end]
 
 
-def _member_access_at_position(source: str, line: int, column: int) -> tuple[str, str] | None:
-    lines = source.splitlines()
-    if line < 0 or line >= len(lines):
+def _path_at_position(source: str, line: int, column: int) -> tuple[str, ...] | None:
+    offset = _line_column_to_offset(source, line, column)
+    if offset is None or offset >= len(source):
         return None
-    line_text = lines[line]
     code_mask = _code_mask(source)
-    line_start = _line_column_to_offset(source, line, 0)
-    if line_start is None:
-        return None
-    for match in _MEMBER_ACCESS_RE.finditer(line_text):
-        start, end = match.span(0)
-        if not (start <= column < end):
-            continue
-        if any(not code_mask[line_start + pos] for pos in range(start, end)):
-            continue
-        return match.group(1), match.group(2)
-    return None
-
-
-def _find_callable_definition(
-    source: str,
-    pattern: re.Pattern[str],
-    symbol: str,
-) -> DefinitionTarget | None:
-    match = pattern.search(source)
-    if match is None:
+    if not code_mask[offset]:
         return None
 
-    line, column = _offset_to_line_column(source, match.start("name"))
-    return DefinitionTarget(line=line, column=column, symbol=symbol)
+    ident = _identifier_at_position(source, line, column)
+    if ident is None:
+        return None
+
+    start = offset
+    while start > 0 and (source[start - 1].isalnum() or source[start - 1] in {"_", "."}):
+        start -= 1
+    end = offset
+    while end < len(source) and (source[end].isalnum() or source[end] in {"_", "."}):
+        end += 1
+
+    token = source[start:end].strip(".")
+    parts = tuple(part for part in token.split(".") if part)
+    if len(parts) < 2:
+        return None
+    if ident not in parts:
+        return None
+    return parts
+
+
+def _resolve_path_member(source: str, context: AnalysisContext, line: int, column: int
+) -> tuple[str, str, str] | None:
+    path = _path_at_position(source, line, column)
+    if path is None:
+        return None
+    current_type = context.variable_types.get(path[0])
+    if not current_type:
+        return None
+    for member in path[1:]:
+        field_types = context.struct_field_types.get(current_type, {})
+        next_type = field_types.get(member)
+        if next_type is None:
+            return None
+        parent = current_type
+        current_type = next_type
+    return parent, path[-1], path[0]
 
 
 def _location_target_from_entity(entity: dict[str, Any]) -> DefinitionTarget | None:
@@ -401,12 +417,6 @@ def _build_callable_index(
         if not name or name in callable_index:
             continue
         target = _location_target_from_entity(shader)
-        if target is None:
-            target = _find_callable_definition(
-                source,
-                re.compile(rf"\bshader\s+(?P<name>{re.escape(name)})\s*\("),
-                name,
-            )
         if target is not None:
             callable_index[name] = target
 
@@ -415,12 +425,6 @@ def _build_callable_index(
         if not name or name in callable_index:
             continue
         target = _location_target_from_entity(filter_decl)
-        if target is None:
-            target = _find_callable_definition(
-                source,
-                re.compile(rf"\bfilter\s+(?P<name>{re.escape(name)})\s*\("),
-                name,
-            )
         if target is not None:
             callable_index[name] = target
 
@@ -429,14 +433,6 @@ def _build_callable_index(
         if not name or pure.get("intrinsic") or name in callable_index:
             continue
         target = _location_target_from_entity(pure)
-        if target is None:
-            target = _find_callable_definition(
-                source,
-                re.compile(
-                    rf"\bpure\b[\s\S]*?\b(?P<name>{re.escape(name)})\s*\("
-                ),
-                name,
-            )
         if target is not None:
             callable_index[name] = target
 
@@ -450,13 +446,10 @@ def find_member_definition(
     analysis_context: AnalysisContext | None = None,
 ) -> MemberDefinition | None:
     context = analysis_context or build_analysis_context(source)
-    member_access = _member_access_at_position(source, line, column)
-    if member_access is None:
+    resolved = _resolve_path_member(source, context, line, column)
+    if resolved is None:
         return None
-    variable_name, field_name = member_access
-    struct_name = context.variable_types.get(variable_name)
-    if not struct_name:
-        return None
+    struct_name, field_name, _root = resolved
     return context.struct_member_index.get(struct_name, {}).get(field_name)
 
 
@@ -580,16 +573,13 @@ def provide_hover_info(
     analysis_context: AnalysisContext | None = None,
 ) -> str | None:
     context = analysis_context or build_analysis_context(source)
-    member_access = _member_access_at_position(source, line, column)
-    if member_access is not None:
-        variable_name, field_name = member_access
-        struct_name = context.variable_types.get(variable_name)
-        if struct_name:
-            field_type = context.struct_field_types.get(struct_name, {}).get(field_name)
-            if field_type:
-                return f"(field) `{struct_name}.{field_name}: {field_type}`"
-            return f"(field) `{struct_name}.{field_name}`"
-        return None
+    resolved = _resolve_path_member(source, context, line, column)
+    if resolved is not None:
+        struct_name, field_name, _root = resolved
+        field_type = context.struct_field_types.get(struct_name, {}).get(field_name)
+        if field_type:
+            return f"(field) `{struct_name}.{field_name}: {field_type}`"
+        return f"(field) `{struct_name}.{field_name}`"
 
     name = _identifier_at_position(source, line, column)
     if name is None:
