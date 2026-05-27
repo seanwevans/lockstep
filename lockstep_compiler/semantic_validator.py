@@ -7,8 +7,17 @@ from .ast import (
     AstExprCall,
     AstExprCast,
     AstExprLiteral,
+    AstAssignStmt,
+    AstBindRoute,
+    AstFoldBindRoute,
+    AstKernelDecl,
+    AstKernelBindRoute,
+    AstPureDecl,
+    AstReturnStmt,
     AstExprUnary,
     AstExprVar,
+    AstStatement,
+    AstVarDeclStmt,
 )
 from .prelude import load_intrinsics
 
@@ -1350,6 +1359,80 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def _validate_ast_program(self, program: AstProgram):
+            def _validate_ast_expr(expr: AstExpr):
+                if isinstance(expr, AstExprLiteral):
+                    return
+                if isinstance(expr, AstExprVar):
+                    expr_ctx = self._ctx_from_location(getattr(expr, "location", None))
+                    if expr.path:
+                        self._check_expression_identifier(
+                            expr.path[0], expr_ctx, require_assigned=True
+                        )
+                    return
+                if isinstance(expr, AstExprUnary):
+                    _validate_ast_expr(expr.operand)
+                    return
+                if isinstance(expr, AstExprBinary):
+                    _validate_ast_expr(expr.left)
+                    _validate_ast_expr(expr.right)
+                    return
+                if isinstance(expr, AstExprCall):
+                    for arg in expr.args:
+                        _validate_ast_expr(arg)
+                    return
+                if isinstance(expr, AstExprCast):
+                    cast_ctx = self._ctx_from_location(getattr(expr, "location", None))
+                    self._validate_declared_type(expr.target_type.name, cast_ctx, "LCK310")
+                    _validate_ast_expr(expr.value)
+
+            def _validate_ast_statement(statement: AstStatement):
+                stmt_ctx = self._ctx_from_location(getattr(statement, "location", None))
+                if isinstance(statement, AstVarDeclStmt):
+                    if statement.declared_type is not None:
+                        self._validate_declared_type(
+                            statement.declared_type.name, stmt_ctx, "LCK310"
+                        )
+                    if statement.initializer is not None:
+                        _validate_ast_expr(statement.initializer)
+                    declared_type_name = (
+                        statement.declared_type.name if statement.declared_type else "unknown"
+                    )
+                    self._declare(
+                        statement.name,
+                        declared_type_name,
+                        stmt_ctx,
+                        duplicate_code="LCK306",
+                        kind="local",
+                        assigned=statement.initializer is not None,
+                    )
+                    return
+                if isinstance(statement, AstAssignStmt):
+                    if statement.target:
+                        target_name = statement.target[0]
+                        self._check_expression_identifier(target_name, stmt_ctx, require_assigned=False)
+                        self._set_symbol_assigned(target_name)
+                    _validate_ast_expr(statement.value)
+                    return
+                if isinstance(statement, AstReturnStmt):
+                    _validate_ast_expr(statement.value)
+
+            def _validate_ast_function_body(
+                params: tuple[SemanticKernelParam, ...] | list[SemanticKernelParam],
+                body: tuple[AstStatement, ...],
+            ):
+                self._push_scope()
+                for param in params:
+                    self._declare(
+                        param.name,
+                        param.declared_type,
+                        self._ctx_from_location(getattr(param, "location", None)),
+                        duplicate_code="LCK306",
+                        kind=f"param:{param.modifier}",
+                    )
+                for statement in body:
+                    _validate_ast_statement(statement)
+                self._pop_scope()
+
             self._push_scope()
             for struct in program.structs:
                 struct_ctx = self._ctx_from_location(struct.location)
@@ -1376,6 +1459,26 @@ def build_semantic_validator(base_visitor_cls):
 
             for pure in program.pure_functions:
                 self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=pure.return_type.name, params=tuple(SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
+            for kernel in (*program.shaders, *program.filters):
+                kernel_params = tuple(
+                    SemanticKernelParam(
+                        name=param.name,
+                        declared_type=param.declared_type.name,
+                        modifier=param.modifier,
+                    )
+                    for param in kernel.params
+                )
+                _validate_ast_function_body(kernel_params, kernel.body)
+            for pure in program.pure_functions:
+                pure_params = tuple(
+                    SemanticKernelParam(
+                        name=param.name,
+                        declared_type=param.declared_type.name,
+                        modifier="value",
+                    )
+                    for param in pure.params
+                )
+                _validate_ast_function_body(pure_params, pure.body)
 
             for pipeline in program.pipelines:
                 self._push_scope()
