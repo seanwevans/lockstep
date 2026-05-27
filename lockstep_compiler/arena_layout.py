@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from .errors import LockstepCompileError
+from .models import LockstepDiagnostic
 
 
 _TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+|[][<>,]")
@@ -187,10 +189,28 @@ def resolve_struct_layouts(
             progress = True
 
         if not progress:
-            for struct_name in unresolved:
-                struct_sizes[struct_name] = 1
-                opaque_structs.add(struct_name)
-            break
+            cycle_structs = sorted(unresolved)
+            diagnostic = LockstepDiagnostic(
+                severity="error",
+                code="LCK503",
+                message=(
+                    "Arena layout contains a recursive struct dependency cycle: "
+                    + " -> ".join(cycle_structs)
+                ),
+                line=1,
+                column=0,
+                source_file="<arena_layout>",
+                hint=(
+                    "Break recursive struct references in pipeline resource layouts "
+                    "so each struct can be resolved to a finite byte size."
+                ),
+            )
+            raise LockstepCompileError(
+                [diagnostic],
+                diagnostics=[diagnostic],
+                phase="codegen",
+                source_file=diagnostic.source_file,
+            )
 
     return struct_sizes, opaque_structs
 
