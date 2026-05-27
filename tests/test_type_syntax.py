@@ -8,7 +8,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from lockstep_compiler import compile_lockstep
+from lockstep_compiler import FrontendLimits, compile_lockstep
 from lockstep_compiler.errors import LockstepCompileError
 
 
@@ -195,3 +195,67 @@ def test_malformed_utf8_dependency_raises_parse_style_error(tmp_path):
     assert [diag.code for diag in exc_info.value.errors] == ["LCK002"]
     assert "Unable to parse dependency" in exc_info.value.errors[0].message
     assert "invalid UTF-8" in exc_info.value.errors[0].message
+
+
+def test_dependency_file_count_limit_is_enforced(tmp_path):
+    dep_a = tmp_path / "a.lock"
+    dep_b = tmp_path / "b.lock"
+    main = tmp_path / "main.lock"
+    dep_a.write_text("pipeline A { bind { } }\n", encoding="utf-8")
+    dep_b.write_text("pipeline B { bind { } }\n", encoding="utf-8")
+    main.write_text(f'import "{dep_a.name}";\nimport "{dep_b.name}";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main),
+            frontend_limits=FrontendLimits(max_dependency_files=1),
+        )
+
+    diagnostic = exc_info.value.errors[0]
+    assert diagnostic.code == "LCK007"
+    assert "(2 > 1)" in diagnostic.message
+    assert diagnostic.line == 2
+
+
+def test_dependency_total_bytes_limit_is_enforced(tmp_path):
+    dep = tmp_path / "dep.lock"
+    main = tmp_path / "main.lock"
+    dep.write_text("pipeline Dependency { bind { } }\n", encoding="utf-8")
+    main.write_text(f'import "{dep.name}";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main),
+            frontend_limits=FrontendLimits(max_dependency_total_bytes=8),
+        )
+
+    diagnostic = exc_info.value.errors[0]
+    assert diagnostic.code == "LCK007"
+    assert "bytes > 8 bytes" in diagnostic.message
+    assert diagnostic.line == 1
+
+
+def test_dependency_depth_limit_is_enforced(tmp_path):
+    dep2 = tmp_path / "dep2.lock"
+    dep1 = tmp_path / "dep1.lock"
+    main = tmp_path / "main.lock"
+    dep2.write_text("pipeline Deep { bind { } }\n", encoding="utf-8")
+    dep1.write_text(f'import "{dep2.name}";\n', encoding="utf-8")
+    main.write_text(f'import "{dep1.name}";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main),
+            frontend_limits=FrontendLimits(max_dependency_depth=1),
+        )
+
+    diagnostic = exc_info.value.errors[0]
+    assert diagnostic.code == "LCK007"
+    assert "(2 > 1)" in diagnostic.message
+    assert diagnostic.line == 1
