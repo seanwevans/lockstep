@@ -354,6 +354,9 @@ pipeline P {
         ("max_source_bytes", -1),
         ("parse_timeout_ms", -1),
         ("max_expression_nesting", -1),
+        ("max_dependency_files", -1),
+        ("max_dependency_total_bytes", -1),
+        ("max_dependency_depth", -1),
     ],
 )
 def test_compile_lockstep_rejects_negative_frontend_limits(limit_name, value):
@@ -416,6 +419,25 @@ def test_compile_lockstep_zero_disables_parse_timeout(monkeypatch):
     compile_lockstep(
         _LIMIT_SOURCE,
         frontend_limits=FrontendLimits(parse_timeout_ms=0),
+    )
+
+
+def test_compile_lockstep_zero_disables_dependency_limits(tmp_path, monkeypatch):
+    dep = tmp_path / "dep.lock"
+    main = tmp_path / "main.lock"
+    dep.write_text("pipeline Dep { bind { } }\n", encoding="utf-8")
+    main.write_text(f'import "{dep.name}";\npipeline Main {{ bind {{ }} }}\n', encoding="utf-8")
+    monkeypatch.setattr(compiler_module, "emit_llvm_ir", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(compiler_module, "emit_c_header", lambda *_args, **_kwargs: "")
+
+    compile_lockstep(
+        main.read_text(encoding="utf-8"),
+        source_file=str(main),
+        frontend_limits=FrontendLimits(
+            max_dependency_files=0,
+            max_dependency_total_bytes=0,
+            max_dependency_depth=0,
+        ),
     )
 
 
@@ -483,7 +505,14 @@ def test_compile_lockstep_positive_parse_timeout_is_enforced(monkeypatch):
 
 @pytest.mark.parametrize(
     "flag",
-    ["--max-source-bytes", "--parse-timeout-ms", "--max-expr-nesting"],
+    [
+        "--max-source-bytes",
+        "--parse-timeout-ms",
+        "--max-expr-nesting",
+        "--max-dependency-files",
+        "--max-dependency-total-bytes",
+        "--max-dependency-depth",
+    ],
 )
 def test_cli_rejects_negative_limit_values(flag, capsys):
     with pytest.raises(SystemExit) as exc_info:

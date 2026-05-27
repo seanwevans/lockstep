@@ -1417,3 +1417,27 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
     assert "udiv i32" in llvm_ir
     assert "urem i32" in llvm_ir
     assert "icmp ult i32" in llvm_ir
+
+
+def test_codegen_uses_unsigned_ops_for_uint_struct_fields():
+    source = """
+    struct Pair { uint lhs; uint rhs; };
+
+    pure uint quotient(Pair p) {
+        return p.lhs / p.rhs;
+    }
+
+    pure uint remainder(Pair p) {
+        return p.lhs % p.rhs;
+    }
+
+    pure bool less_than(Pair p) {
+        return p.lhs < p.rhs;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert "udiv i32" in llvm_ir
+    assert "urem i32" in llvm_ir
+    assert "icmp ult i32" in llvm_ir

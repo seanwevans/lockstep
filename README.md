@@ -261,6 +261,8 @@ lockstepc path/to/program.lock --simulate --simulate-input path/to/input.json
 
 Simulation output includes per-route `input_count`/`output_count`, updated stream snapshots, accumulator contents, and folded uniform values.
 
+By default, fold reductions (`sum` / `avg`) run in deterministic pure-Python mode, including mixed numeric accumulators (`int`, `float`, `bool`) with stable coercion behavior. Optional LLVM-backed reduction remains available as an opt-in for experimentation/perf checks by setting `LOCKSTEP_SIM_USE_LLVM=1` (or passing `use_llvm_runtime=True` in API calls). If opt-in LLVM execution fails (for example missing `clang`/`lli`), simulation reports an explicit runtime error instead of silently falling back.
+
 Generated C headers include `Lockstep_SaturatedWriteIndex(...)` plus per-stream `LOCKSTEP_CAPACITY_STREAM_<NAME>` macros. Define `LOCKSTEP_DEBUG_SATURATED_WRITES` before including the header to log whenever a saturated write falls back to the final index. Override `LOCKSTEP_SATURATED_WRITE_LOG(...)` to integrate with custom telemetry.
 
 ### Diagnostic Shape

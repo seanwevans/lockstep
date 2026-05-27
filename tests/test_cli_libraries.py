@@ -113,6 +113,12 @@ def test_run_cli_passes_frontend_limits_to_compiler():
             "50",
             "--max-expr-nesting",
             "16",
+            "--max-dependency-files",
+            "4",
+            "--max-dependency-total-bytes",
+            "512",
+            "--max-dependency-depth",
+            "2",
         ],
         stdin=io.StringIO("pipeline Main { bind { } }"),
         stdout=io.StringIO(),
@@ -124,3 +130,6 @@ def test_run_cli_passes_frontend_limits_to_compiler():
     assert captured["frontend_limits"].max_source_bytes == 64
     assert captured["frontend_limits"].parse_timeout_ms == 50
     assert captured["frontend_limits"].max_expression_nesting == 16
+    assert captured["frontend_limits"].max_dependency_files == 4
+    assert captured["frontend_limits"].max_dependency_total_bytes == 512
+    assert captured["frontend_limits"].max_dependency_depth == 2
