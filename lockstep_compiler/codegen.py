@@ -1031,24 +1031,30 @@ def emit_llvm_ir(
         return _vector_i32_min(_vector_i32_max(value, lo), hi)
 
     def _reduce_fold(
-        operator: str, accum_value: ir.Value, uniform_type: ir.Type
+        operator: str, source_name: str, uniform_type: ir.Type
     ) -> ir.Value:
-        if accum_value.type != uniform_type:
-            return _zero_value(uniform_type)
+        lane_count = max(int(accum_sizes.get(source_name, 1)), 1)
 
         vector_value = ir.Constant(
             ir.VectorType(uniform_type, simd_width), ir.Undefined
         )
-        for lane, lane_value in enumerate(lane_values):
+        populated_lanes = min(lane_count, simd_width)
+        for lane in range(populated_lanes):
+            lane_value = _load_tick_param(
+                "accum",
+                source_name,
+                uniform_type,
+                ir.Constant(ir.IntType(32), lane),
+            )
             vector_value = tick_builder.insert_element(
                 vector_value,
                 lane_value,
                 ir.Constant(ir.IntType(32), lane),
                 name=f"fold_lane_{lane}",
             )
-        if lane_count < simd_width:
+        if populated_lanes < simd_width:
             zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
-            for lane in range(lane_count, simd_width):
+            for lane in range(populated_lanes, simd_width):
                 vector_value = tick_builder.insert_element(
                     vector_value,
                     zero_value,
@@ -1102,12 +1108,12 @@ def emit_llvm_ir(
             if is_float:
                 reduced = tick_builder.fdiv(
                     reduced,
-                    ir.Constant(uniform_type, float(simd_width)),
+                    ir.Constant(uniform_type, float(populated_lanes)),
                     name="fold_avg",
                 )
             else:
                 reduced = tick_builder.sdiv(
-                    reduced, ir.Constant(uniform_type, simd_width), name="fold_avg"
+                    reduced, ir.Constant(uniform_type, populated_lanes), name="fold_avg"
                 )
 
         return reduced
