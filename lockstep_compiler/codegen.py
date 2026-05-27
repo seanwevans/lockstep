@@ -337,6 +337,23 @@ class _FunctionLowerer:
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
 
+
+    def _resolve_field_declared_type(self, base_type: str, field_path: list[str]) -> str | None:
+        current_type = base_type
+        for field_name in field_path:
+            fields = self.struct_fields.get(current_type)
+            if fields is None:
+                return None
+            field_type = None
+            for field in fields:
+                if field.get("name") == field_name:
+                    field_type = field.get("type")
+                    break
+            if field_type is None:
+                return None
+            current_type = field_type
+        return current_type
+
     def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
@@ -344,7 +361,12 @@ class _FunctionLowerer:
             return None
         if isinstance(node, AstExprVar):
             key = _sanitize_symbol(node.path[0])
-            return self.local_types.get(key)
+            base_type = self.local_types.get(key)
+            if base_type is None:
+                return None
+            if len(node.path) == 1:
+                return base_type
+            return self._resolve_field_declared_type(base_type, node.path[1:])
         if isinstance(node, AstExprCast):
             return _type_name(node.target_type)
         if isinstance(node, AstExprUnary):
@@ -599,7 +621,7 @@ def emit_llvm_ir(
 ) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
-    entities = ast_to_entities(program)
+    entities = ast_to_entities(program_or_entities)
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
