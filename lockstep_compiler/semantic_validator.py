@@ -2,13 +2,16 @@ from types import SimpleNamespace
 from typing import Any
 
 from .ast import (
+    AstAssignStmt,
     AstExpr,
     AstExprBinary,
     AstExprCall,
     AstExprCast,
     AstExprLiteral,
+    AstReturnStmt,
     AstExprUnary,
     AstExprVar,
+    AstVarDeclStmt,
 )
 from .prelude import load_intrinsics
 
@@ -1350,6 +1353,124 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def _validate_ast_program(self, program: AstProgram):
+            def _validate_ast_expression(expr: AstExpr, *, ctx) -> None:
+                if isinstance(expr, AstExprUnary):
+                    _validate_ast_expression(expr.operand, ctx=ctx)
+                elif isinstance(expr, AstExprBinary):
+                    _validate_ast_expression(expr.left, ctx=ctx)
+                    _validate_ast_expression(expr.right, ctx=ctx)
+                elif isinstance(expr, AstExprCall):
+                    for arg in expr.args:
+                        _validate_ast_expression(arg, ctx=ctx)
+                    if expr.name in {"int", "float", "double", "uint", "bool"}:
+                        if len(expr.args) != 1:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    f"Cast '{expr.name}(...)' expects 1 argument, but got {len(expr.args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass exactly one expression to a cast.",
+                            )
+                    elif expr.name == "select":
+                        if len(expr.args) != 3:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    f"Built-in 'select(...)' expects 3 arguments, but got {len(expr.args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Use `select(condition, when_true, when_false)`.",
+                            )
+                        else:
+                            condition_type = self._resolve_ast_expr_type(expr.args[0])
+                            true_type = self._resolve_ast_expr_type(expr.args[1])
+                            false_type = self._resolve_ast_expr_type(expr.args[2])
+                            if condition_type is not None and condition_type != "bool":
+                                self._add_diagnostic(
+                                    severity="error",
+                                    code=SEMANTIC_DIAGNOSTIC_CODES[
+                                        "pure_argument_type_mismatch"
+                                    ],
+                                    message=(
+                                        "Type mismatch for built-in 'select' condition: "
+                                        f"expected bool, got {condition_type}."
+                                    ),
+                                    ctx=ctx,
+                                    hint="Pass a boolean condition as the first argument.",
+                                )
+                            if (
+                                true_type is not None
+                                and false_type is not None
+                                and true_type != false_type
+                            ):
+                                self._add_diagnostic(
+                                    severity="error",
+                                    code=SEMANTIC_DIAGNOSTIC_CODES[
+                                        "pure_argument_type_mismatch"
+                                    ],
+                                    message=(
+                                        "Type mismatch for built-in 'select' value arguments: "
+                                        f"expected matching types, got {true_type} and {false_type}."
+                                    ),
+                                    ctx=ctx,
+                                    hint="Pass true/false values with the same type.",
+                                )
+                    else:
+                        signature = self.pure_functions.get(expr.name)
+                        if signature is None:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["pure_unknown_function"],
+                                message=f"Undefined pure function '{expr.name}'.",
+                                ctx=ctx,
+                                hint="Declare the pure function before calling it.",
+                            )
+                        elif len(expr.args) != len(signature.params):
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "pure_argument_count_mismatch"
+                                ],
+                                message=(
+                                    f"Pure function '{expr.name}' expects {len(signature.params)} argument(s), "
+                                    f"but got {len(expr.args)}."
+                                ),
+                                ctx=ctx,
+                                hint="Pass the exact number of arguments declared in the pure function signature.",
+                            )
+                        else:
+                            for index, (arg, expected) in enumerate(
+                                zip(expr.args, signature.params), start=1
+                            ):
+                                actual_type = self._resolve_ast_expr_type(arg)
+                                if actual_type != expected.declared_type:
+                                    resolved_actual = (
+                                        actual_type
+                                        if actual_type is not None
+                                        else "<unresolved>"
+                                    )
+                                    self._add_diagnostic(
+                                        severity="error",
+                                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                                            "pure_argument_type_mismatch"
+                                        ],
+                                        message=(
+                                            f"Type mismatch for argument {index} in pure call '{expr.name}': "
+                                            f"expected {expected.declared_type}, got {resolved_actual}."
+                                        ),
+                                        ctx=ctx,
+                                        hint="Ensure each argument type matches the pure function parameter type.",
+                                    )
+                elif isinstance(expr, AstExprCast):
+                    _validate_ast_expression(expr.value, ctx=ctx)
+
             self._push_scope()
             for struct in program.structs:
                 struct_ctx = self._ctx_from_location(struct.location)
@@ -1376,6 +1497,43 @@ def build_semantic_validator(base_visitor_cls):
 
             for pure in program.pure_functions:
                 self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=pure.return_type.name, params=tuple(SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
+            for pure in program.pure_functions:
+                self._push_scope()
+                pure_ctx = self._ctx_from_location(pure.location)
+                for param in pure.params:
+                    self._declare(
+                        param.name,
+                        param.declared_type.name,
+                        pure_ctx,
+                        duplicate_code="LCK306",
+                        kind=f"param:{param.modifier}",
+                    )
+                for stmt in pure.body:
+                    stmt_ctx = self._ctx_from_location(getattr(stmt, "location", pure.location))
+                    if isinstance(stmt, AstVarDeclStmt):
+                        if stmt.initializer is not None:
+                            _validate_ast_expression(stmt.initializer, ctx=stmt_ctx)
+                            resolved_type = self._resolve_ast_expr_type(stmt.initializer)
+                            if stmt.declared_type is not None:
+                                declared = stmt.declared_type.name
+                                if resolved_type is not None and declared != resolved_type:
+                                    self._add_diagnostic(
+                                        severity="error",
+                                        code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
+                                        message=(
+                                            "Type mismatch in assignment: "
+                                            f"left-hand side expects {declared}, got {resolved_type}."
+                                        ),
+                                        ctx=stmt_ctx,
+                                        hint="Ensure the assigned expression type matches the variable type.",
+                                    )
+                        if stmt.declared_type is not None:
+                            self._declare(stmt.name, stmt.declared_type.name, stmt_ctx, duplicate_code="LCK306", kind="var")
+                    elif isinstance(stmt, AstAssignStmt):
+                        _validate_ast_expression(stmt.value, ctx=stmt_ctx)
+                    elif isinstance(stmt, AstReturnStmt):
+                        _validate_ast_expression(stmt.value, ctx=stmt_ctx)
+                self._pop_scope()
 
             for pipeline in program.pipelines:
                 self._push_scope()
