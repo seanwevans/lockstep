@@ -130,6 +130,38 @@ def test_run_cli_passes_frontend_limits_to_compiler():
     assert captured["frontend_limits"].max_source_bytes == 64
     assert captured["frontend_limits"].parse_timeout_ms == 50
     assert captured["frontend_limits"].max_expression_nesting == 16
+
+
+def test_run_cli_defaults_dependency_root_to_source_directory(tmp_path):
+    source_path = tmp_path / "main.lock"
+    source_path.write_text("pipeline Main { bind { } }", encoding="utf-8")
+    captured = {}
+
+    def fake_compiler(source, *, dependency_root=None):
+        captured["dependency_root"] = dependency_root
+        return {"streams": [], "accumulators": [], "uniforms": [], "shaders": [], "filters": [], "bind_routes": []}
+
+    exit_code = run_cli([str(source_path), "--simulate"], stdout=io.StringIO(), compiler=fake_compiler)
+    assert exit_code == 0
+    assert captured["dependency_root"] == source_path.resolve().parent
+
+
+def test_run_cli_can_disable_dependency_root_with_unsafe_flag(tmp_path):
+    source_path = tmp_path / "main.lock"
+    source_path.write_text("pipeline Main { bind { } }", encoding="utf-8")
+    captured = {}
+
+    def fake_compiler(source, *, dependency_root=None):
+        captured["dependency_root"] = dependency_root
+        return {"streams": [], "accumulators": [], "uniforms": [], "shaders": [], "filters": [], "bind_routes": []}
+
+    exit_code = run_cli(
+        [str(source_path), "--simulate", "--unsafe-allow-external-dependencies"],
+        stdout=io.StringIO(),
+        compiler=fake_compiler,
+    )
+    assert exit_code == 0
+    assert captured["dependency_root"] is None
     assert captured["frontend_limits"].max_dependency_files == 4
     assert captured["frontend_limits"].max_dependency_total_bytes == 512
     assert captured["frontend_limits"].max_dependency_depth == 2

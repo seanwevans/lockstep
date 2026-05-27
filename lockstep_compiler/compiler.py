@@ -26,6 +26,7 @@ DEFAULT_MAX_SOURCE_BYTES = 1_048_576
 DEFAULT_PARSE_TIMEOUT_MS = 2_000
 DEFAULT_MAX_EXPRESSION_NESTING = 128
 DEFAULT_INVALID_FRONTEND_LIMIT_CODE = "LCK006"
+DEFAULT_DEPENDENCY_ROOT_VIOLATION_CODE = "LCK007"
 _DEPENDENCY_DECL_PATTERN = re.compile(
     r'^\s*(?:import|#include)\s+"((?:[^"\\]|\\.)+)"\s*;\s*$',
     re.MULTILINE,
@@ -370,13 +371,17 @@ def _resolve_dependency_sources(
     source_code: str,
     *,
     source_file: str,
+    dependency_root: Path | None = None,
     limits: FrontendLimits | None = None,
 ) -> tuple[list[str], list[str]]:
     resolved_limits = limits or FrontendLimits()
     if source_file.startswith("<") and source_file.endswith(">"):
-        base_directory = Path.cwd()
+        base_directory = Path.cwd().resolve()
     else:
         base_directory = Path(source_file).resolve().parent
+    canonical_dependency_root = (
+        dependency_root.resolve() if dependency_root is not None else None
+    )
 
     visited: set[Path] = set()
     in_stack: list[Path] = []
@@ -408,13 +413,42 @@ def _resolve_dependency_sources(
             source_file=current_file,
         )
 
-    def _resolve_reference(reference: str, parent_file: str) -> Path:
+    def _resolve_reference(reference: str, parent_file: str, line: int) -> Path:
         candidate = Path(reference)
         if candidate.is_absolute():
-            return candidate.resolve()
-        if parent_file.startswith("<") and parent_file.endswith(">"):
-            return (base_directory / candidate).resolve()
-        return (Path(parent_file).resolve().parent / candidate).resolve()
+            resolved_candidate = candidate.resolve()
+        elif parent_file.startswith("<") and parent_file.endswith(">"):
+            resolved_candidate = (base_directory / candidate).resolve()
+        else:
+            resolved_candidate = (Path(parent_file).resolve().parent / candidate).resolve()
+
+        if canonical_dependency_root is not None:
+            try:
+                resolved_candidate.relative_to(canonical_dependency_root)
+            except ValueError:
+                diagnostic = LockstepDiagnostic(
+                    severity="error",
+                    code=DEFAULT_DEPENDENCY_ROOT_VIOLATION_CODE,
+                    message=(
+                        f"Dependency '{reference}' resolves outside allowlisted root "
+                        f"'{canonical_dependency_root}'."
+                    ),
+                    line=line,
+                    column=0,
+                    source_file=parent_file,
+                    hint=(
+                        "Keep dependency references under the configured dependency root, "
+                        "or disable strict dependency root checks only for trusted internal usage."
+                    ),
+                )
+                raise LockstepCompileError(
+                    [diagnostic],
+                    diagnostics=[diagnostic],
+                    phase="parse",
+                    source_file=parent_file,
+                )
+
+        return resolved_candidate
 
     def _walk(current_source: str, current_file: str, depth: int) -> None:
         nonlocal dependency_file_count, dependency_total_bytes
@@ -726,6 +760,7 @@ def compile_lockstep(
     source_file: str = DEFAULT_SOURCE_FILE,
     library_sources: list[str] | None = None,
     library_source_files: list[str] | None = None,
+    dependency_root: Path | None = None,
     lexer_cls: Any = None,
     parser_cls: Any = None,
     visitor_cls: Any = None,
@@ -742,6 +777,7 @@ def compile_lockstep(
     dependency_sources, dependency_source_files = _resolve_dependency_sources(
         source_code,
         source_file=source_file,
+        dependency_root=dependency_root,
         limits=resolved_limits,
     )
     resolved_library_sources.extend(dependency_sources)

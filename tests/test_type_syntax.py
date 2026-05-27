@@ -164,6 +164,71 @@ pipeline Main {{
     assert any(struct["name"] == "Particle" for struct in result.entities["structs"])
 
 
+def test_dependency_root_allows_relative_include_within_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("lockstep_compiler.compiler.emit_llvm_ir", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr("lockstep_compiler.compiler.emit_c_header", lambda *_args, **_kwargs: "")
+    root = tmp_path / "project"
+    deps = root / "deps"
+    deps.mkdir(parents=True)
+    (deps / "types.lock").write_text("struct Allowed { float x; };\n", encoding="utf-8")
+    main_file = root / "main.lock"
+    main_file.write_text(
+        'import "deps/types.lock";\n\npipeline Main { uniform Allowed item; bind { } }\n',
+        encoding="utf-8",
+    )
+
+    result = compile_lockstep(
+        main_file.read_text(encoding="utf-8"),
+        verbose=False,
+        source_file=str(main_file),
+        dependency_root=root,
+    )
+
+    assert all(diag.severity != "error" for diag in result.diagnostics)
+
+
+def test_dependency_root_rejects_parent_traversal(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside.lock"
+    outside.write_text("struct Hidden { float x; };\n", encoding="utf-8")
+    main_file = root / "main.lock"
+    main_file.write_text('import "../outside.lock";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main_file.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main_file),
+            dependency_root=root,
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK007"]
+    assert exc_info.value.errors[0].source_file == str(main_file)
+    assert exc_info.value.errors[0].line == 1
+
+
+def test_dependency_root_rejects_absolute_include_outside_root(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside.lock"
+    outside.write_text("struct Hidden { float x; };\n", encoding="utf-8")
+    main_file = root / "main.lock"
+    main_file.write_text(f'import "{outside}";\n', encoding="utf-8")
+
+    with pytest.raises(LockstepCompileError) as exc_info:
+        compile_lockstep(
+            main_file.read_text(encoding="utf-8"),
+            verbose=False,
+            source_file=str(main_file),
+            dependency_root=root,
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK007"]
+    assert exc_info.value.errors[0].source_file == str(main_file)
+    assert exc_info.value.errors[0].line == 1
+
+
 def test_circular_imports_raise_compile_error(tmp_path):
     file_a = tmp_path / "a.lock"
     file_b = tmp_path / "b.lock"
