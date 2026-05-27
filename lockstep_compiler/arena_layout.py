@@ -1,7 +1,106 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
+
+from .errors import LockstepCompileError
+from .models import LockstepDiagnostic
+
+
+_TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+|[][<>,]")
+
+
+@dataclass(frozen=True)
+class _ArraySuffix:
+    size: int
+
+
+@dataclass(frozen=True)
+class _GenericSuffix:
+    type_name: "_ParsedTypeName"
+    width: int | None
+
+
+@dataclass(frozen=True)
+class _ParsedTypeName:
+    base: str
+    suffixes: tuple[_ArraySuffix | _GenericSuffix, ...]
+
+
+def _tokenize_type_name(type_name: str) -> list[str] | None:
+    tokens = _TYPE_TOKEN_RE.findall(type_name)
+    if not tokens or "".join(tokens) != type_name:
+        return None
+    return tokens
+
+
+def _parse_type_name_tokens(tokens: list[str], index: int = 0) -> tuple[_ParsedTypeName | None, int]:
+    if index >= len(tokens) or not tokens[index][0].isalpha() and tokens[index][0] != "_":
+        return None, index
+
+    base = tokens[index]
+    index += 1
+    suffixes: list[_ArraySuffix | _GenericSuffix] = []
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "[":
+            if index + 2 >= len(tokens) or not tokens[index + 1].isdigit() or tokens[index + 2] != "]":
+                return None, index
+            suffixes.append(_ArraySuffix(size=int(tokens[index + 1])))
+            index += 3
+            continue
+
+        if token == "<":
+            inner, index = _parse_type_name_tokens(tokens, index + 1)
+            if inner is None:
+                return None, index
+            width: int | None = None
+            if index < len(tokens) and tokens[index] == ",":
+                if index + 1 >= len(tokens) or not tokens[index + 1].isdigit():
+                    return None, index
+                width = int(tokens[index + 1])
+                index += 2
+            if index >= len(tokens) or tokens[index] != ">":
+                return None, index
+            suffixes.append(_GenericSuffix(type_name=inner, width=width))
+            index += 1
+            continue
+
+        break
+
+    return _ParsedTypeName(base=base, suffixes=tuple(suffixes)), index
+
+
+def _parse_type_name(type_name: str) -> _ParsedTypeName | None:
+    tokens = _tokenize_type_name(type_name)
+    if tokens is None:
+        return None
+    parsed, index = _parse_type_name_tokens(tokens)
+    if parsed is None or index != len(tokens):
+        return None
+    return parsed
+
+
+def _type_multiplier(parsed_type: _ParsedTypeName) -> int:
+    multiplier = 1
+    for suffix in parsed_type.suffixes:
+        if isinstance(suffix, _ArraySuffix):
+            multiplier *= max(suffix.size, 1)
+        else:
+            multiplier *= max(suffix.width or 1, 1)
+    return multiplier
+
+
+def _structural_type_name(parsed_type: _ParsedTypeName) -> str:
+    has_generic_suffix = any(isinstance(suffix, _GenericSuffix) for suffix in parsed_type.suffixes)
+    if not has_generic_suffix:
+        return parsed_type.base
+    for suffix in parsed_type.suffixes:
+        if isinstance(suffix, _GenericSuffix):
+            return _structural_type_name(suffix.type_name)
+    return parsed_type.base
 
 _PRIMITIVE_SIZE = {
     "bool": 1,
@@ -50,11 +149,17 @@ def normalize_structs(structs: list[Any]) -> list[dict[str, Any]]:
 
 
 def field_size(type_name: str, struct_sizes: dict[str, int]) -> int:
-    if type_name in _PRIMITIVE_SIZE:
-        return _PRIMITIVE_SIZE[type_name]
-    if type_name in struct_sizes:
-        return struct_sizes[type_name]
-    return 8
+    parsed = _parse_type_name(type_name)
+    if parsed is None:
+        return 8
+    base_type = _structural_type_name(parsed)
+    if base_type in _PRIMITIVE_SIZE:
+        base_size = _PRIMITIVE_SIZE[base_type]
+    elif base_type in struct_sizes:
+        base_size = struct_sizes[base_type]
+    else:
+        base_size = 8
+    return base_size * _type_multiplier(parsed)
 
 
 def resolve_struct_layouts(
@@ -84,10 +189,28 @@ def resolve_struct_layouts(
             progress = True
 
         if not progress:
-            for struct_name in unresolved:
-                struct_sizes[struct_name] = 1
-                opaque_structs.add(struct_name)
-            break
+            cycle_structs = sorted(unresolved)
+            diagnostic = LockstepDiagnostic(
+                severity="error",
+                code="LCK503",
+                message=(
+                    "Arena layout contains a recursive struct dependency cycle: "
+                    + " -> ".join(cycle_structs)
+                ),
+                line=1,
+                column=0,
+                source_file="<arena_layout>",
+                hint=(
+                    "Break recursive struct references in pipeline resource layouts "
+                    "so each struct can be resolved to a finite byte size."
+                ),
+            )
+            raise LockstepCompileError(
+                [diagnostic],
+                diagnostics=[diagnostic],
+                phase="codegen",
+                source_file=diagnostic.source_file,
+            )
 
     return struct_sizes, opaque_structs
 
@@ -98,26 +221,31 @@ def _flatten_type_leaves(
     opaque_structs: set[str],
     *,
     path: tuple[str, ...] = (),
-) -> list[tuple[tuple[str, ...], str]]:
-    if type_name in _PRIMITIVE_SIZE:
-        return [(path, type_name)]
-    struct_decl = struct_map.get(type_name)
-    if struct_decl is None or type_name in opaque_structs:
-        return [(path, type_name)]
-    leaves: list[tuple[tuple[str, ...], str]] = []
+ ) -> list[tuple[tuple[str, ...], str, int]]:
+    parsed = _parse_type_name(type_name)
+    if parsed is None:
+        return [(path, type_name, 1)]
+
+    multiplier = _type_multiplier(parsed)
+    structural_type = _structural_type_name(parsed)
+    if structural_type in _PRIMITIVE_SIZE:
+        return [(path, structural_type, multiplier)]
+    struct_decl = struct_map.get(structural_type)
+    if struct_decl is None or structural_type in opaque_structs:
+        return [(path, structural_type, multiplier)]
+    leaves: list[tuple[tuple[str, ...], str, int]] = []
     for field in struct_decl.get("fields", []):
         child_name = str(field.get("name", "field"))
         child_type = str(field.get("type", "float"))
-        leaves.extend(
-            _flatten_type_leaves(
-                child_type,
-                struct_map,
-                opaque_structs,
-                path=path + (child_name,),
-            )
-        )
+        for child_path, child_leaf_type, child_multiplier in _flatten_type_leaves(
+            child_type,
+            struct_map,
+            opaque_structs,
+            path=path + (child_name,),
+        ):
+            leaves.append((child_path, child_leaf_type, child_multiplier * multiplier))
     if not leaves:
-        return [(path, type_name)]
+        return [(path, structural_type, multiplier)]
     return leaves
 
 
@@ -149,8 +277,8 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
     for kind, binding_name, type_name, element_count in bindings:
         top_level_offsets.append((kind, binding_name, cursor))
         type_leaves = _flatten_type_leaves(type_name, struct_map, opaque_structs)
-        for path, leaf_type in type_leaves:
-            size = field_size(leaf_type, struct_sizes)
+        for path, leaf_type, leaf_multiplier in type_leaves:
+            size = field_size(leaf_type, struct_sizes) * leaf_multiplier
             leaves.append(
                 ArenaLeaf(
                     kind=kind,

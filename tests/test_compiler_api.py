@@ -10,6 +10,7 @@ import lockstep_compiler
 import lockstep_compiler.c_header as c_header_module
 import lockstep_compiler.compiler as compiler_module
 from lockstep_compiler.c_header import emit_c_header
+from lockstep_compiler.arena_layout import build_arena_layout
 from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
 from lockstep_compiler.models import LockstepDiagnostic
 from lockstep_compiler.ast import (
@@ -1174,6 +1175,20 @@ def test_emit_c_header_raises_lck502_when_cumulative_offsets_overflow(monkeypatc
     assert [diag.code for diag in exc_info.value.errors] == ["LCK502"]
 
 
+def test_build_arena_layout_raises_lck503_for_recursive_struct_layout_cycle():
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        build_arena_layout(
+            {
+                "structs": [
+                    {"name": "A", "fields": [{"name": "b", "type": "B"}]},
+                    {"name": "B", "fields": [{"name": "a", "type": "A"}]},
+                ]
+            }
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK503"]
+
+
 def test_compile_result_includes_c_header(monkeypatch):
     class StubLexer:
         def __init__(self, input_stream):
@@ -1394,6 +1409,30 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
 
     pure bool less_than(uint a, uint b) {
         return a < b;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert "udiv i32" in llvm_ir
+    assert "urem i32" in llvm_ir
+    assert "icmp ult i32" in llvm_ir
+
+
+def test_codegen_uses_unsigned_ops_for_uint_struct_fields():
+    source = """
+    struct Pair { uint lhs; uint rhs; };
+
+    pure uint quotient(Pair p) {
+        return p.lhs / p.rhs;
+    }
+
+    pure uint remainder(Pair p) {
+        return p.lhs % p.rhs;
+    }
+
+    pure bool less_than(Pair p) {
+        return p.lhs < p.rhs;
     }
     """
     result = lockstep_compiler.compile_lockstep(source)

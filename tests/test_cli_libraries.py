@@ -113,6 +113,12 @@ def test_run_cli_passes_frontend_limits_to_compiler():
             "50",
             "--max-expr-nesting",
             "16",
+            "--max-dependency-files",
+            "4",
+            "--max-dependency-total-bytes",
+            "512",
+            "--max-dependency-depth",
+            "2",
         ],
         stdin=io.StringIO("pipeline Main { bind { } }"),
         stdout=io.StringIO(),
@@ -156,3 +162,6 @@ def test_run_cli_can_disable_dependency_root_with_unsafe_flag(tmp_path):
     )
     assert exit_code == 0
     assert captured["dependency_root"] is None
+    assert captured["frontend_limits"].max_dependency_files == 4
+    assert captured["frontend_limits"].max_dependency_total_bytes == 512
+    assert captured["frontend_limits"].max_dependency_depth == 2

@@ -139,6 +139,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum allowed expression nesting depth (0 disables limit).",
     )
     parser.add_argument(
+        "--max-dependency-files",
+        type=_non_negative_limit_value("--max-dependency-files"),
+        default=None,
+        help="Maximum number of resolved dependency files (0 disables limit).",
+    )
+    parser.add_argument(
+        "--max-dependency-total-bytes",
+        type=_non_negative_limit_value("--max-dependency-total-bytes"),
+        default=None,
+        help="Maximum total UTF-8 bytes across all resolved dependencies (0 disables limit).",
+    )
+    parser.add_argument(
+        "--max-dependency-depth",
+        type=_non_negative_limit_value("--max-dependency-depth"),
+        default=None,
+        help="Maximum import/include nesting depth while resolving dependencies (0 disables limit).",
+    )
+    parser.add_argument(
         "--target-width",
         type=_positive_int_value("--target-width"),
         default=8,
@@ -305,6 +323,9 @@ def run_cli(
             max_source_bytes=args.max_source_bytes,
             parse_timeout_ms=args.parse_timeout_ms,
             max_expression_nesting=args.max_expr_nesting,
+            max_dependency_files=args.max_dependency_files,
+            max_dependency_total_bytes=args.max_dependency_total_bytes,
+            max_dependency_depth=args.max_dependency_depth,
         )
     if supports_target_width:
         compile_kwargs["target_width"] = args.target_width
