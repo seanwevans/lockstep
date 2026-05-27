@@ -56,6 +56,7 @@ class _FunctionLowerer:
         self.builder: ir.IRBuilder | None = None
         self.locals: dict[str, ir.AllocaInstr] = {}
         self.local_types: dict[str, str] = {}
+        self.local_indirections: dict[str, bool] = {}
         self.function_return_types: dict[str, str] = {}
         self._string_literal_counter = 0
 
@@ -393,9 +394,10 @@ class _FunctionLowerer:
         parts = name.split(".")
         base_key = _sanitize_symbol(parts[0])
         if base_key in self.locals:
-            base_value = self.builder.load(
-                self.locals[base_key], name=f"{base_key}_val"
-            )
+            base_slot = self.locals[base_key]
+            base_value = self.builder.load(base_slot, name=f"{base_key}_val")
+            if self.local_indirections.get(base_key):
+                base_value = self.builder.load(base_value, name=f"{base_key}_ref")
             if len(parts) == 1:
                 return base_value
             return self._extract_field_path(base_value, parts[1:])
@@ -521,15 +523,28 @@ class _FunctionLowerer:
             slot = self.builder.alloca(value.type, name=key)
             self.locals[key] = slot
         if not field_path:
-            slot_type = self.locals[key].type.pointee
-            self.builder.store(
-                self._coerce_value_to_type(value, slot_type), self.locals[key]
-            )
+            if self.local_indirections.get(key):
+                ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
+                slot_type = ref_ptr.type.pointee
+                self.builder.store(self._coerce_value_to_type(value, slot_type), ref_ptr)
+            else:
+                slot_type = self.locals[key].type.pointee
+                self.builder.store(
+                    self._coerce_value_to_type(value, slot_type), self.locals[key]
+                )
             return
 
-        current = self.builder.load(self.locals[key], name=f"{key}_val")
+        if self.local_indirections.get(key):
+            ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
+            current = self.builder.load(ref_ptr, name=f"{key}_ref")
+        else:
+            current = self.builder.load(self.locals[key], name=f"{key}_val")
         updated = self._insert_field_path(current, field_path, value)
-        self.builder.store(updated, self.locals[key])
+        if self.local_indirections.get(key):
+            ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
+            self.builder.store(updated, ref_ptr)
+        else:
+            self.builder.store(updated, self.locals[key])
 
     def _lower_statement(self, statement: AstStatement, return_type: ir.Type):
         if isinstance(statement, AstReturnStmt):
@@ -575,16 +590,20 @@ class _FunctionLowerer:
         statements: list[AstStatement],
         return_type: ir.Type,
         param_type_names: list[str] | None = None,
+        param_by_ref: list[bool] | None = None,
     ):
         block = fn.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         self.locals = {}
         self.local_types = {}
+        self.local_indirections = {}
         for idx, arg in enumerate(fn.args):
             key = _sanitize_symbol(arg.name)
             slot = self.builder.alloca(arg.type, name=key)
             self.builder.store(arg, slot)
             self.locals[key] = slot
+            is_by_ref = bool(param_by_ref[idx]) if param_by_ref is not None and idx < len(param_by_ref) else False
+            self.local_indirections[key] = is_by_ref
             if param_type_names is not None and idx < len(param_type_names):
                 self.local_types[key] = param_type_names[idx]
 
@@ -723,7 +742,11 @@ def emit_llvm_ir(
 
     for shader in shaders:
         params = [
-            lowerer._llvm_type(param.get("type", "float"), known_structs)
+            (
+                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                if param.get("modifier") in {"out", "accum"}
+                else lowerer._llvm_type(param.get("type", "float"), known_structs)
+            )
             for param in shader.get("params", [])
         ]
         fn = ir.Function(
@@ -737,7 +760,11 @@ def emit_llvm_ir(
 
     for flt in filters:
         params = [
-            lowerer._llvm_type(param.get("type", "float"), known_structs)
+            (
+                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                if param.get("modifier") in {"out", "accum"}
+                else lowerer._llvm_type(param.get("type", "float"), known_structs)
+            )
             for param in flt.get("params", [])
         ]
         fn = ir.Function(
@@ -769,6 +796,7 @@ def emit_llvm_ir(
             _ast_body_for(shader, entity_kind="shader"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in shader.get("params", [])],
+            [param.get("modifier") in {"out", "accum"} for param in shader.get("params", [])],
         )
 
     for flt in filters:
@@ -778,6 +806,7 @@ def emit_llvm_ir(
             _ast_body_for(flt, entity_kind="filter"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in flt.get("params", [])],
+            [param.get("modifier") in {"out", "accum"} for param in flt.get("params", [])],
         )
 
     layout = build_arena_layout(entities)
@@ -950,6 +979,14 @@ def emit_llvm_ir(
     ) -> ir.Value:
         declared_type = binding_declared_types.get((kind, name), "float")
         return _load_value(kind, name, field_type, declared_type, element_index=element_index)
+
+    def _load_tick_param_ptr(
+        kind: str,
+        name: str,
+        field_type: ir.Type,
+        element_index: ir.Value | None = None,
+    ) -> ir.Value:
+        return _leaf_ptr(kind, name, (), field_type, element_index)
 
     def _get_vector_reduce_intrinsic(
         name: str, ret_ty: ir.Type, arg_tys: list[ir.Type]
@@ -1136,9 +1173,14 @@ def emit_llvm_ir(
                 clamped_index = _vector_i32_clamp(
                     current, ir.Constant(ir.IntType(32), 0), max_index
                 )
-                value = _load_tick_param("stream", arg_name, param.type, clamped_index)
+                if modifier == "out":
+                    value = _load_tick_param_ptr(
+                        "stream", arg_name, param.type.pointee, clamped_index
+                    )
+                else:
+                    value = _load_tick_param("stream", arg_name, param.type, clamped_index)
             elif modifier == "accum" and arg_name in accum_slots:
-                value = _load_tick_param("accum", arg_name, param.type)
+                value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
             elif modifier == "uniform" and arg_name in uniform_slots:
                 value = _load_tick_param("uniform", arg_name, param.type)
             if value is None:
