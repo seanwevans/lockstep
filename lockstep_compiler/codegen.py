@@ -648,7 +648,11 @@ def emit_llvm_ir(
 ) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
-    entities = ast_to_entities(program_or_entities)
+    entities = (
+        program_or_entities
+        if isinstance(program_or_entities, dict)
+        else ast_to_entities(program_or_entities)
+    )
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
@@ -847,23 +851,10 @@ def emit_llvm_ir(
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
 
-    arena_field_types: list[ir.Type] = []
-    leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
-    for leaf in layout.leaves:
-        if leaf.type_name in _PRIMITIVE_TYPE_MAP:
-            field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
-        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
-            field_ty = known_structs[leaf.type_name]
-        else:
-            field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
-        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
-        arena_field_types.append(field_ty)
-
-    if not arena_field_types:
-        arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
+    arena_storage_ty = ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
 
     if arena_struct_ty.is_opaque:
-        arena_struct_ty.set_body(*arena_field_types)
+        arena_struct_ty.set_body(arena_storage_ty)
 
     tick = ir.Function(
         module,
@@ -1034,33 +1025,7 @@ def emit_llvm_ir(
         operator: str, source_name: str, uniform_type: ir.Type
     ) -> ir.Value:
         lane_count = max(int(accum_sizes.get(source_name, 1)), 1)
-
-        vector_value = ir.Constant(
-            ir.VectorType(uniform_type, simd_width), ir.Undefined
-        )
-        populated_lanes = min(lane_count, simd_width)
-        for lane in range(populated_lanes):
-            lane_value = _load_tick_param(
-                "accum",
-                source_name,
-                uniform_type,
-                ir.Constant(ir.IntType(32), lane),
-            )
-            vector_value = tick_builder.insert_element(
-                vector_value,
-                lane_value,
-                ir.Constant(ir.IntType(32), lane),
-                name=f"fold_lane_{lane}",
-            )
-        if populated_lanes < simd_width:
-            zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
-            for lane in range(populated_lanes, simd_width):
-                vector_value = tick_builder.insert_element(
-                    vector_value,
-                    zero_value,
-                    ir.Constant(ir.IntType(32), lane),
-                )
-        vector_ty = vector_value.type
+        vector_ty = ir.VectorType(uniform_type, simd_width)
 
         # Map (is_float, operator) -> intrinsic suffix for reduction ops.
         is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
@@ -1083,6 +1048,135 @@ def emit_llvm_ir(
         if intrinsic_suffix is None:
             return _zero_value(uniform_type)
 
+        def _identity_value() -> ir.Constant:
+            if is_float:
+                if operator == "min":
+                    return ir.Constant(uniform_type, float("inf"))
+                if operator == "max":
+                    return ir.Constant(uniform_type, float("-inf"))
+                return ir.Constant(uniform_type, 0.0)
+            if isinstance(uniform_type, ir.IntType):
+                if operator == "min":
+                    max_signed = (1 << (uniform_type.width - 1)) - 1
+                    return ir.Constant(uniform_type, max_signed)
+                if operator == "max":
+                    min_signed = -(1 << (uniform_type.width - 1))
+                    return ir.Constant(uniform_type, min_signed)
+                return ir.Constant(uniform_type, 0)
+            return ir.Constant(uniform_type, None)
+
+        identity_value = _identity_value()
+        vector_accumulator = ir.Constant(vector_ty, [identity_value] * simd_width)
+
+        def _insert_accum_chunk_lane(
+            vector_value: ir.Value, lane: int, element_index: ir.Value
+        ) -> ir.Value:
+            lane_value = _load_tick_param(
+                "accum",
+                source_name,
+                uniform_type,
+                element_index,
+            )
+            return tick_builder.insert_element(
+                vector_value,
+                lane_value,
+                ir.Constant(ir.IntType(32), lane),
+                name=f"fold_lane_{lane}",
+            )
+
+        def _combine_vectors(lhs: ir.Value, rhs: ir.Value, name: str) -> ir.Value:
+            if operator in {"sum", "avg"}:
+                if is_float:
+                    return tick_builder.fadd(lhs, rhs, name=name)
+                return tick_builder.add(lhs, rhs, name=name)
+            if operator == "min":
+                if is_float:
+                    predicate = tick_builder.fcmp_ordered(
+                        "<", rhs, lhs, name=f"{name}_cmp"
+                    )
+                else:
+                    predicate = tick_builder.icmp_signed(
+                        "<", rhs, lhs, name=f"{name}_cmp"
+                    )
+                return tick_builder.select(predicate, rhs, lhs, name=name)
+            if operator == "max":
+                if is_float:
+                    predicate = tick_builder.fcmp_ordered(
+                        ">", rhs, lhs, name=f"{name}_cmp"
+                    )
+                else:
+                    predicate = tick_builder.icmp_signed(
+                        ">", rhs, lhs, name=f"{name}_cmp"
+                    )
+                return tick_builder.select(predicate, rhs, lhs, name=name)
+            return lhs
+
+        full_chunk_limit = (lane_count // simd_width) * simd_width
+        if full_chunk_limit:
+            preheader_block = tick_builder.block
+            loop_cond = tick.append_basic_block(
+                f"fold_{_sanitize_symbol(source_name)}_strip_cond"
+            )
+            loop_body = tick.append_basic_block(
+                f"fold_{_sanitize_symbol(source_name)}_strip_body"
+            )
+            loop_exit = tick.append_basic_block(
+                f"fold_{_sanitize_symbol(source_name)}_strip_exit"
+            )
+
+            tick_builder.branch(loop_cond)
+            tick_builder.position_at_end(loop_cond)
+            loop_index = tick_builder.phi(ir.IntType(32), name="fold_index")
+            loop_accumulator = tick_builder.phi(vector_ty, name="fold_vector_acc")
+            loop_index.add_incoming(ir.Constant(ir.IntType(32), 0), preheader_block)
+            loop_accumulator.add_incoming(vector_accumulator, preheader_block)
+            in_full_chunks = tick_builder.icmp_unsigned(
+                "<",
+                loop_index,
+                ir.Constant(ir.IntType(32), full_chunk_limit),
+                name="fold_has_full_chunk",
+            )
+            tick_builder.cbranch(in_full_chunks, loop_body, loop_exit)
+
+            tick_builder.position_at_end(loop_body)
+            chunk_vector = ir.Constant(vector_ty, ir.Undefined)
+            for lane in range(simd_width):
+                element_index = tick_builder.add(
+                    loop_index,
+                    ir.Constant(ir.IntType(32), lane),
+                    name=f"fold_elem_{lane}",
+                )
+                chunk_vector = _insert_accum_chunk_lane(
+                    chunk_vector, lane, element_index
+                )
+            next_accumulator = _combine_vectors(
+                loop_accumulator, chunk_vector, "fold_vector_next"
+            )
+            next_index = tick_builder.add(
+                loop_index,
+                ir.Constant(ir.IntType(32), simd_width),
+                name="fold_index_next",
+            )
+            tick_builder.branch(loop_cond)
+            loop_index.add_incoming(next_index, tick_builder.block)
+            loop_accumulator.add_incoming(next_accumulator, tick_builder.block)
+
+            tick_builder.position_at_end(loop_exit)
+            vector_accumulator = loop_accumulator
+
+        tail_count = lane_count - full_chunk_limit
+        if tail_count:
+            tail_vector = ir.Constant(vector_ty, [identity_value] * simd_width)
+            for lane in range(tail_count):
+                tail_vector = _insert_accum_chunk_lane(
+                    tail_vector,
+                    lane,
+                    ir.Constant(ir.IntType(32), full_chunk_limit + lane),
+                )
+            vector_accumulator = _combine_vectors(
+                vector_accumulator, tail_vector, "fold_tail_acc"
+            )
+
         intrinsic_name = f"llvm.vector.reduce.{intrinsic_suffix}.v{simd_width}{uniform_type.intrinsic_name}"
         # fadd requires a starting accumulator argument
         needs_start_value = is_float and operator in {"sum", "avg"}
@@ -1092,14 +1186,16 @@ def emit_llvm_ir(
             )
             reduced = tick_builder.call(
                 intrinsic,
-                [ir.Constant(uniform_type, 0.0), vector_value],
+                [ir.Constant(uniform_type, 0.0), vector_accumulator],
                 name="fold_reduce",
             )
         else:
             intrinsic = _get_vector_reduce_intrinsic(
                 intrinsic_name, uniform_type, [vector_ty]
             )
-            reduced = tick_builder.call(intrinsic, [vector_value], name="fold_reduce")
+            reduced = tick_builder.call(
+                intrinsic, [vector_accumulator], name="fold_reduce"
+            )
 
         if is_float:
             reduced.fastmath.add("fast")
@@ -1108,12 +1204,12 @@ def emit_llvm_ir(
             if is_float:
                 reduced = tick_builder.fdiv(
                     reduced,
-                    ir.Constant(uniform_type, float(populated_lanes)),
+                    ir.Constant(uniform_type, float(lane_count)),
                     name="fold_avg",
                 )
             else:
                 reduced = tick_builder.sdiv(
-                    reduced, ir.Constant(uniform_type, populated_lanes), name="fold_avg"
+                    reduced, ir.Constant(uniform_type, lane_count), name="fold_avg"
                 )
 
         return reduced

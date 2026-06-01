@@ -882,6 +882,38 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
 
 
+def test_emit_llvm_ir_strip_mines_fold_larger_than_target_width():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float", "size": 17}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold avg(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "avg",
+                    "source": "energy",
+                    "route": "uniform float total = fold avg(energy);",
+                }
+            ],
+        },
+        target_width=8,
+    )
+
+    assert 'br label %"fold_energy_strip_cond"' in llvm_ir
+    assert '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 16' in llvm_ir
+    assert '%"fold_index_next" = add i32 %"fold_index", 8' in llvm_ir
+    assert "mul i32 16, 4" in llvm_ir
+    assert '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in llvm_ir
+
+
 def test_emit_llvm_ir_honors_explicit_target_width_override():
     llvm_ir = emit_llvm_ir(
         {
