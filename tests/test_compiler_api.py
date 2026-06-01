@@ -20,7 +20,12 @@ from lockstep_compiler.ast import (
     AstExprCast,
     AstExprLiteral,
     AstExprVar,
+    AstKernelParam,
+    AstProgram,
+    AstPureDecl,
     AstReturnStmt,
+    AstType,
+    AstTypeArraySuffix,
     AstVarDeclStmt,
 )
 import pytest
@@ -112,7 +117,10 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in result.llvm_ir
+    assert (
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
+        in result.llvm_ir
+    )
 
 
 def test_compile_lockstep_surfaces_typed_ast_type_error_without_legacy_fallback(
@@ -345,10 +353,7 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define float @"pure_demo"()' in llvm_ir
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define void @"filter_Cull"()' in llvm_ir
-    assert (
-        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
-        in llvm_ir
-    )
+    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in llvm_ir
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
     assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
@@ -710,8 +715,6 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
-
-
 def test_emit_llvm_ir_lowers_select_builtin_for_integers():
     llvm_ir = emit_llvm_ir(
         {
@@ -795,7 +798,12 @@ def test_emit_llvm_ir_lowers_select_builtin_for_structs():
         }
     )
 
-    assert 'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"' in llvm_ir
+    assert (
+        'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"'
+        in llvm_ir
+    )
+
+
 def test_emit_llvm_ir_defaults_target_triple_and_simd_width_for_fold_reduce():
     llvm_ir = emit_llvm_ir(
         {
@@ -879,7 +887,10 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert (
+        'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4'
+        in llvm_ir
+    )
 
 
 def test_emit_llvm_ir_honors_explicit_target_width_override():
@@ -1072,7 +1083,9 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
 
 
 def test_emit_c_header_honors_target_width_override_macro():
-    header = emit_c_header({"streams": [], "accumulators": [], "uniforms": []}, target_width=16)
+    header = emit_c_header(
+        {"streams": [], "accumulators": [], "uniforms": []}, target_width=16
+    )
     assert "#define LOCKSTEP_SIMD_WIDTH 16" in header
 
 
@@ -1386,7 +1399,9 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
         lambda: (StubLexer, StubParser, StubVisitor),
     )
     monotonic_values = iter([0.0, 0.002])
-    monkeypatch.setattr(compiler_module.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        compiler_module.time, "monotonic", lambda: next(monotonic_values)
+    )
 
     with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
         lockstep_compiler.compile_lockstep(
@@ -1396,6 +1411,7 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
 
     assert exc_info.value.phase == "parse"
     assert exc_info.value.errors[0].code == "LCK004"
+
 
 def test_codegen_uses_unsigned_ops_for_uint_math():
     source = """
@@ -1441,3 +1457,41 @@ def test_codegen_uses_unsigned_ops_for_uint_struct_fields():
     assert "udiv i32" in llvm_ir
     assert "urem i32" in llvm_ir
     assert "icmp ult i32" in llvm_ir
+
+
+def test_emit_llvm_ir_preserves_multidimensional_local_array_layouts():
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            pure_functions=(
+                AstPureDecl(
+                    name="demo_array_layout",
+                    return_type=AstType("float", kind="primitive"),
+                    params=(
+                        AstKernelParam(
+                            modifier="in",
+                            declared_type=AstType("float", kind="primitive"),
+                            name="value",
+                        ),
+                    ),
+                    body=(
+                        AstVarDeclStmt(
+                            declared_type=AstType(
+                                "float",
+                                kind="primitive",
+                                suffixes=(
+                                    AstTypeArraySuffix(2),
+                                    AstTypeArraySuffix(3),
+                                ),
+                            ),
+                            name="grid",
+                            initializer=None,
+                        ),
+                        AstReturnStmt(value=AstExprVar(path=("value",))),
+                    ),
+                ),
+            )
+        )
+    )
+
+    assert '%"grid" = alloca [2 x [3 x float]]' in llvm_ir
+    assert "store [2 x [3 x float]] zeroinitializer" in llvm_ir

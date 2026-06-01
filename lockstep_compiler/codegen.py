@@ -14,12 +14,13 @@ from .ast import (
     AstReturnStmt,
     AstStatement,
     AstType,
+    AstTypeArraySuffix,
+    AstTypeGenericSuffix,
     AstVarDeclStmt,
     ast_to_entities,
 )
 from .arena_layout import build_arena_layout
 from .utils import sanitize_symbol as _sanitize_symbol
-
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "bool": ir.IntType(1),
@@ -36,7 +37,7 @@ class CodegenError(RuntimeError):
 
 
 def _type_name(value: AstType | str) -> str:
-    return value.name if isinstance(value, AstType) else value
+    return str(value) if isinstance(value, AstType) else value
 
 
 class _FunctionLowerer:
@@ -207,10 +208,14 @@ class _FunctionLowerer:
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
 
-        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(value.type, ir.IntType):
+        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
+            value.type, ir.IntType
+        ):
             return self.builder.sitofp(value, target_type)
 
-        if isinstance(target_type, ir.IntType) and isinstance(value.type, (ir.FloatType, ir.DoubleType)):
+        if isinstance(target_type, ir.IntType) and isinstance(
+            value.type, (ir.FloatType, ir.DoubleType)
+        ):
             return self.builder.fptosi(value, target_type)
 
         if isinstance(target_type, ir.FloatType) and isinstance(
@@ -261,13 +266,57 @@ class _FunctionLowerer:
         )
 
     def _llvm_type(
-        self, type_name: str, known_structs: dict[str, ir.IdentifiedStructType]
+        self,
+        type_name: AstType | str,
+        known_structs: dict[str, ir.IdentifiedStructType],
     ) -> ir.Type:
-        if type_name in _PRIMITIVE_TYPE_MAP:
-            return _PRIMITIVE_TYPE_MAP[type_name]
-        if type_name in known_structs:
-            return known_structs[type_name]
-        return ir.IntType(8).as_pointer()
+        normalized_type = (
+            type_name if isinstance(type_name, AstType) else AstType(type_name)
+        )
+        if not isinstance(type_name, AstType):
+            from .ast import _normalize_type
+
+            normalized_type = _normalize_type(type_name)
+
+        rendered_name = str(normalized_type)
+        if rendered_name in known_structs:
+            return known_structs[rendered_name]
+
+        base_type: ir.Type
+        if normalized_type.name in _PRIMITIVE_TYPE_MAP:
+            base_type = _PRIMITIVE_TYPE_MAP[normalized_type.name]
+        elif normalized_type.name in known_structs:
+            base_type = known_structs[normalized_type.name]
+        else:
+            base_type = ir.IntType(8).as_pointer()
+
+        return self._apply_type_suffixes(
+            base_type, normalized_type.suffixes, known_structs
+        )
+
+    def _apply_type_suffixes(
+        self,
+        base_type: ir.Type,
+        suffixes: tuple[AstTypeArraySuffix | AstTypeGenericSuffix, ...],
+        known_structs: dict[str, ir.IdentifiedStructType],
+    ) -> ir.Type:
+        lowered = base_type
+        for suffix in reversed(suffixes):
+            if isinstance(suffix, AstTypeArraySuffix):
+                lowered = ir.ArrayType(lowered, suffix.size)
+                continue
+
+            if (
+                isinstance(suffix, AstTypeGenericSuffix)
+                and suffix.arity is not None
+                and suffix.arity >= 0
+                and isinstance(lowered, ir.PointerType)
+            ):
+                lowered = ir.ArrayType(
+                    self._llvm_type(suffix.type_name, known_structs), suffix.arity
+                )
+
+        return lowered
 
     def _emit_numeric_unary_minus(self, value: ir.Value) -> ir.Value:
         if isinstance(value.type, (ir.FloatType, ir.DoubleType)):
@@ -346,8 +395,9 @@ class _FunctionLowerer:
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
 
-
-    def _resolve_field_declared_type(self, base_type: str, field_path: list[str]) -> str | None:
+    def _resolve_field_declared_type(
+        self, base_type: str, field_path: list[str]
+    ) -> str | None:
         current_type = base_type
         for field_name in field_path:
             fields = self.struct_fields.get(current_type)
@@ -363,7 +413,17 @@ class _FunctionLowerer:
             current_type = field_type
         return current_type
 
-    def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
+    def _infer_expr_type(
+        self,
+        node: (
+            AstExprLiteral
+            | AstExprVar
+            | AstExprUnary
+            | AstExprBinary
+            | AstExprCall
+            | AstExprCast
+        ),
+    ) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
                 return node.kind
@@ -506,9 +566,7 @@ class _FunctionLowerer:
                 node.name, [self._lower_expr(arg) for arg in node.args]
             )
         if isinstance(node, AstExprCast):
-            target_type = self._llvm_type(
-                _type_name(node.target_type), self.known_structs
-            )
+            target_type = self._llvm_type(node.target_type, self.known_structs)
             return self._coerce_value_to_type(self._lower_expr(node.value), target_type)
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
@@ -526,7 +584,9 @@ class _FunctionLowerer:
             if self.local_indirections.get(key):
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
                 slot_type = ref_ptr.type.pointee
-                self.builder.store(self._coerce_value_to_type(value, slot_type), ref_ptr)
+                self.builder.store(
+                    self._coerce_value_to_type(value, slot_type), ref_ptr
+                )
             else:
                 slot_type = self.locals[key].type.pointee
                 self.builder.store(
@@ -564,12 +624,10 @@ class _FunctionLowerer:
         if isinstance(statement, AstVarDeclStmt):
             key = _sanitize_symbol(statement.name)
             declared_type = (
-                _type_name(statement.declared_type)
-                if statement.declared_type
-                else "float"
+                statement.declared_type if statement.declared_type else AstType("float")
             )
             llvm_type = self._llvm_type(declared_type, self.known_structs)
-            self.local_types[key] = declared_type
+            self.local_types[key] = str(declared_type)
             if key not in self.locals:
                 slot = self.builder.alloca(llvm_type, name=key)
                 self.locals[key] = slot
@@ -602,7 +660,11 @@ class _FunctionLowerer:
             slot = self.builder.alloca(arg.type, name=key)
             self.builder.store(arg, slot)
             self.locals[key] = slot
-            is_by_ref = bool(param_by_ref[idx]) if param_by_ref is not None and idx < len(param_by_ref) else False
+            is_by_ref = (
+                bool(param_by_ref[idx])
+                if param_by_ref is not None and idx < len(param_by_ref)
+                else False
+            )
             self.local_indirections[key] = is_by_ref
             if param_type_names is not None and idx < len(param_type_names):
                 self.local_types[key] = param_type_names[idx]
@@ -743,7 +805,9 @@ def emit_llvm_ir(
     for shader in shaders:
         params = [
             (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                lowerer._llvm_type(
+                    param.get("type", "float"), known_structs
+                ).as_pointer()
                 if param.get("modifier") in {"out", "accum"}
                 else lowerer._llvm_type(param.get("type", "float"), known_structs)
             )
@@ -761,7 +825,9 @@ def emit_llvm_ir(
     for flt in filters:
         params = [
             (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                lowerer._llvm_type(
+                    param.get("type", "float"), known_structs
+                ).as_pointer()
                 if param.get("modifier") in {"out", "accum"}
                 else lowerer._llvm_type(param.get("type", "float"), known_structs)
             )
@@ -796,7 +862,10 @@ def emit_llvm_ir(
             _ast_body_for(shader, entity_kind="shader"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in shader.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in shader.get("params", [])],
+            [
+                param.get("modifier") in {"out", "accum"}
+                for param in shader.get("params", [])
+            ],
         )
 
     for flt in filters:
@@ -806,17 +875,26 @@ def emit_llvm_ir(
             _ast_body_for(flt, entity_kind="filter"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in flt.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in flt.get("params", [])],
+            [
+                param.get("modifier") in {"out", "accum"}
+                for param in flt.get("params", [])
+            ],
         )
 
     layout = build_arena_layout(entities)
 
-    stream_slots: dict[str, int] = {stream["name"]: idx for idx, stream in enumerate(streams)}
+    stream_slots: dict[str, int] = {
+        stream["name"]: idx for idx, stream in enumerate(streams)
+    }
     stream_capacities: dict[str, int] = {}
     for stream in streams:
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
-    uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
+    accum_slots: dict[str, int] = {
+        accum["name"]: idx for idx, accum in enumerate(accumulators)
+    }
+    uniform_slots: dict[str, int] = {
+        uniform["name"]: idx for idx, uniform in enumerate(uniforms)
+    }
 
     leaf_specs: dict[tuple[str, str, tuple[str, ...]], tuple[int, int]] = {
         (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
@@ -852,11 +930,16 @@ def emit_llvm_ir(
     for leaf in layout.leaves:
         if leaf.type_name in _PRIMITIVE_TYPE_MAP:
             field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
-        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
+        elif (
+            leaf.type_name in known_structs
+            and leaf.type_name not in layout.opaque_structs
+        ):
             field_ty = known_structs[leaf.type_name]
         else:
             field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
-        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
+        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(
+            arena_field_types
+        )
         arena_field_types.append(field_ty)
 
     if not arena_field_types:
@@ -907,7 +990,11 @@ def emit_llvm_ir(
             )
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
+            [
+                ir.Constant(ir.IntType(32), 0),
+                ir.Constant(ir.IntType(32), 0),
+                byte_offset,
+            ],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
         typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
@@ -923,7 +1010,9 @@ def emit_llvm_ir(
         path: tuple[str, ...] = (),
         element_index: ir.Value | None = None,
     ) -> ir.Value:
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
             aggregate = ir.Constant(value_type, ir.Undefined)
             fields = struct_fields.get(declared_type, [])
             for index, element_type in enumerate(value_type.elements):
@@ -955,7 +1044,9 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ):
         value_type = value.type
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
             fields = struct_fields.get(declared_type, [])
             for index, element_type in enumerate(value_type.elements):
                 part = tick_builder.extract_value(value, index)
@@ -978,7 +1069,9 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ) -> ir.Value:
         declared_type = binding_declared_types.get((kind, name), "float")
-        return _load_value(kind, name, field_type, declared_type, element_index=element_index)
+        return _load_value(
+            kind, name, field_type, declared_type, element_index=element_index
+        )
 
     def _load_tick_param_ptr(
         kind: str,
@@ -1053,7 +1146,9 @@ def emit_llvm_ir(
                 name=f"fold_lane_{lane}",
             )
         if populated_lanes < simd_width:
-            zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
+            zero_value = ir.Constant(
+                uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0
+            )
             for lane in range(populated_lanes, simd_width):
                 vector_value = tick_builder.insert_element(
                     vector_value,
@@ -1184,7 +1279,9 @@ def emit_llvm_ir(
                         "stream", arg_name, param.type.pointee, clamped_index
                     )
                 else:
-                    value = _load_tick_param("stream", arg_name, param.type, clamped_index)
+                    value = _load_tick_param(
+                        "stream", arg_name, param.type, clamped_index
+                    )
             elif modifier == "accum" and arg_name in accum_slots:
                 value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
             elif modifier == "uniform" and arg_name in uniform_slots:
