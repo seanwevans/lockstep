@@ -18,8 +18,8 @@ from .ast import (
     ast_to_entities,
 )
 from .arena_layout import build_arena_layout
+from .optimizer import optimize_bind_routes
 from .utils import sanitize_symbol as _sanitize_symbol
-
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "bool": ir.IntType(1),
@@ -207,10 +207,14 @@ class _FunctionLowerer:
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
 
-        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(value.type, ir.IntType):
+        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
+            value.type, ir.IntType
+        ):
             return self.builder.sitofp(value, target_type)
 
-        if isinstance(target_type, ir.IntType) and isinstance(value.type, (ir.FloatType, ir.DoubleType)):
+        if isinstance(target_type, ir.IntType) and isinstance(
+            value.type, (ir.FloatType, ir.DoubleType)
+        ):
             return self.builder.fptosi(value, target_type)
 
         if isinstance(target_type, ir.FloatType) and isinstance(
@@ -346,8 +350,9 @@ class _FunctionLowerer:
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
 
-
-    def _resolve_field_declared_type(self, base_type: str, field_path: list[str]) -> str | None:
+    def _resolve_field_declared_type(
+        self, base_type: str, field_path: list[str]
+    ) -> str | None:
         current_type = base_type
         for field_name in field_path:
             fields = self.struct_fields.get(current_type)
@@ -363,7 +368,17 @@ class _FunctionLowerer:
             current_type = field_type
         return current_type
 
-    def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
+    def _infer_expr_type(
+        self,
+        node: (
+            AstExprLiteral
+            | AstExprVar
+            | AstExprUnary
+            | AstExprBinary
+            | AstExprCall
+            | AstExprCast
+        ),
+    ) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
                 return node.kind
@@ -526,7 +541,9 @@ class _FunctionLowerer:
             if self.local_indirections.get(key):
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
                 slot_type = ref_ptr.type.pointee
-                self.builder.store(self._coerce_value_to_type(value, slot_type), ref_ptr)
+                self.builder.store(
+                    self._coerce_value_to_type(value, slot_type), ref_ptr
+                )
             else:
                 slot_type = self.locals[key].type.pointee
                 self.builder.store(
@@ -602,7 +619,11 @@ class _FunctionLowerer:
             slot = self.builder.alloca(arg.type, name=key)
             self.builder.store(arg, slot)
             self.locals[key] = slot
-            is_by_ref = bool(param_by_ref[idx]) if param_by_ref is not None and idx < len(param_by_ref) else False
+            is_by_ref = (
+                bool(param_by_ref[idx])
+                if param_by_ref is not None and idx < len(param_by_ref)
+                else False
+            )
             self.local_indirections[key] = is_by_ref
             if param_type_names is not None and idx < len(param_type_names):
                 self.local_types[key] = param_type_names[idx]
@@ -648,7 +669,11 @@ def emit_llvm_ir(
 ) -> str:
     """Generate LLVM IR using llvmlite lowering for pure/kernels."""
 
-    entities = ast_to_entities(program_or_entities)
+    entities = (
+        program_or_entities
+        if isinstance(program_or_entities, dict)
+        else ast_to_entities(program_or_entities)
+    )
 
     structs = entities.get("structs", [])
     shaders = entities.get("shaders", [])
@@ -659,6 +684,44 @@ def emit_llvm_ir(
     uniforms = entities.get("uniforms", [])
     bind_routes = entities.get("bind_routes", [])
     bind_routes_ir = entities.get("bind_routes_ir", [])
+    streams = [
+        (
+            {**stream, "capacity": stream.get("capacity", 1)}
+            if isinstance(stream, dict)
+            else stream
+        )
+        for stream in streams
+    ]
+    entities = {**entities, "streams": streams}
+
+    shader_names = {
+        shader["name"]
+        for shader in shaders
+        if isinstance(shader, dict) and shader.get("name")
+    }
+    filter_names = {
+        flt["name"] for flt in filters if isinstance(flt, dict) and flt.get("name")
+    }
+    if bind_routes and (shader_names or filter_names):
+        bind_optimization = optimize_bind_routes(
+            bind_routes,
+            shader_names=shader_names,
+            filter_names=filter_names,
+            bind_routes_ir=bind_routes_ir,
+        )
+        entities = {
+            **entities,
+            "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
+            "fused_bind_groups": bind_optimization["fused_groups"],
+        }
+    else:
+        entities = {
+            **entities,
+            "optimized_bind_routes": entities.get("optimized_bind_routes", bind_routes),
+            "fused_bind_groups": entities.get("fused_bind_groups", []),
+        }
+
+    fused_bind_groups = entities.get("fused_bind_groups", [])
 
     context = ir.Context()
     module = ir.Module(name="lockstep", context=context)
@@ -743,7 +806,9 @@ def emit_llvm_ir(
     for shader in shaders:
         params = [
             (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                lowerer._llvm_type(
+                    param.get("type", "float"), known_structs
+                ).as_pointer()
                 if param.get("modifier") in {"out", "accum"}
                 else lowerer._llvm_type(param.get("type", "float"), known_structs)
             )
@@ -761,7 +826,9 @@ def emit_llvm_ir(
     for flt in filters:
         params = [
             (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
+                lowerer._llvm_type(
+                    param.get("type", "float"), known_structs
+                ).as_pointer()
                 if param.get("modifier") in {"out", "accum"}
                 else lowerer._llvm_type(param.get("type", "float"), known_structs)
             )
@@ -796,7 +863,10 @@ def emit_llvm_ir(
             _ast_body_for(shader, entity_kind="shader"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in shader.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in shader.get("params", [])],
+            [
+                param.get("modifier") in {"out", "accum"}
+                for param in shader.get("params", [])
+            ],
         )
 
     for flt in filters:
@@ -806,17 +876,26 @@ def emit_llvm_ir(
             _ast_body_for(flt, entity_kind="filter"),
             ir.VoidType(),
             [str(param.get("type", "float")) for param in flt.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in flt.get("params", [])],
+            [
+                param.get("modifier") in {"out", "accum"}
+                for param in flt.get("params", [])
+            ],
         )
 
     layout = build_arena_layout(entities)
 
-    stream_slots: dict[str, int] = {stream["name"]: idx for idx, stream in enumerate(streams)}
+    stream_slots: dict[str, int] = {
+        stream["name"]: idx for idx, stream in enumerate(streams)
+    }
     stream_capacities: dict[str, int] = {}
     for stream in streams:
         stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
-    uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
+    accum_slots: dict[str, int] = {
+        accum["name"]: idx for idx, accum in enumerate(accumulators)
+    }
+    uniform_slots: dict[str, int] = {
+        uniform["name"]: idx for idx, uniform in enumerate(uniforms)
+    }
 
     leaf_specs: dict[tuple[str, str, tuple[str, ...]], tuple[int, int]] = {
         (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
@@ -847,20 +926,9 @@ def emit_llvm_ir(
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
 
-    arena_field_types: list[ir.Type] = []
-    leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
-    for leaf in layout.leaves:
-        if leaf.type_name in _PRIMITIVE_TYPE_MAP:
-            field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
-        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
-            field_ty = known_structs[leaf.type_name]
-        else:
-            field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
-        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
-        arena_field_types.append(field_ty)
-
-    if not arena_field_types:
-        arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
+    arena_field_types: list[ir.Type] = [
+        ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
+    ]
 
     if arena_struct_ty.is_opaque:
         arena_struct_ty.set_body(*arena_field_types)
@@ -907,7 +975,11 @@ def emit_llvm_ir(
             )
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
+            [
+                ir.Constant(ir.IntType(32), 0),
+                ir.Constant(ir.IntType(32), 0),
+                byte_offset,
+            ],
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
         typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
@@ -923,7 +995,9 @@ def emit_llvm_ir(
         path: tuple[str, ...] = (),
         element_index: ir.Value | None = None,
     ) -> ir.Value:
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
             aggregate = ir.Constant(value_type, ir.Undefined)
             fields = struct_fields.get(declared_type, [])
             for index, element_type in enumerate(value_type.elements):
@@ -955,7 +1029,9 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ):
         value_type = value.type
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
             fields = struct_fields.get(declared_type, [])
             for index, element_type in enumerate(value_type.elements):
                 part = tick_builder.extract_value(value, index)
@@ -978,7 +1054,9 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ) -> ir.Value:
         declared_type = binding_declared_types.get((kind, name), "float")
-        return _load_value(kind, name, field_type, declared_type, element_index=element_index)
+        return _load_value(
+            kind, name, field_type, declared_type, element_index=element_index
+        )
 
     def _load_tick_param_ptr(
         kind: str,
@@ -1053,7 +1131,9 @@ def emit_llvm_ir(
                 name=f"fold_lane_{lane}",
             )
         if populated_lanes < simd_width:
-            zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
+            zero_value = ir.Constant(
+                uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0
+            )
             for lane in range(populated_lanes, simd_width):
                 vector_value = tick_builder.insert_element(
                     vector_value,
@@ -1117,6 +1197,136 @@ def emit_llvm_ir(
                 )
 
         return reduced
+
+    def _kernel_route_trip_count(route: dict[str, Any]) -> int:
+        kernel_name = str(route.get("kernel", ""))
+        signature = kernel_signatures.get(kernel_name, {})
+        params = signature.get("params", []) if isinstance(signature, dict) else []
+        arg_names = route.get("args") if isinstance(route.get("args"), list) else []
+
+        trip_count = 0
+        for index, arg_name in enumerate(arg_names):
+            if index >= len(params):
+                break
+            modifier = params[index].get("modifier")
+            if modifier == "in" and arg_name in stream_capacities:
+                trip_count = max(trip_count, stream_capacities[arg_name])
+        target = route.get("target")
+        if isinstance(target, str) and target in stream_capacities:
+            trip_count = max(trip_count, stream_capacities[target])
+        return trip_count if trip_count > 0 else 1
+
+    def _clamped_stream_index(name: str, current: ir.Value) -> ir.Value:
+        raw_capacity = stream_capacities.get(name, 0)
+        safe_capacity = max(int(raw_capacity), 1)
+        max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
+        return _vector_i32_clamp(current, ir.Constant(ir.IntType(32), 0), max_index)
+
+    def _lower_fused_group(group: dict[str, Any], routes: list[dict[str, Any]]) -> None:
+        if not routes:
+            return
+
+        safe_name_parts = [
+            _sanitize_symbol(str(route.get("kernel", "kernel"))) for route in routes
+        ]
+        fused_name = "_".join(part for part in safe_name_parts if part) or "group"
+        trip_count = max(_kernel_route_trip_count(route) for route in routes)
+        eliminated = {str(name) for name in group.get("eliminated_intermediates", [])}
+
+        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fused_{fused_name}_idx")
+        tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+
+        loop_cond = tick.append_basic_block(f"fused_{fused_name}_cond")
+        loop_body = tick.append_basic_block(f"fused_{fused_name}_body")
+        loop_exit = tick.append_basic_block(f"fused_{fused_name}_exit")
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_cond)
+        current = tick_builder.load(index_ptr, name="fused_idx")
+        cond = tick_builder.icmp_signed(
+            "<", current, ir.Constant(ir.IntType(32), trip_count), name="fused_active"
+        )
+        tick_builder.cbranch(cond, loop_body, loop_exit)
+
+        tick_builder.position_at_end(loop_body)
+        local_values: dict[str, ir.Value] = {}
+        local_ptrs: dict[str, ir.Value] = {}
+
+        for route in routes:
+            kernel_name = str(route.get("kernel", ""))
+            callee = function_map.get(
+                f"shader_{_sanitize_symbol(kernel_name)}"
+            ) or function_map.get(f"filter_{_sanitize_symbol(kernel_name)}")
+            if callee is None:
+                continue
+
+            signature = kernel_signatures.get(kernel_name, {})
+            params = signature.get("params", []) if isinstance(signature, dict) else []
+            arg_names = route.get("args") if isinstance(route.get("args"), list) else []
+            target = str(route.get("target", ""))
+
+            call_args = []
+            out_bindings: list[tuple[str, ir.Value, ir.Type]] = []
+            for index, param in enumerate(callee.args):
+                arg_name = arg_names[index] if index < len(arg_names) else ""
+                modifier = (
+                    params[index].get("modifier") if index < len(params) else None
+                )
+                value = None
+                if modifier == "in" and arg_name in local_values:
+                    value = local_values[arg_name]
+                elif modifier == "in" and arg_name in local_ptrs:
+                    value = tick_builder.load(
+                        local_ptrs[arg_name], name=f"{arg_name}_fused"
+                    )
+                elif modifier in {"in", "out"} and arg_name in stream_slots:
+                    if modifier == "out" and target in eliminated:
+                        ptr = tick_builder.alloca(
+                            param.type.pointee,
+                            name=f"fused_{_sanitize_symbol(target)}_slot",
+                        )
+                        local_ptrs[target] = ptr
+                        out_bindings.append((target, ptr, param.type.pointee))
+                        value = ptr
+                    else:
+                        clamped_index = _clamped_stream_index(arg_name, current)
+                        if modifier == "out":
+                            value = _load_tick_param_ptr(
+                                "stream", arg_name, param.type.pointee, clamped_index
+                            )
+                        else:
+                            value = _load_tick_param(
+                                "stream", arg_name, param.type, clamped_index
+                            )
+                elif modifier == "out" and target in eliminated:
+                    ptr = tick_builder.alloca(
+                        param.type.pointee,
+                        name=f"fused_{_sanitize_symbol(target)}_slot",
+                    )
+                    local_ptrs[target] = ptr
+                    out_bindings.append((target, ptr, param.type.pointee))
+                    value = ptr
+                elif modifier == "accum" and arg_name in accum_slots:
+                    value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
+                elif modifier == "uniform" and arg_name in uniform_slots:
+                    value = _load_tick_param("uniform", arg_name, param.type)
+                if value is None:
+                    value = _zero_value(param.type)
+                call_args.append(value)
+
+            tick_builder.call(callee, call_args)
+            for symbol, ptr, _pointee_type in out_bindings:
+                local_values[symbol] = tick_builder.load(
+                    ptr, name=f"fused_{_sanitize_symbol(symbol)}_value"
+                )
+
+        next_index = tick_builder.add(
+            current, ir.Constant(ir.IntType(32), 1), name="fused_idx_next"
+        )
+        tick_builder.store(next_index, index_ptr)
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_exit)
 
     def _lower_kernel_route(route: dict[str, Any]):
         kernel_name = str(route.get("kernel", ""))
@@ -1184,7 +1394,9 @@ def emit_llvm_ir(
                         "stream", arg_name, param.type.pointee, clamped_index
                     )
                 else:
-                    value = _load_tick_param("stream", arg_name, param.type, clamped_index)
+                    value = _load_tick_param(
+                        "stream", arg_name, param.type, clamped_index
+                    )
             elif modifier == "accum" and arg_name in accum_slots:
                 value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
             elif modifier == "uniform" and arg_name in uniform_slots:
@@ -1202,8 +1414,64 @@ def emit_llvm_ir(
 
         tick_builder.position_at_end(loop_exit)
 
+    def _match_fused_groups_to_route_indices() -> (
+        tuple[dict[int, tuple[dict[str, Any], list[dict[str, Any]]]], set[int]]
+    ):
+        groups_by_sink: dict[int, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+        removed: set[int] = set()
+        if not isinstance(fused_bind_groups, list) or not bind_routes_ir:
+            return groups_by_sink, removed
+
+        claimed: set[int] = set()
+        for group in fused_bind_groups:
+            if not isinstance(group, dict):
+                continue
+            source_routes = group.get("source_routes")
+            if not isinstance(source_routes, list) or len(source_routes) <= 1:
+                continue
+
+            matched_indices: list[int] = []
+            search_from = 0
+            for source_route in source_routes:
+                found_index = None
+                for candidate_index in range(search_from, len(bind_routes_ir)):
+                    if candidate_index in claimed:
+                        continue
+                    candidate = bind_routes_ir[candidate_index]
+                    if (
+                        isinstance(candidate, dict)
+                        and candidate.get("kind") == "kernel"
+                        and candidate.get("route") == source_route
+                    ):
+                        found_index = candidate_index
+                        break
+                if found_index is None:
+                    matched_indices = []
+                    break
+                matched_indices.append(found_index)
+                search_from = found_index + 1
+
+            if len(matched_indices) != len(source_routes):
+                continue
+
+            sink_index = matched_indices[-1]
+            routes = [bind_routes_ir[index] for index in matched_indices]
+            groups_by_sink[sink_index] = (group, routes)
+            removed.update(matched_indices[:-1])
+            claimed.update(matched_indices)
+        return groups_by_sink, removed
+
+    fused_groups_by_sink, fused_removed_indices = _match_fused_groups_to_route_indices()
+
     if bind_routes_ir:
-        for route in bind_routes_ir:
+        for route_index, route in enumerate(bind_routes_ir):
+            if route_index in fused_removed_indices:
+                continue
+            fused = fused_groups_by_sink.get(route_index)
+            if fused is not None:
+                group, routes = fused
+                _lower_fused_group(group, routes)
+                continue
             if route.get("kind") == "kernel":
                 _lower_kernel_route(route)
                 continue

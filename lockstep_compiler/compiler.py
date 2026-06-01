@@ -7,7 +7,14 @@ from typing import Any, Callable, cast
 
 from antlr4 import CommonTokenStream, InputStream
 
-from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, build_program_ast
+from .ast import (
+    AstKernelParam,
+    AstProgram,
+    AstPureDecl,
+    AstType,
+    ast_to_entities,
+    build_program_ast,
+)
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
@@ -19,7 +26,6 @@ from .models import (
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
 from .visitors import validate_semantics as _validate_semantics
-
 
 DEFAULT_SOURCE_FILE = "<stdin>"
 DEFAULT_MAX_SOURCE_BYTES = 1_048_576
@@ -420,7 +426,9 @@ def _resolve_dependency_sources(
         elif parent_file.startswith("<") and parent_file.endswith(">"):
             resolved_candidate = (base_directory / candidate).resolve()
         else:
-            resolved_candidate = (Path(parent_file).resolve().parent / candidate).resolve()
+            resolved_candidate = (
+                Path(parent_file).resolve().parent / candidate
+            ).resolve()
 
         if canonical_dependency_root is not None:
             try:
@@ -603,7 +611,9 @@ def _compile_lockstep_with_dependencies(
     target_width: int = 8,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
-    resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
+    resolved_limits = _normalize_frontend_limits(
+        frontend_limits, source_file=source_file
+    )
     _enforce_source_size_limit(
         source_code,
         source_file=source_file,
@@ -699,8 +709,21 @@ def _compile_lockstep_with_dependencies(
 
     all_diagnostics = normalize_diagnostics(semantic_diagnostics)
 
+    entities = ast_to_entities(typed_ast)
+    bind_optimization = optimize_bind_routes(
+        entities["bind_routes"],
+        shader_names={shader["name"] for shader in entities["shaders"]},
+        filter_names={flt["name"] for flt in entities["filters"]},
+        bind_routes_ir=entities.get("bind_routes_ir"),
+    )
+    entities = {
+        **entities,
+        "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
+        "fused_bind_groups": bind_optimization["fused_groups"],
+    }
+
     try:
-        llvm_ir = emit_llvm_ir(typed_ast, target_width=target_width)
+        llvm_ir = emit_llvm_ir(entities, target_width=target_width)
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
@@ -720,7 +743,7 @@ def _compile_lockstep_with_dependencies(
 
     return LockstepCompileResult(
         parse_tree=tree,
-        entities={},
+        entities=entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
         c_header=emit_c_header(typed_ast, target_width=target_width),
@@ -772,7 +795,9 @@ def compile_lockstep(
 ) -> LockstepCompileResult:
     resolved_library_sources: list[str] = list(library_sources or [])
     resolved_library_source_files: list[str] = list(library_source_files or [])
-    resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
+    resolved_limits = _normalize_frontend_limits(
+        frontend_limits, source_file=source_file
+    )
 
     dependency_sources, dependency_source_files = _resolve_dependency_sources(
         source_code,
