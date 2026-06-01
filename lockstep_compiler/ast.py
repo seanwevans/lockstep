@@ -5,29 +5,115 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class AstTypeSuffix:
+    kind: str
+    size: str | None = None
+    type_arg: "AstType | None" = None
+
+    def __str__(self) -> str:
+        if self.kind == "array":
+            return f"[{self.size}]"
+        if self.kind == "template":
+            size_segment = f",{self.size}" if self.size is not None else ""
+            return f"<{self.type_arg}{size_segment}>"
+        return ""
+
+
+@dataclass(frozen=True)
 class AstType:
     name: str
     kind: str = "named"
+    suffixes: tuple[AstTypeSuffix, ...] = ()
 
     def __str__(self) -> str:
-        return self.name
+        return f"{self.name}{''.join(str(suffix) for suffix in self.suffixes)}"
+
+
+def _parse_type_text(type_text: str) -> AstType:
+    text = type_text.strip()
+    index = 0
+    while index < len(text) and (text[index].isalnum() or text[index] == "_"):
+        index += 1
+    base_name = text[:index] or text
+    suffixes: list[AstTypeSuffix] = []
+
+    def _find_matching(start: int, opener: str, closer: str) -> int:
+        depth = 0
+        for cursor in range(start, len(text)):
+            char = text[cursor]
+            if char == opener:
+                depth += 1
+            elif char == closer:
+                depth -= 1
+                if depth == 0:
+                    return cursor
+        return len(text) - 1
+
+    while index < len(text):
+        char = text[index]
+        if char == "[":
+            end = text.find("]", index + 1)
+            if end < 0:
+                break
+            suffixes.append(AstTypeSuffix(kind="array", size=text[index + 1 : end]))
+            index = end + 1
+            continue
+        if char == "<":
+            end = _find_matching(index, "<", ">")
+            inner = text[index + 1 : end]
+            comma = _split_template_suffix(inner)
+            if comma is None:
+                suffixes.append(
+                    AstTypeSuffix(kind="template", type_arg=_parse_type_text(inner))
+                )
+            else:
+                suffixes.append(
+                    AstTypeSuffix(
+                        kind="template",
+                        type_arg=_parse_type_text(inner[:comma]),
+                        size=inner[comma + 1 :].strip(),
+                    )
+                )
+            index = end + 1
+            continue
+        index += 1
+
+    kind = (
+        "primitive"
+        if not suffixes
+        and base_name in {"int", "float", "bool", "uint", "double", "string"}
+        else "named"
+    )
+    return AstType(name=base_name, kind=kind, suffixes=tuple(suffixes))
+
+
+def _split_template_suffix(inner: str) -> int | None:
+    angle_depth = 0
+    bracket_depth = 0
+    for index, char in enumerate(inner):
+        if char == "<":
+            angle_depth += 1
+        elif char == ">":
+            angle_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+        elif char == "," and angle_depth == 0 and bracket_depth == 0:
+            return index
+    return None
 
 
 def _normalize_type(value: AstType | str) -> AstType:
     if isinstance(value, AstType):
         return value
-    kind = (
-        "primitive"
-        if value in {"int", "float", "bool", "uint", "double", "string"}
-        else "named"
-    )
-    return AstType(name=value, kind=kind)
+    return _parse_type_text(value)
 
 
 def _type_name(value: AstType | str | None) -> str | None:
     if value is None:
         return None
-    return value.name if isinstance(value, AstType) else value
+    return str(value) if isinstance(value, AstType) else value
 
 
 @dataclass(frozen=True)
@@ -282,10 +368,67 @@ class AstBuilder(_AstBuilderMixin):
         self._active_bind_routes: list[AstBindRoute] = []
         self._types: dict[str, AstType] = {}
 
-    def _resolve_type(self, type_name: str) -> AstType:
-        if type_name not in self._types:
-            self._types[type_name] = _normalize_type(type_name)
-        return self._types[type_name]
+    def _resolve_type(self, type_name: AstType | str) -> AstType:
+        ast_type = _normalize_type(type_name)
+        cache_key = str(ast_type)
+        if cache_key not in self._types:
+            self._types[cache_key] = ast_type
+        return self._types[cache_key]
+
+    def _resolve_type_ctx(self, type_ctx: Any) -> AstType:
+        if type_ctx is None:
+            return self._resolve_type("float")
+
+        id_token = self._call(type_ctx, "ID")
+        suffix_ctxs = self._call(type_ctx, "typeSuffix", []) or []
+        if id_token is None or not isinstance(suffix_ctxs, list):
+            return self._resolve_type(type_ctx.getText())
+
+        suffixes: list[AstTypeSuffix] = []
+        for suffix_ctx in suffix_ctxs:
+            text = suffix_ctx.getText()
+            if text.startswith("["):
+                int_token = self._call(suffix_ctx, "INT")
+                suffixes.append(
+                    AstTypeSuffix(
+                        kind="array",
+                        size=(
+                            int_token.getText() if int_token is not None else text[1:-1]
+                        ),
+                    )
+                )
+                continue
+
+            nested_types = self._call(suffix_ctx, "typeName", []) or []
+            if not isinstance(nested_types, list):
+                nested_types = [nested_types]
+            nested_type = (
+                self._resolve_type_ctx(nested_types[0])
+                if nested_types
+                else self._resolve_type("void")
+            )
+            int_token = self._call(suffix_ctx, "INT")
+            suffixes.append(
+                AstTypeSuffix(
+                    kind="template",
+                    type_arg=nested_type,
+                    size=int_token.getText() if int_token is not None else None,
+                )
+            )
+
+        return self._resolve_type(
+            AstType(
+                name=id_token.getText(),
+                kind=(
+                    "primitive"
+                    if not suffixes
+                    and id_token.getText()
+                    in {"int", "float", "bool", "uint", "double", "string"}
+                    else "named"
+                ),
+                suffixes=tuple(suffixes),
+            )
+        )
 
     def _parse_params(self, param_list_ctx: Any) -> tuple[AstKernelParam, ...]:
         if param_list_ctx is None:
@@ -294,7 +437,7 @@ class AstBuilder(_AstBuilderMixin):
         params: list[AstKernelParam] = []
         for param in params_ctx:
             modifier = param.getChild(0).getText()
-            declared_type = self._resolve_type(self._call(param, "typeName").getText())
+            declared_type = self._resolve_type_ctx(self._call(param, "typeName"))
             name = self._call(param, "ID").getText()
             params.append(
                 AstKernelParam(
@@ -375,9 +518,7 @@ class AstBuilder(_AstBuilderMixin):
                 and ctx.getChild(2).getText() == ")"
             ):
                 return AstExprCast(
-                    target_type=self._resolve_type(
-                        self._call(ctx, "typeName").getText()
-                    ),
+                    target_type=self._resolve_type_ctx(self._call(ctx, "typeName")),
                     value=self.visit(nested),
                 )
             return AstExprUnary(
@@ -487,9 +628,7 @@ class AstBuilder(_AstBuilderMixin):
         members = self._call(ctx, "structMember", []) or []
         fields = tuple(
             AstStructField(
-                declared_type=self._resolve_type(
-                    self._call(member, "typeName").getText()
-                ),
+                declared_type=self._resolve_type_ctx(self._call(member, "typeName")),
                 name=self._call(member, "ID").getText(),
                 location=AstLocation(
                     line=getattr(
@@ -523,14 +662,14 @@ class AstBuilder(_AstBuilderMixin):
                 params.append(
                     AstKernelParam(
                         modifier="in",
-                        declared_type=self._resolve_type(declared_type.getText()),
+                        declared_type=self._resolve_type_ctx(declared_type),
                         name=name.getText(),
                     )
                 )
         self._pure_functions.append(
             AstPureDecl(
                 name=id_token.getText(),
-                return_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                return_type=self._resolve_type_ctx(self._call(ctx, "typeName")),
                 params=tuple(params),
                 body=self._parse_statement_text(ctx),
                 location=self._location(ctx),
@@ -589,7 +728,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_streams.append(
             AstStreamDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                declared_type=self._resolve_type_ctx(self._call(ctx, "typeName")),
                 capacity=self._call(ctx, "INT").getText(),
                 location=self._location(ctx),
             )
@@ -600,7 +739,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_accumulators.append(
             AstAccumulatorDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                declared_type=self._resolve_type_ctx(self._call(ctx, "typeName")),
                 location=self._location(ctx),
             )
         )
@@ -611,7 +750,7 @@ class AstBuilder(_AstBuilderMixin):
         self._active_uniforms.append(
             AstUniformDecl(
                 name=self._call(ctx, "ID").getText(),
-                declared_type=self._resolve_type(self._call(ctx, "typeName").getText()),
+                declared_type=self._resolve_type_ctx(self._call(ctx, "typeName")),
                 initializer=expr_ctx.getText() if expr_ctx else None,
                 location=self._location(ctx),
             )
@@ -627,9 +766,7 @@ class AstBuilder(_AstBuilderMixin):
                 self._active_bind_routes.append(
                     AstFoldBindRoute(
                         uniform_type=(
-                            self._resolve_type(
-                                self._call(bind_stmt, "typeName").getText()
-                            )
+                            self._resolve_type_ctx(self._call(bind_stmt, "typeName"))
                             if self._call(bind_stmt, "typeName")
                             else self._resolve_type("float")
                         ),
@@ -643,7 +780,9 @@ class AstBuilder(_AstBuilderMixin):
                 continue
 
             if len(id_tokens) >= 2:
-                arg_tokens = self._call(self._call(bind_stmt, "argList"), "ID", []) or []
+                arg_tokens = (
+                    self._call(self._call(bind_stmt, "argList"), "ID", []) or []
+                )
                 if not isinstance(arg_tokens, list):
                     arg_tokens = [arg_tokens]
                 self._active_bind_routes.append(

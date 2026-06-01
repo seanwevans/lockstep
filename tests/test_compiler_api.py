@@ -359,6 +359,38 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert "uitofp i1" in llvm_ir
 
 
+def test_emit_llvm_ir_lowers_array_type_suffixes_for_local_allocas():
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            pure_functions=(
+                AstPureDecl(
+                    name="array_local",
+                    return_type="float",
+                    body=(
+                        AstVarDeclStmt(
+                            declared_type="float[2][3]",
+                            name="matrix",
+                            initializer=None,
+                        ),
+                        AstReturnStmt(value=AstExprLiteral(kind="float", value="1.0")),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert "alloca [2 x [3 x float]]" in llvm_ir
+
+
+def test_compile_lockstep_preserves_array_type_suffixes_in_codegen():
+    result = lockstep_compiler.compile_lockstep(
+        "pure float array_local(){ float[2][3] matrix; return 1.0; }",
+        verbose=False,
+    )
+
+    assert "alloca [2 x [3 x float]]" in result.llvm_ir
+
+
 def test_emit_llvm_ir_rejects_assignment_to_undeclared_local():
     program = AstProgram(
         pure_functions=(
