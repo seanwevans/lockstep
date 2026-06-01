@@ -679,7 +679,10 @@ def build_program_ast(parse_tree: Any, visitor_cls: type) -> AstProgram:
     return visitor.build()
 
 
-def ast_to_entities(program: AstProgram) -> dict[str, Any]:
+def ast_to_entities(program: AstProgram | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(program, dict):
+        return program
+
     def _expr_to_text(expr: AstExpr) -> str:
         if isinstance(expr, AstExprLiteral):
             return expr.value

@@ -849,6 +849,7 @@ def emit_llvm_ir(
 
     arena_field_types: list[ir.Type] = []
     leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
+    leaf_field_is_array: dict[tuple[str, str, tuple[str, ...]], bool] = {}
     for leaf in layout.leaves:
         if leaf.type_name in _PRIMITIVE_TYPE_MAP:
             field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
@@ -856,8 +857,15 @@ def emit_llvm_ir(
             field_ty = known_structs[leaf.type_name]
         else:
             field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
-        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
-        arena_field_types.append(field_ty)
+
+        leaf_key = (leaf.kind, leaf.binding_name, leaf.path)
+        leaf_field_indices[leaf_key] = len(arena_field_types)
+        if leaf.element_count > 1:
+            arena_field_types.append(ir.ArrayType(field_ty, max(leaf.element_count, 1)))
+            leaf_field_is_array[leaf_key] = True
+        else:
+            arena_field_types.append(field_ty)
+            leaf_field_is_array[leaf_key] = False
 
     if not arena_field_types:
         arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
@@ -893,23 +901,32 @@ def emit_llvm_ir(
         leaf_type: ir.Type,
         loop_index_reg: ir.Value | None = None,
     ) -> ir.Value | None:
-        leaf_spec = leaf_specs.get((kind, name, path))
-        if leaf_spec is None:
+        leaf_key = (kind, name, path)
+        if leaf_key not in leaf_specs:
             return None
-        base_offset, element_size = leaf_spec
-        byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if kind in {"stream", "accum"} and loop_index_reg is not None:
-            stride = ir.Constant(ir.IntType(32), element_size)
-            byte_offset = tick_builder.add(
-                byte_offset,
-                tick_builder.mul(loop_index_reg, stride, name="loop_elem_stride"),
-                name="loop_elem_offset",
+        field_index = leaf_field_indices.get(leaf_key)
+        if field_index is None:
+            return None
+
+        gep_indices = [
+            ir.Constant(ir.IntType(32), 0),
+            ir.Constant(ir.IntType(32), field_index),
+        ]
+        if leaf_field_is_array.get(leaf_key, False):
+            element_index = (
+                loop_index_reg
+                if kind in {"stream", "accum"} and loop_index_reg is not None
+                else ir.Constant(ir.IntType(32), 0)
             )
+            gep_indices.append(element_index)
+
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
-            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
+            gep_indices,
+            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_ptr",
         )
+        if raw_ptr.type.pointee == leaf_type:
+            return raw_ptr
         typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
         if typed_ptr.type.pointee != leaf_type:
             return None
