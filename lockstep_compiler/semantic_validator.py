@@ -562,7 +562,7 @@ def build_semantic_validator(base_visitor_cls):
                             continue
                         seen_field_names.add(field.name)
                         fields[field.name] = SemanticStructField(
-                            name=field.name, declared_type=field.declared_type.name
+                            name=field.name, declared_type=str(field.declared_type)
                         )
                     self.structs[struct.name] = fields
 
@@ -571,7 +571,7 @@ def build_semantic_validator(base_visitor_cls):
                     params = [
                         SemanticKernelParam(
                             name=param.name,
-                            declared_type=param.declared_type.name,
+                            declared_type=str(param.declared_type),
                             modifier=param.modifier,
                         )
                         for param in shader.params
@@ -592,7 +592,7 @@ def build_semantic_validator(base_visitor_cls):
                     params = [
                         SemanticKernelParam(
                             name=param.name,
-                            declared_type=param.declared_type.name,
+                            declared_type=str(param.declared_type),
                             modifier=param.modifier,
                         )
                         for param in filter_decl.params
@@ -1382,7 +1382,7 @@ def build_semantic_validator(base_visitor_cls):
                     return
                 if isinstance(expr, AstExprCast):
                     cast_ctx = self._ctx_from_location(getattr(expr, "location", None))
-                    self._validate_declared_type(expr.target_type.name, cast_ctx, "LCK310")
+                    self._validate_declared_type(str(expr.target_type), cast_ctx, "LCK310")
                     _validate_ast_expr(expr.value)
 
             def _validate_ast_statement(statement: AstStatement):
@@ -1390,12 +1390,12 @@ def build_semantic_validator(base_visitor_cls):
                 if isinstance(statement, AstVarDeclStmt):
                     if statement.declared_type is not None:
                         self._validate_declared_type(
-                            statement.declared_type.name, stmt_ctx, "LCK310"
+                            str(statement.declared_type), stmt_ctx, "LCK310"
                         )
                     if statement.initializer is not None:
                         _validate_ast_expr(statement.initializer)
                     declared_type_name = (
-                        statement.declared_type.name if statement.declared_type else "unknown"
+                        str(statement.declared_type) if statement.declared_type else "unknown"
                     )
                     self._declare(
                         statement.name,
@@ -1445,25 +1445,25 @@ def build_semantic_validator(base_visitor_cls):
                     if field.name in fields:
                         self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"], message=f"Struct '{struct.name}' has duplicate field declaration '{field.name}'.", ctx=field_ctx, hint="Rename or remove duplicate struct member declarations.")
                         continue
-                    fields[field.name]=SemanticStructField(name=field.name, declared_type=field.declared_type.name)
+                    fields[field.name]=SemanticStructField(name=field.name, declared_type=str(field.declared_type))
                 self.structs[struct.name]=fields
 
             for collection, target in ((program.shaders, self.shaders), (program.filters, self.filters)):
                 for kernel in collection:
                     kctx=self._ctx_from_location(kernel.location)
-                    params=[SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier=p.modifier) for p in kernel.params]
+                    params=[SemanticKernelParam(name=p.name, declared_type=str(p.declared_type), modifier=p.modifier) for p in kernel.params]
                     if kernel.name in target:
                         self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"], message=f"Duplicate shader/filter declaration for '{kernel.name}'.", ctx=kctx, hint="Rename one declaration to avoid symbol collisions.")
                     else:
                         target[kernel.name]=params
 
             for pure in program.pure_functions:
-                self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=pure.return_type.name, params=tuple(SemanticKernelParam(name=p.name, declared_type=p.declared_type.name, modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
+                self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=str(pure.return_type), params=tuple(SemanticKernelParam(name=p.name, declared_type=str(p.declared_type), modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
             for kernel in (*program.shaders, *program.filters):
                 kernel_params = tuple(
                     SemanticKernelParam(
                         name=param.name,
-                        declared_type=param.declared_type.name,
+                        declared_type=str(param.declared_type),
                         modifier=param.modifier,
                     )
                     for param in kernel.params
@@ -1473,7 +1473,7 @@ def build_semantic_validator(base_visitor_cls):
                 pure_params = tuple(
                     SemanticKernelParam(
                         name=param.name,
-                        declared_type=param.declared_type.name,
+                        declared_type=str(param.declared_type),
                         modifier="value",
                     )
                     for param in pure.params
@@ -1486,13 +1486,13 @@ def build_semantic_validator(base_visitor_cls):
                 self._pipeline_bind_usage_stack.append(set())
                 for stream in pipeline.streams:
                     ctx=self._ctx_from_location(stream.location)
-                    self._declare(stream.name, stream.declared_type.name, ctx, duplicate_code="LCK306", kind="stream")
+                    self._declare(stream.name, str(stream.declared_type), ctx, duplicate_code="LCK306", kind="stream")
                 for accum in pipeline.accumulators:
                     ctx=self._ctx_from_location(accum.location)
-                    self._declare(accum.name, accum.declared_type.name, ctx, duplicate_code="LCK306", kind="accumulator")
+                    self._declare(accum.name, str(accum.declared_type), ctx, duplicate_code="LCK306", kind="accumulator")
                 for uniform in pipeline.uniforms:
                     ctx=self._ctx_from_location(uniform.location)
-                    self._declare(uniform.name, uniform.declared_type.name, ctx, duplicate_code="LCK306", kind="uniform")
+                    self._declare(uniform.name, str(uniform.declared_type), ctx, duplicate_code="LCK306", kind="uniform")
                 self._pipeline_resource_stack.pop()
                 self._pipeline_bind_usage_stack.pop()
                 self._pop_scope()

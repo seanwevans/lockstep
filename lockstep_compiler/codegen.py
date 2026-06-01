@@ -23,6 +23,7 @@ from .ast import (
     AstType,
     AstUniformDecl,
     AstVarDeclStmt,
+    _normalize_type,
 )
 from .arena_layout import build_ast_arena_layout
 from .optimizer import optimize_bind_routes
@@ -43,7 +44,7 @@ class CodegenError(RuntimeError):
 
 
 def _type_name(value: AstType | str) -> str:
-    return value.name if isinstance(value, AstType) else value
+    return str(value) if isinstance(value, AstType) else value
 
 
 class _FunctionLowerer:
@@ -272,13 +273,36 @@ class _FunctionLowerer:
         )
 
     def _llvm_type(
-        self, type_name: str, known_structs: dict[str, ir.IdentifiedStructType]
+        self,
+        type_name: AstType | str,
+        known_structs: dict[str, ir.IdentifiedStructType],
     ) -> ir.Type:
-        if type_name in _PRIMITIVE_TYPE_MAP:
-            return _PRIMITIVE_TYPE_MAP[type_name]
-        if type_name in known_structs:
-            return known_structs[type_name]
-        return ir.IntType(8).as_pointer()
+        ast_type = _normalize_type(type_name)
+        if any(suffix.kind == "template" for suffix in ast_type.suffixes):
+            return ir.IntType(8).as_pointer()
+
+        if ast_type.name in _PRIMITIVE_TYPE_MAP:
+            llvm_type = _PRIMITIVE_TYPE_MAP[ast_type.name]
+        elif ast_type.name in known_structs:
+            llvm_type = known_structs[ast_type.name]
+        else:
+            llvm_type = ir.IntType(8).as_pointer()
+
+        for suffix in reversed(ast_type.suffixes):
+            if suffix.kind != "array":
+                continue
+            try:
+                element_count = int(suffix.size or "0")
+            except ValueError:
+                self._compiler_error(
+                    f"array type '{ast_type}' has a non-integer element count"
+                )
+            if element_count < 0:
+                self._compiler_error(
+                    f"array type '{ast_type}' has a negative element count"
+                )
+            llvm_type = ir.ArrayType(llvm_type, element_count)
+        return llvm_type
 
     def _emit_numeric_unary_minus(self, value: ir.Value) -> ir.Value:
         if isinstance(value.type, (ir.FloatType, ir.DoubleType)):
@@ -710,7 +734,7 @@ def _kernel_param_llvm_type(
     param: AstKernelParam,
     known_structs: dict[str, ir.IdentifiedStructType],
 ) -> ir.Type:
-    param_type = lowerer._llvm_type(_kernel_param_type(param), known_structs)
+    param_type = lowerer._llvm_type(param.declared_type, known_structs)
     if param.modifier in {"out", "accum"}:
         return param_type.as_pointer()
     return param_type
@@ -761,11 +785,11 @@ def emit_llvm_ir(
             field_types: list[ir.Type] = []
             can_lower = True
             for field in struct_fields[struct_name]:
-                field_type_name = _type_name(field.declared_type)
-                if field_type_name in known_structs and field_type_name in unresolved:
+                field_type = field.declared_type
+                if field_type.name in known_structs and field_type.name in unresolved:
                     can_lower = False
                     break
-                field_types.append(lowerer._llvm_type(field_type_name, known_structs))
+                field_types.append(lowerer._llvm_type(field_type, known_structs))
             if not can_lower:
                 continue
             if known_structs[struct_name].is_opaque:
@@ -780,9 +804,9 @@ def emit_llvm_ir(
 
     function_map: dict[str, ir.Function] = {}
     for pure in pure_functions:
-        ret_ty = lowerer._llvm_type(_type_name(pure.return_type), known_structs)
+        ret_ty = lowerer._llvm_type(pure.return_type, known_structs)
         params = [
-            lowerer._llvm_type(_kernel_param_type(param), known_structs)
+            lowerer._llvm_type(param.declared_type, known_structs)
             for param in pure.params
         ]
         fn = ir.Function(
