@@ -363,6 +363,27 @@ class _FunctionLowerer:
             current_type = field_type
         return current_type
 
+    @staticmethod
+    def _promote_scalar_type_names(
+        left_type: str | None, right_type: str | None
+    ) -> str | None:
+        if left_type is None or right_type is None:
+            return left_type or right_type
+        if left_type == right_type:
+            return left_type
+        if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+            return "uint" if "uint" in {left_type, right_type} else "int"
+        return None
+
+    def _infer_binary_operand_type(self, node: AstExprBinary) -> str | None:
+        left_type = self._infer_expr_type(node.left)
+        right_type = self._infer_expr_type(node.right)
+        if node.op in {"&&", "||"}:
+            return "bool" if left_type == "bool" and right_type == "bool" else None
+        if node.op in {"<<", ">>"}:
+            return left_type
+        return self._promote_scalar_type_names(left_type, right_type)
+
     def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
@@ -385,9 +406,11 @@ class _FunctionLowerer:
                 return node.name
             return self.function_return_types.get(f"pure_{_sanitize_symbol(node.name)}")
         if isinstance(node, AstExprBinary):
-            if node.op in {"<", "<=", ">", ">=", "==", "!=", "&&", "||"}:
+            if node.op in {"&&", "||"}:
                 return "bool"
-            return self._infer_expr_type(node.left)
+            if node.op in {"<", "<=", ">", ">=", "==", "!="}:
+                return "bool"
+            return self._infer_binary_operand_type(node)
         return None
 
     def _load_var(self, name: str) -> ir.Value:
@@ -489,7 +512,9 @@ class _FunctionLowerer:
         if isinstance(node, AstExprLiteral):
             if node.kind == "float":
                 return ir.Constant(ir.FloatType(), float(node.value))
-            if node.kind == "int":
+            if node.kind == "double":
+                return ir.Constant(ir.DoubleType(), float(node.value))
+            if node.kind in {"int", "uint"}:
                 return ir.Constant(ir.IntType(32), int(node.value))
             if node.kind == "string":
                 return self._lower_string_literal(node.value)
@@ -513,7 +538,11 @@ class _FunctionLowerer:
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
-        expr_type_name = self._infer_expr_type(node.left)
+        expr_type_name = self._infer_binary_operand_type(node)
+        if expr_type_name in _PRIMITIVE_TYPE_MAP:
+            operand_type = self._llvm_type(expr_type_name, self.known_structs)
+            lhs = self._coerce_value_to_type(lhs, operand_type)
+            rhs = self._coerce_value_to_type(rhs, operand_type)
         return self._lower_binary_op(node.op, lhs, rhs, type_name=expr_type_name)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
