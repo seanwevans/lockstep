@@ -675,6 +675,9 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {[4 x float], [4 x float], float}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 %"route_i32_lane0.1"' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1, i32 %"route_i32_lane0.3"' in llvm_ir
 
 
 def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
@@ -878,8 +881,9 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {float, float}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
+    assert 'i32 0, i32 0, i32 4' not in llvm_ir
 
 
 def test_emit_llvm_ir_honors_explicit_target_width_override():
