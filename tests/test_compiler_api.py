@@ -1419,6 +1419,43 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
     assert "icmp ult i32" in llvm_ir
 
 
+def test_codegen_promotes_asymmetric_uint_binary_operands():
+    source = """
+    pure uint literal_divided_by_uint(uint value) {
+        return 5 / value;
+    }
+
+    pure uint literal_remainder_uint(uint value) {
+        return 5 % value;
+    }
+
+    pure bool literal_less_than_uint(uint value) {
+        return 5 < value;
+    }
+
+    pure uint signed_divided_by_uint(int lhs, uint rhs) {
+        return lhs / rhs;
+    }
+
+    pure bool signed_less_than_uint(int lhs, uint rhs) {
+        return lhs < rhs;
+    }
+
+    pure bool nested_uint_expr_compares_unsigned(uint value) {
+        return (5 / value) < 10;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert llvm_ir.count("udiv i32") == 3
+    assert "urem i32" in llvm_ir
+    assert llvm_ir.count("icmp ult i32") == 3
+    assert "sdiv i32" not in llvm_ir
+    assert "srem i32" not in llvm_ir
+    assert "icmp slt i32" not in llvm_ir
+
+
 def test_codegen_uses_unsigned_ops_for_uint_struct_fields():
     source = """
     struct Pair { uint lhs; uint rhs; };
