@@ -25,6 +25,7 @@ from .ast import (
     AstVarDeclStmt,
 )
 from .arena_layout import build_ast_arena_layout
+from .optimizer import optimize_bind_routes
 from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
@@ -715,7 +716,12 @@ def _kernel_param_llvm_type(
     return param_type
 
 
-def emit_llvm_ir(program: AstProgram, *, target_width: int | None = None) -> str:
+def emit_llvm_ir(
+    program: AstProgram,
+    *,
+    target_width: int | None = None,
+    bind_optimization: dict[str, object] | None = None,
+) -> str:
     """Generate LLVM IR from the typed Lockstep AST."""
 
     if not isinstance(program, AstProgram):
@@ -1295,29 +1301,88 @@ def emit_llvm_ir(program: AstProgram, *, target_width: int | None = None) -> str
 
         return reduced
 
-    def _lower_kernel_route(route: AstKernelBindRoute):
-        kernel_name = route.kernel
+    def _kernel_function_and_params(
+        kernel_name: str,
+    ) -> tuple[ir.Function | None, tuple[AstKernelParam, ...]]:
         callee = function_map.get(
             f"shader_{_sanitize_symbol(kernel_name)}"
         ) or function_map.get(f"filter_{_sanitize_symbol(kernel_name)}")
-        if callee is None:
-            return
-
         signature = kernel_signatures.get(kernel_name)
-        params = signature[1] if signature is not None else ()
-        arg_names = route.args
+        return callee, signature[1] if signature is not None else ()
 
+    def _kernel_route_trip_count(route: AstKernelBindRoute) -> int:
+        _, params = _kernel_function_and_params(route.kernel)
         trip_count = 0
-        for index, arg_name in enumerate(arg_names):
+        for index, arg_name in enumerate(route.args):
             if index >= len(params):
                 break
-            modifier = params[index].modifier
-            if modifier == "in" and arg_name in stream_capacities:
+            if params[index].modifier == "in" and arg_name in stream_capacities:
                 trip_count = max(trip_count, stream_capacities[arg_name])
         if route.target in stream_capacities:
             trip_count = max(trip_count, stream_capacities[route.target])
-        if trip_count <= 0:
-            trip_count = 1
+        return max(trip_count, 1)
+
+    def _clamped_stream_index(name: str, current: ir.Value) -> ir.Value:
+        raw_capacity = stream_capacities.get(name, 0)
+        safe_capacity = max(int(raw_capacity), 1)
+        max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
+        return _vector_i32_clamp(current, ir.Constant(ir.IntType(32), 0), max_index)
+
+    def _route_arg_value(
+        *,
+        arg_name: str,
+        param: ir.Argument,
+        modifier: str | None,
+        current: ir.Value,
+        local_slots: dict[str, ir.AllocaInstr] | None = None,
+    ) -> ir.Value:
+        local_slots = local_slots or {}
+        if modifier == "in" and arg_name in local_slots:
+            return tick_builder.load(
+                local_slots[arg_name], name=f"fused_{_sanitize_symbol(arg_name)}"
+            )
+        if modifier == "out" and arg_name in local_slots:
+            return local_slots[arg_name]
+        if modifier in {"in", "out"} and arg_name in stream_slots:
+            clamped_index = _clamped_stream_index(arg_name, current)
+            if modifier == "out":
+                return _load_tick_param_ptr(
+                    "stream", arg_name, param.type.pointee, clamped_index
+                )
+            return _load_tick_param("stream", arg_name, param.type, clamped_index)
+        if modifier == "accum" and arg_name in accum_slots:
+            return _load_tick_param_ptr("accum", arg_name, param.type.pointee)
+        if modifier == "uniform" and arg_name in uniform_slots:
+            return _load_tick_param("uniform", arg_name, param.type)
+        return _zero_value(param.type)
+
+    def _emit_kernel_call(
+        route: AstKernelBindRoute,
+        current: ir.Value,
+        *,
+        local_slots: dict[str, ir.AllocaInstr] | None = None,
+    ) -> None:
+        callee, params = _kernel_function_and_params(route.kernel)
+        if callee is None:
+            return
+        call_args = []
+        for index, param in enumerate(callee.args):
+            arg_name = route.args[index] if index < len(route.args) else ""
+            modifier = params[index].modifier if index < len(params) else None
+            call_args.append(
+                _route_arg_value(
+                    arg_name=arg_name,
+                    param=param,
+                    modifier=modifier,
+                    current=current,
+                    local_slots=local_slots,
+                )
+            )
+        tick_builder.call(callee, call_args)
+
+    def _lower_kernel_route(route: AstKernelBindRoute):
+        trip_count = _kernel_route_trip_count(route)
+        kernel_name = route.kernel
 
         index_ptr = tick_builder.alloca(
             ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx"
@@ -1343,35 +1408,7 @@ def emit_llvm_ir(program: AstProgram, *, target_width: int | None = None) -> str
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
-        call_args = []
-        for index, param in enumerate(callee.args):
-            arg_name = arg_names[index] if index < len(arg_names) else ""
-            modifier = params[index].modifier if index < len(params) else None
-            value = None
-            if modifier in {"in", "out"} and arg_name in stream_slots:
-                raw_capacity = stream_capacities.get(arg_name, 0)
-                safe_capacity = max(int(raw_capacity), 1)
-                max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
-                clamped_index = _vector_i32_clamp(
-                    current, ir.Constant(ir.IntType(32), 0), max_index
-                )
-                if modifier == "out":
-                    value = _load_tick_param_ptr(
-                        "stream", arg_name, param.type.pointee, clamped_index
-                    )
-                else:
-                    value = _load_tick_param(
-                        "stream", arg_name, param.type, clamped_index
-                    )
-            elif modifier == "accum" and arg_name in accum_slots:
-                value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
-            elif modifier == "uniform" and arg_name in uniform_slots:
-                value = _load_tick_param("uniform", arg_name, param.type)
-            if value is None:
-                value = _zero_value(param.type)
-            call_args.append(value)
-
-        tick_builder.call(callee, call_args)
+        _emit_kernel_call(route, current)
         next_index = tick_builder.add(
             current, ir.Constant(ir.IntType(32), 1), name="idx_next"
         )
@@ -1380,25 +1417,182 @@ def emit_llvm_ir(program: AstProgram, *, target_width: int | None = None) -> str
 
         tick_builder.position_at_end(loop_exit)
 
+    def _lower_fused_kernel_group(
+        routes: tuple[AstKernelBindRoute, ...], group_index: int
+    ):
+        if not routes:
+            return
+        trip_count = max(_kernel_route_trip_count(route) for route in routes)
+        eliminated_targets = {route.target for route in routes[:-1]}
+        if not eliminated_targets:
+            _lower_kernel_route(routes[0])
+            return
+
+        index_ptr = tick_builder.alloca(
+            ir.IntType(32), name=f"fused_{group_index}_idx"
+        )
+        tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+
+        loop_cond = tick.append_basic_block(f"fused_{group_index}_cond")
+        loop_body = tick.append_basic_block(f"fused_{group_index}_body")
+        loop_exit = tick.append_basic_block(f"fused_{group_index}_exit")
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_cond)
+        current = tick_builder.load(index_ptr, name="fused_idx")
+        cond = tick_builder.icmp_signed(
+            "<", current, ir.Constant(ir.IntType(32), trip_count), name="fused_active"
+        )
+        tick_builder.cbranch(cond, loop_body, loop_exit)
+
+        tick_builder.position_at_end(loop_body)
+
+        def _emit_fused_lane(lane_index: ir.Value) -> None:
+            local_slots: dict[str, ir.AllocaInstr] = {}
+            for route in routes:
+                callee, params = _kernel_function_and_params(route.kernel)
+                if callee is None:
+                    continue
+                for index, param in enumerate(callee.args):
+                    if index >= len(route.args) or index >= len(params):
+                        continue
+                    if (
+                        params[index].modifier == "out"
+                        and route.args[index] in eliminated_targets
+                        and route.args[index] not in local_slots
+                        and hasattr(param.type, "pointee")
+                    ):
+                        slot_name = _sanitize_symbol(route.args[index])
+                        local_slots[route.args[index]] = tick_builder.alloca(
+                            param.type.pointee, name=f"fused_{slot_name}_slot"
+                        )
+                _emit_kernel_call(route, lane_index, local_slots=local_slots)
+
+        _emit_fused_lane(current)
+        for lane in range(1, simd_width):
+            lane_index = tick_builder.add(
+                current,
+                ir.Constant(ir.IntType(32), lane),
+                name=f"fused_lane_{lane}_idx",
+            )
+            lane_active = tick_builder.icmp_signed(
+                "<",
+                lane_index,
+                ir.Constant(ir.IntType(32), trip_count),
+                name=f"fused_lane_{lane}_active",
+            )
+            lane_body = tick.append_basic_block(f"fused_{group_index}_lane_{lane}")
+            lane_next = tick.append_basic_block(
+                f"fused_{group_index}_lane_{lane}_next"
+            )
+            tick_builder.cbranch(lane_active, lane_body, lane_next)
+            tick_builder.position_at_end(lane_body)
+            _emit_fused_lane(lane_index)
+            tick_builder.branch(lane_next)
+            tick_builder.position_at_end(lane_next)
+
+        next_index = tick_builder.add(
+            current, ir.Constant(ir.IntType(32), simd_width), name="fused_idx_next"
+        )
+        tick_builder.store(next_index, index_ptr)
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_exit)
+
+    def _lower_fold_route(route: AstFoldBindRoute) -> None:
+        source_name = route.source
+        uniform_name = route.uniform_name
+        if source_name not in accum_slots or uniform_name not in uniform_slots:
+            return
+        uniform_type_name = _type_name(route.uniform_type)
+        uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+        reduced = _reduce_fold(route.operator, source_name, uniform_type)
+        _store_value("uniform", uniform_name, reduced, uniform_type_name)
+
     for pipeline in program.pipelines:
+        route_texts = [route.route for route in pipeline.bind_routes]
+        route_ir = []
         for route in pipeline.bind_routes:
+            if isinstance(route, AstKernelBindRoute):
+                route_ir.append(
+                    {
+                        "kind": "kernel",
+                        "target": route.target,
+                        "kernel": route.kernel,
+                        "args": list(route.args),
+                        "route": route.route,
+                    }
+                )
+            else:
+                route_ir.append(
+                    {
+                        "kind": "fold",
+                        "uniform_type": _type_name(route.uniform_type),
+                        "uniform_name": route.uniform_name,
+                        "operator": route.operator,
+                        "source": route.source,
+                        "route": route.route,
+                    }
+                )
+
+        if bind_optimization is not None and len(program.pipelines) == 1:
+            pipeline_optimization = bind_optimization
+        else:
+            pipeline_optimization = optimize_bind_routes(
+                route_texts,
+                shader_names={shader.name for shader in shaders},
+                filter_names={flt.name for flt in filters},
+                bind_routes_ir=route_ir,
+            )
+
+        optimized_route_counts: dict[str, int] = {}
+        for optimized_route in pipeline_optimization.get("optimized_bind_routes", []):
+            if not isinstance(optimized_route, str) or "FUSED[" in optimized_route:
+                continue
+            optimized_route_counts[optimized_route] = (
+                optimized_route_counts.get(optimized_route, 0) + 1
+            )
+
+        source_to_routes: dict[str, list[AstKernelBindRoute]] = {}
+        for route in pipeline.bind_routes:
+            if isinstance(route, AstKernelBindRoute):
+                source_to_routes.setdefault(route.route, []).append(route)
+
+        fused_start: dict[int, tuple[int, tuple[AstKernelBindRoute, ...]]] = {}
+        fused_member_ids: set[int] = set()
+        for group_index, group in enumerate(
+            pipeline_optimization.get("fused_groups", [])
+        ):
+            if not isinstance(group, dict):
+                continue
+            group_routes: list[AstKernelBindRoute] = []
+            for route_text in group.get("source_routes", []):
+                if not isinstance(route_text, str):
+                    continue
+                candidates = source_to_routes.get(route_text, [])
+                if candidates:
+                    group_routes.append(candidates.pop(0))
+            if len(group_routes) <= 1:
+                continue
+            fused_start[id(group_routes[0])] = (group_index, tuple(group_routes))
+            fused_member_ids.update(id(route) for route in group_routes[1:])
+
+        for route in pipeline.bind_routes:
+            group_entry = fused_start.get(id(route))
+            if group_entry is not None:
+                group_index, group_routes = group_entry
+                _lower_fused_kernel_group(group_routes, group_index)
+                continue
+            if id(route) in fused_member_ids:
+                continue
+            remaining_optimized_routes = optimized_route_counts.get(route.route, 0)
+            if remaining_optimized_routes <= 0:
+                continue
+            optimized_route_counts[route.route] = remaining_optimized_routes - 1
             if isinstance(route, AstKernelBindRoute):
                 _lower_kernel_route(route)
                 continue
-            if isinstance(route, AstFoldBindRoute):
-                source_name = route.source
-                uniform_name = route.uniform_name
-                if source_name not in accum_slots or uniform_name not in uniform_slots:
-                    continue
-                uniform_type_name = _type_name(route.uniform_type)
-                uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                reduced = _reduce_fold(route.operator, source_name, uniform_type)
-                _store_value("uniform", uniform_name, reduced, uniform_type_name)
-                continue
-            asm_ty = ir.FunctionType(ir.VoidType(), [])
-            escaped = route.route.replace("\\", "\\\\").replace('"', '\\"')
-            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
-            tick_builder.call(asm, [])
+            _lower_fold_route(route)
 
     tick_builder.ret_void()
 
