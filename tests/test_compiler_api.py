@@ -15,6 +15,8 @@ from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
 from lockstep_compiler.models import LockstepDiagnostic
 from lockstep_compiler.ast import (
     AstAssignStmt,
+    AstProgram,
+    AstPureDecl,
     AstExprBinary,
     AstExprCall,
     AstExprCast,
@@ -357,6 +359,34 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert "uitofp i1" in llvm_ir
 
 
+def test_emit_llvm_ir_rejects_assignment_to_undeclared_local():
+    program = AstProgram(
+        pure_functions=(
+            AstPureDecl(
+                name="typo_assignment",
+                return_type="float",
+                body=(
+                    AstVarDeclStmt(
+                        declared_type="float",
+                        name="position",
+                        initializer=AstExprLiteral(kind="float", value="1.0"),
+                    ),
+                    AstAssignStmt(
+                        target=("positiom",),
+                        value=AstExprLiteral(kind="float", value="2.0"),
+                    ),
+                    AstReturnStmt(value=AstExprVar(path=("position",))),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CodegenError, match="undefined variable 'positiom' in assignment"
+    ):
+        emit_llvm_ir(program)
+
+
 def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
     llvm_ir = emit_llvm_ir(
         {
@@ -675,6 +705,9 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {[4 x float], [4 x float], float}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 %"route_i32_lane0.1"' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1, i32 %"route_i32_lane0.3"' in llvm_ir
 
 
 def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
@@ -878,8 +911,9 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
     )
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
-    assert '%"struct.Lockstep_Arena" = type {[8 x i8]}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 4' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {float, float}' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
+    assert 'i32 0, i32 0, i32 4' not in llvm_ir
 
 
 def test_emit_llvm_ir_strip_mines_fold_larger_than_target_width():
@@ -1449,6 +1483,43 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
     assert "udiv i32" in llvm_ir
     assert "urem i32" in llvm_ir
     assert "icmp ult i32" in llvm_ir
+
+
+def test_codegen_promotes_asymmetric_uint_binary_operands():
+    source = """
+    pure uint literal_divided_by_uint(uint value) {
+        return 5 / value;
+    }
+
+    pure uint literal_remainder_uint(uint value) {
+        return 5 % value;
+    }
+
+    pure bool literal_less_than_uint(uint value) {
+        return 5 < value;
+    }
+
+    pure uint signed_divided_by_uint(int lhs, uint rhs) {
+        return lhs / rhs;
+    }
+
+    pure bool signed_less_than_uint(int lhs, uint rhs) {
+        return lhs < rhs;
+    }
+
+    pure bool nested_uint_expr_compares_unsigned(uint value) {
+        return (5 / value) < 10;
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(source)
+    llvm_ir = result.llvm_ir
+
+    assert llvm_ir.count("udiv i32") == 3
+    assert "urem i32" in llvm_ir
+    assert llvm_ir.count("icmp ult i32") == 3
+    assert "sdiv i32" not in llvm_ir
+    assert "srem i32" not in llvm_ir
+    assert "icmp slt i32" not in llvm_ir
 
 
 def test_codegen_uses_unsigned_ops_for_uint_struct_fields():

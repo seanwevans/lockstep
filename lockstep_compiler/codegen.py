@@ -363,6 +363,27 @@ class _FunctionLowerer:
             current_type = field_type
         return current_type
 
+    @staticmethod
+    def _promote_scalar_type_names(
+        left_type: str | None, right_type: str | None
+    ) -> str | None:
+        if left_type is None or right_type is None:
+            return left_type or right_type
+        if left_type == right_type:
+            return left_type
+        if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+            return "uint" if "uint" in {left_type, right_type} else "int"
+        return None
+
+    def _infer_binary_operand_type(self, node: AstExprBinary) -> str | None:
+        left_type = self._infer_expr_type(node.left)
+        right_type = self._infer_expr_type(node.right)
+        if node.op in {"&&", "||"}:
+            return "bool" if left_type == "bool" and right_type == "bool" else None
+        if node.op in {"<<", ">>"}:
+            return left_type
+        return self._promote_scalar_type_names(left_type, right_type)
+
     def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
@@ -385,9 +406,11 @@ class _FunctionLowerer:
                 return node.name
             return self.function_return_types.get(f"pure_{_sanitize_symbol(node.name)}")
         if isinstance(node, AstExprBinary):
-            if node.op in {"<", "<=", ">", ">=", "==", "!=", "&&", "||"}:
+            if node.op in {"&&", "||"}:
                 return "bool"
-            return self._infer_expr_type(node.left)
+            if node.op in {"<", "<=", ">", ">=", "==", "!="}:
+                return "bool"
+            return self._infer_binary_operand_type(node)
         return None
 
     def _load_var(self, name: str) -> ir.Value:
@@ -489,7 +512,9 @@ class _FunctionLowerer:
         if isinstance(node, AstExprLiteral):
             if node.kind == "float":
                 return ir.Constant(ir.FloatType(), float(node.value))
-            if node.kind == "int":
+            if node.kind == "double":
+                return ir.Constant(ir.DoubleType(), float(node.value))
+            if node.kind in {"int", "uint"}:
                 return ir.Constant(ir.IntType(32), int(node.value))
             if node.kind == "string":
                 return self._lower_string_literal(node.value)
@@ -513,15 +538,18 @@ class _FunctionLowerer:
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
-        expr_type_name = self._infer_expr_type(node.left)
+        expr_type_name = self._infer_binary_operand_type(node)
+        if expr_type_name in _PRIMITIVE_TYPE_MAP:
+            operand_type = self._llvm_type(expr_type_name, self.known_structs)
+            lhs = self._coerce_value_to_type(lhs, operand_type)
+            rhs = self._coerce_value_to_type(rhs, operand_type)
         return self._lower_binary_op(node.op, lhs, rhs, type_name=expr_type_name)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
         base_name, *field_path = target_name.split(".")
         key = _sanitize_symbol(base_name)
         if key not in self.locals:
-            slot = self.builder.alloca(value.type, name=key)
-            self.locals[key] = slot
+            self._compiler_error(f"undefined variable '{base_name}' in assignment")
         if not field_path:
             if self.local_indirections.get(key):
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
@@ -852,6 +880,28 @@ def emit_llvm_ir(
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
 
     arena_storage_ty = ir.ArrayType(ir.IntType(8), max(layout.total_size, 1))
+    arena_field_types: list[ir.Type] = []
+    leaf_field_indices: dict[tuple[str, str, tuple[str, ...]], int] = {}
+    leaf_field_is_array: dict[tuple[str, str, tuple[str, ...]], bool] = {}
+    for leaf in layout.leaves:
+        if leaf.type_name in _PRIMITIVE_TYPE_MAP:
+            field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
+        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
+            field_ty = known_structs[leaf.type_name]
+        else:
+            field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
+
+        leaf_key = (leaf.kind, leaf.binding_name, leaf.path)
+        leaf_field_indices[leaf_key] = len(arena_field_types)
+        if leaf.element_count > 1:
+            arena_field_types.append(ir.ArrayType(field_ty, max(leaf.element_count, 1)))
+            leaf_field_is_array[leaf_key] = True
+        else:
+            arena_field_types.append(field_ty)
+            leaf_field_is_array[leaf_key] = False
+
+    if not arena_field_types:
+        arena_field_types = [ir.ArrayType(ir.IntType(8), 1)]
 
     if arena_struct_ty.is_opaque:
         arena_struct_ty.set_body(arena_storage_ty)
@@ -884,23 +934,32 @@ def emit_llvm_ir(
         leaf_type: ir.Type,
         loop_index_reg: ir.Value | None = None,
     ) -> ir.Value | None:
-        leaf_spec = leaf_specs.get((kind, name, path))
-        if leaf_spec is None:
+        leaf_key = (kind, name, path)
+        if leaf_key not in leaf_specs:
             return None
-        base_offset, element_size = leaf_spec
-        byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if kind in {"stream", "accum"} and loop_index_reg is not None:
-            stride = ir.Constant(ir.IntType(32), element_size)
-            byte_offset = tick_builder.add(
-                byte_offset,
-                tick_builder.mul(loop_index_reg, stride, name="loop_elem_stride"),
-                name="loop_elem_offset",
+        field_index = leaf_field_indices.get(leaf_key)
+        if field_index is None:
+            return None
+
+        gep_indices = [
+            ir.Constant(ir.IntType(32), 0),
+            ir.Constant(ir.IntType(32), field_index),
+        ]
+        if leaf_field_is_array.get(leaf_key, False):
+            element_index = (
+                loop_index_reg
+                if kind in {"stream", "accum"} and loop_index_reg is not None
+                else ir.Constant(ir.IntType(32), 0)
             )
+            gep_indices.append(element_index)
+
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
-            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
+            gep_indices,
+            name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_ptr",
         )
+        if raw_ptr.type.pointee == leaf_type:
+            return raw_ptr
         typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
         if typed_ptr.type.pointee != leaf_type:
             return None

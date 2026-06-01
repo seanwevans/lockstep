@@ -257,8 +257,8 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
 
     bindings: list[tuple[str, str, str, int]] = []
     for stream in entities.get("streams", []):
-        capacity = int(stream["capacity"])
-        bindings.append(("stream", stream["name"], stream["type"], capacity))
+        capacity = int(stream.get("capacity", 1))
+        bindings.append(("stream", stream["name"], stream["type"], max(capacity, 1)))
     for accumulator in entities.get("accumulators", []):
         element_count = (
             int(accumulator.get("size", 1))
