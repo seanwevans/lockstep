@@ -188,3 +188,50 @@ def test_optimize_bind_routes_eliminates_overwritten_dead_kernel_routes():
         "out = Keep(tmp, out);",
     ]
     assert result["fused_groups"] == []
+
+
+def test_compile_pipeline_lowers_fused_group_to_single_simd_loop_without_intermediate_stream_writes():
+    from llvmlite import binding as llvm
+
+    import lockstep_compiler
+
+    source = """
+    shader A(in float src, out float tmp) { tmp = src + 1.0; }
+    shader B(in float tmp, out float dst) { dst = tmp * 2.0; }
+
+    pipeline P {
+        stream<float, 4> inp;
+        stream<float, 4> tmp;
+        stream<float, 4> dst;
+
+        bind {
+            tmp = A(inp, tmp);
+            dst = B(tmp, dst);
+        }
+    }
+    """
+
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=4,
+    )
+
+    assert result.entities["optimized_bind_routes"] == ["dst = FUSED[A -> B];"]
+    assert result.entities["fused_bind_groups"] == [
+        {
+            "nodes": ["A", "B"],
+            "entry_args": ["inp", "tmp"],
+            "output": "dst",
+            "eliminated_intermediates": ["tmp"],
+            "source_routes": ["tmp=A(inp,tmp);", "dst=B(tmp,dst);"],
+        }
+    ]
+    assert 'fused_0_body' in result.llvm_ir
+    assert 'route_A_body' not in result.llvm_ir
+    assert 'route_B_body' not in result.llvm_ir
+    assert 'float* %"fused_tmp_slot"' in result.llvm_ir
+    assert 'stream_tmp_value_ptr' not in result.llvm_ir
+    assert 'call void @"shader_A"' in result.llvm_ir
+    assert 'call void @"shader_B"' in result.llvm_ir
+    llvm.parse_assembly(result.llvm_ir)

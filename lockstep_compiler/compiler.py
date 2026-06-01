@@ -7,7 +7,16 @@ from typing import Any, Callable, cast
 
 from antlr4 import CommonTokenStream, InputStream
 
-from .ast import AstKernelParam, AstProgram, AstPureDecl, AstType, build_program_ast
+from .ast import (
+    AstFoldBindRoute,
+    AstKernelBindRoute,
+    AstKernelParam,
+    AstProgram,
+    AstPureDecl,
+    AstType,
+    ast_to_entities,
+    build_program_ast,
+)
 from .c_header import emit_c_header
 from .codegen import CodegenError, emit_llvm_ir
 from .errors import LockstepCompileError, ParseErrorCollector
@@ -699,8 +708,61 @@ def _compile_lockstep_with_dependencies(
 
     all_diagnostics = normalize_diagnostics(semantic_diagnostics)
 
+    entities = ast_to_entities(typed_ast)
+    optimized_bind_routes: list[str] = []
+    fused_bind_groups: list[object] = []
+    shader_names = {shader.name for shader in typed_ast.shaders}
+    filter_names = {flt.name for flt in typed_ast.filters}
+    for pipeline in typed_ast.pipelines:
+        pipeline_routes = [route.route for route in pipeline.bind_routes]
+        pipeline_route_ir = []
+        for route in pipeline.bind_routes:
+            if isinstance(route, AstKernelBindRoute):
+                pipeline_route_ir.append(
+                    {
+                        "kind": "kernel",
+                        "target": route.target,
+                        "kernel": route.kernel,
+                        "args": list(route.args),
+                        "route": route.route,
+                    }
+                )
+            elif isinstance(route, AstFoldBindRoute):
+                pipeline_route_ir.append(
+                    {
+                        "kind": "fold",
+                        "uniform_type": route.uniform_type.name,
+                        "uniform_name": route.uniform_name,
+                        "operator": route.operator,
+                        "source": route.source,
+                        "route": route.route,
+                    }
+                )
+        pipeline_optimization = optimize_bind_routes(
+            pipeline_routes,
+            shader_names=shader_names,
+            filter_names=filter_names,
+            bind_routes_ir=pipeline_route_ir,
+        )
+        optimized_bind_routes.extend(pipeline_optimization["optimized_bind_routes"])
+        fused_bind_groups.extend(pipeline_optimization["fused_groups"])
+
+    bind_optimization = {
+        "optimized_bind_routes": optimized_bind_routes,
+        "fused_groups": fused_bind_groups,
+    }
+    entities = {
+        **entities,
+        "optimized_bind_routes": optimized_bind_routes,
+        "fused_bind_groups": fused_bind_groups,
+    }
+
     try:
-        llvm_ir = emit_llvm_ir(typed_ast, target_width=target_width)
+        llvm_ir = emit_llvm_ir(
+            typed_ast,
+            target_width=target_width,
+            bind_optimization=bind_optimization,
+        )
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
@@ -720,7 +782,7 @@ def _compile_lockstep_with_dependencies(
 
     return LockstepCompileResult(
         parse_tree=tree,
-        entities={},
+        entities=entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
         c_header=emit_c_header(typed_ast, target_width=target_width),
