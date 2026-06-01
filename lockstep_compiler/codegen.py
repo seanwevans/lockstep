@@ -520,8 +520,7 @@ class _FunctionLowerer:
         base_name, *field_path = target_name.split(".")
         key = _sanitize_symbol(base_name)
         if key not in self.locals:
-            slot = self.builder.alloca(value.type, name=key)
-            self.locals[key] = slot
+            self._compiler_error(f"undefined variable '{base_name}' in assignment")
         if not field_path:
             if self.local_indirections.get(key):
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")

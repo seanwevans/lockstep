@@ -15,6 +15,8 @@ from lockstep_compiler.codegen import CodegenError, emit_llvm_ir
 from lockstep_compiler.models import LockstepDiagnostic
 from lockstep_compiler.ast import (
     AstAssignStmt,
+    AstProgram,
+    AstPureDecl,
     AstExprBinary,
     AstExprCall,
     AstExprCast,
@@ -355,6 +357,34 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'call float @"llvm.maxnum.f32"' in llvm_ir
     assert 'call float @"llvm.minnum.f32"' in llvm_ir
     assert "uitofp i1" in llvm_ir
+
+
+def test_emit_llvm_ir_rejects_assignment_to_undeclared_local():
+    program = AstProgram(
+        pure_functions=(
+            AstPureDecl(
+                name="typo_assignment",
+                return_type="float",
+                body=(
+                    AstVarDeclStmt(
+                        declared_type="float",
+                        name="position",
+                        initializer=AstExprLiteral(kind="float", value="1.0"),
+                    ),
+                    AstAssignStmt(
+                        target=("positiom",),
+                        value=AstExprLiteral(kind="float", value="2.0"),
+                    ),
+                    AstReturnStmt(value=AstExprVar(path=("position",))),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CodegenError, match="undefined variable 'positiom' in assignment"
+    ):
+        emit_llvm_ir(program)
 
 
 def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
