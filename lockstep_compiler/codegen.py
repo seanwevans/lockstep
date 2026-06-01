@@ -10,16 +10,18 @@ from .ast import (
     AstExprLiteral,
     AstExprUnary,
     AstExprVar,
+    AstFoldBindRoute,
+    AstKernelBindRoute,
+    AstKernelParam,
     AstProgram,
     AstReturnStmt,
     AstStatement,
+    AstStructField,
     AstType,
     AstVarDeclStmt,
-    ast_to_entities,
 )
 from .arena_layout import build_arena_layout
 from .utils import sanitize_symbol as _sanitize_symbol
-
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
     "bool": ir.IntType(1),
@@ -45,7 +47,7 @@ class _FunctionLowerer:
         module: ir.Module,
         function_map: dict[str, ir.Function],
         known_structs: dict[str, ir.IdentifiedStructType] | None = None,
-        struct_fields: dict[str, list[dict[str, str]]] | None = None,
+        struct_fields: dict[str, tuple[AstStructField, ...]] | None = None,
         intrinsic_names: set[str] | None = None,
     ):
         self.module = module
@@ -189,9 +191,9 @@ class _FunctionLowerer:
             return None
         fields = self.struct_fields.get(struct_name, [])
         for index, field in enumerate(fields):
-            if field.get("name") == field_name:
+            if field.name == field_name:
                 return index, self._llvm_type(
-                    field.get("type", "float"), self.known_structs
+                    _type_name(field.declared_type), self.known_structs
                 )
         return None
 
@@ -207,10 +209,14 @@ class _FunctionLowerer:
             if value.type.width > target_type.width:
                 return self.builder.trunc(value, target_type)
 
-        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(value.type, ir.IntType):
+        if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
+            value.type, ir.IntType
+        ):
             return self.builder.sitofp(value, target_type)
 
-        if isinstance(target_type, ir.IntType) and isinstance(value.type, (ir.FloatType, ir.DoubleType)):
+        if isinstance(target_type, ir.IntType) and isinstance(
+            value.type, (ir.FloatType, ir.DoubleType)
+        ):
             return self.builder.fptosi(value, target_type)
 
         if isinstance(target_type, ir.FloatType) and isinstance(
@@ -346,24 +352,35 @@ class _FunctionLowerer:
             return self.builder.icmp_signed(rel_map[op], lhs, rhs)
         self._compiler_error(f"comparison '{op}' is unsupported for type '{lhs.type}'")
 
-
-    def _resolve_field_declared_type(self, base_type: str, field_path: list[str]) -> str | None:
+    def _resolve_field_declared_type(
+        self, base_type: str, field_path: list[str]
+    ) -> str | None:
         current_type = base_type
         for field_name in field_path:
             fields = self.struct_fields.get(current_type)
             if fields is None:
                 return None
-            field_type = None
+            field_type: str | None = None
             for field in fields:
-                if field.get("name") == field_name:
-                    field_type = field.get("type")
+                if field.name == field_name:
+                    field_type = _type_name(field.declared_type)
                     break
             if field_type is None:
                 return None
             current_type = field_type
         return current_type
 
-    def _infer_expr_type(self, node: AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast) -> str | None:
+    def _infer_expr_type(
+        self,
+        node: (
+            AstExprLiteral
+            | AstExprVar
+            | AstExprUnary
+            | AstExprBinary
+            | AstExprCall
+            | AstExprCast
+        ),
+    ) -> str | None:
         if isinstance(node, AstExprLiteral):
             if node.kind in {"float", "int", "bool", "double", "uint", "string"}:
                 return node.kind
@@ -526,7 +543,9 @@ class _FunctionLowerer:
             if self.local_indirections.get(key):
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
                 slot_type = ref_ptr.type.pointee
-                self.builder.store(self._coerce_value_to_type(value, slot_type), ref_ptr)
+                self.builder.store(
+                    self._coerce_value_to_type(value, slot_type), ref_ptr
+                )
             else:
                 slot_type = self.locals[key].type.pointee
                 self.builder.store(
@@ -602,7 +621,11 @@ class _FunctionLowerer:
             slot = self.builder.alloca(arg.type, name=key)
             self.builder.store(arg, slot)
             self.locals[key] = slot
-            is_by_ref = bool(param_by_ref[idx]) if param_by_ref is not None and idx < len(param_by_ref) else False
+            is_by_ref = (
+                bool(param_by_ref[idx])
+                if param_by_ref is not None and idx < len(param_by_ref)
+                else False
+            )
             self.local_indirections[key] = is_by_ref
             if param_type_names is not None and idx < len(param_type_names):
                 self.local_types[key] = param_type_names[idx]
@@ -621,16 +644,6 @@ class _FunctionLowerer:
                 self.builder.ret(ir.Constant(return_type, None))
 
 
-def _ast_body_for(entity: dict[str, Any], *, entity_kind: str) -> list[AstStatement]:
-    body_ast = entity.get("body_ast")
-    if body_ast is None:
-        name = entity.get("name", "<unknown>")
-        raise CodegenError(
-            f"{entity_kind} '{name}' is missing body_ast; string-based bodies are no longer supported"
-        )
-    return body_ast
-
-
 def _simd_width_for_target_triple(target_triple: str | None) -> int:
     normalized = (target_triple or "").lower()
     arch = normalized.split("-", maxsplit=1)[0]
@@ -643,57 +656,45 @@ def _simd_width_for_target_triple(target_triple: str | None) -> int:
     return 8
 
 
-def emit_llvm_ir(
-    program_or_entities: AstProgram | dict[str, Any], *, target_width: int | None = None
-) -> str:
-    """Generate LLVM IR using llvmlite lowering for pure/kernels."""
+def emit_llvm_ir(program: AstProgram, *, target_width: int | None = None) -> str:
+    """Generate LLVM IR using llvmlite lowering for a typed AST program."""
 
-    entities = ast_to_entities(program_or_entities)
+    if not isinstance(program, AstProgram):
+        raise TypeError("emit_llvm_ir expects an AstProgram")
 
-    structs = entities.get("structs", [])
-    shaders = entities.get("shaders", [])
-    filters = entities.get("filters", [])
-    pure_functions = entities.get("pure_functions", [])
-    streams = entities.get("streams", [])
-    accumulators = entities.get("accumulators", [])
-    uniforms = entities.get("uniforms", [])
-    bind_routes = entities.get("bind_routes", [])
-    bind_routes_ir = entities.get("bind_routes_ir", [])
+    structs = program.structs
+    shaders = program.shaders
+    filters = program.filters
+    pure_functions = program.pure_functions
+    streams = tuple(
+        stream for pipeline in program.pipelines for stream in pipeline.streams
+    )
+    accumulators = tuple(
+        accumulator
+        for pipeline in program.pipelines
+        for accumulator in pipeline.accumulators
+    )
+    uniforms = tuple(
+        uniform for pipeline in program.pipelines for uniform in pipeline.uniforms
+    )
+    bind_routes = tuple(
+        route for pipeline in program.pipelines for route in pipeline.bind_routes
+    )
 
     context = ir.Context()
     module = ir.Module(name="lockstep", context=context)
     module.source_filename = "lockstep"
-    target_triple = entities.get("target_triple")
-    if not isinstance(target_triple, str) or not target_triple.strip():
-        target_triple = "x86_64-unknown-linux-gnu"
-    module.triple = target_triple
+    module.triple = "x86_64-unknown-linux-gnu"
     known_structs: dict[str, ir.IdentifiedStructType] = {}
-    struct_fields: dict[str, list[dict[str, str]]] = {}
+    struct_fields: dict[str, tuple[AstStructField, ...]] = {}
 
-    normalized_structs: list[dict[str, Any]] = []
     for struct_decl in structs:
-        if isinstance(struct_decl, str):
-            normalized_structs.append({"name": struct_decl, "fields": []})
-        elif isinstance(struct_decl, dict) and struct_decl.get("name"):
-            fields = (
-                struct_decl.get("fields")
-                if isinstance(struct_decl.get("fields"), list)
-                else []
-            )
-            normalized_structs.append({"name": struct_decl["name"], "fields": fields})
-
-    for struct_decl in normalized_structs:
-        struct_name = struct_decl["name"]
-        safe_name = _sanitize_symbol(struct_name)
+        safe_name = _sanitize_symbol(struct_decl.name)
         struct_ty = module.context.get_identified_type(f"struct.{safe_name}")
-        known_structs[struct_name] = struct_ty
-        struct_fields[struct_name] = struct_decl["fields"]
+        known_structs[struct_decl.name] = struct_ty
+        struct_fields[struct_decl.name] = struct_decl.fields
 
-    intrinsic_names = {
-        pure.get("name")
-        for pure in pure_functions
-        if isinstance(pure, dict) and pure.get("intrinsic") and pure.get("name")
-    }
+    intrinsic_names = {pure.name for pure in pure_functions if pure.intrinsic}
 
     lowerer = _FunctionLowerer(
         module, {}, known_structs, struct_fields, intrinsic_names
@@ -705,8 +706,8 @@ def emit_llvm_ir(
         for struct_name in list(unresolved):
             field_types: list[ir.Type] = []
             can_lower = True
-            for field in struct_fields.get(struct_name, []):
-                field_type_name = field.get("type", "float")
+            for field in struct_fields.get(struct_name, ()):
+                field_type_name = _type_name(field.declared_type)
                 if field_type_name in known_structs and field_type_name in unresolved:
                     can_lower = False
                     break
@@ -723,127 +724,129 @@ def emit_llvm_ir(
                     known_structs[struct_name].set_body(ir.IntType(8))
             break
 
+    def _param_type_name(param: AstKernelParam) -> str:
+        return _type_name(param.declared_type)
+
+    def _param_llvm_type(param: AstKernelParam) -> ir.Type:
+        llvm_type = lowerer._llvm_type(_param_type_name(param), known_structs)
+        if param.modifier in {"out", "accum"}:
+            return llvm_type.as_pointer()
+        return llvm_type
+
     function_map: dict[str, ir.Function] = {}
     for pure in pure_functions:
-        ret_ty = lowerer._llvm_type(pure.get("return_type", "float"), known_structs)
+        ret_ty = lowerer._llvm_type(_type_name(pure.return_type), known_structs)
         params = [
-            lowerer._llvm_type(param.get("type", "float"), known_structs)
-            for param in pure.get("params", [])
+            lowerer._llvm_type(_param_type_name(param), known_structs)
+            for param in pure.params
         ]
         fn = ir.Function(
             module,
             ir.FunctionType(ret_ty, params),
-            name=f"pure_{_sanitize_symbol(pure['name'])}",
+            name=f"pure_{_sanitize_symbol(pure.name)}",
         )
-        for idx, param in enumerate(pure.get("params", [])):
-            fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
+        for idx, param in enumerate(pure.params):
+            fn.args[idx].name = _sanitize_symbol(param.name)
         function_map[fn.name] = fn
-        lowerer.function_return_types[fn.name] = str(pure.get("return_type", "float"))
+        lowerer.function_return_types[fn.name] = _type_name(pure.return_type)
 
     for shader in shaders:
-        params = [
-            (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
-                if param.get("modifier") in {"out", "accum"}
-                else lowerer._llvm_type(param.get("type", "float"), known_structs)
-            )
-            for param in shader.get("params", [])
-        ]
         fn = ir.Function(
             module,
-            ir.FunctionType(ir.VoidType(), params),
-            name=f"shader_{_sanitize_symbol(shader['name'])}",
+            ir.FunctionType(
+                ir.VoidType(), [_param_llvm_type(param) for param in shader.params]
+            ),
+            name=f"shader_{_sanitize_symbol(shader.name)}",
         )
-        for idx, param in enumerate(shader.get("params", [])):
-            fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
+        for idx, param in enumerate(shader.params):
+            fn.args[idx].name = _sanitize_symbol(param.name)
         function_map[fn.name] = fn
 
     for flt in filters:
-        params = [
-            (
-                lowerer._llvm_type(param.get("type", "float"), known_structs).as_pointer()
-                if param.get("modifier") in {"out", "accum"}
-                else lowerer._llvm_type(param.get("type", "float"), known_structs)
-            )
-            for param in flt.get("params", [])
-        ]
         fn = ir.Function(
             module,
-            ir.FunctionType(ir.VoidType(), params),
-            name=f"filter_{_sanitize_symbol(flt['name'])}",
+            ir.FunctionType(
+                ir.VoidType(), [_param_llvm_type(param) for param in flt.params]
+            ),
+            name=f"filter_{_sanitize_symbol(flt.name)}",
         )
-        for idx, param in enumerate(flt.get("params", [])):
-            fn.args[idx].name = _sanitize_symbol(param.get("name", f"arg{idx}"))
+        for idx, param in enumerate(flt.params):
+            fn.args[idx].name = _sanitize_symbol(param.name)
         function_map[fn.name] = fn
 
     lowerer.function_map = function_map
 
     for pure in pure_functions:
-        fn = function_map[f"pure_{_sanitize_symbol(pure['name'])}"]
-        if pure.get("intrinsic"):
+        fn = function_map[f"pure_{_sanitize_symbol(pure.name)}"]
+        if pure.intrinsic:
             continue
         lowerer.lower_function(
             fn,
-            _ast_body_for(pure, entity_kind="pure function"),
+            list(pure.body),
             fn.function_type.return_type,
-            [str(param.get("type", "float")) for param in pure.get("params", [])],
+            [_param_type_name(param) for param in pure.params],
         )
 
     for shader in shaders:
-        fn = function_map[f"shader_{_sanitize_symbol(shader['name'])}"]
+        fn = function_map[f"shader_{_sanitize_symbol(shader.name)}"]
         lowerer.lower_function(
             fn,
-            _ast_body_for(shader, entity_kind="shader"),
+            list(shader.body),
             ir.VoidType(),
-            [str(param.get("type", "float")) for param in shader.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in shader.get("params", [])],
+            [_param_type_name(param) for param in shader.params],
+            [param.modifier in {"out", "accum"} for param in shader.params],
         )
 
     for flt in filters:
-        fn = function_map[f"filter_{_sanitize_symbol(flt['name'])}"]
+        fn = function_map[f"filter_{_sanitize_symbol(flt.name)}"]
         lowerer.lower_function(
             fn,
-            _ast_body_for(flt, entity_kind="filter"),
+            list(flt.body),
             ir.VoidType(),
-            [str(param.get("type", "float")) for param in flt.get("params", [])],
-            [param.get("modifier") in {"out", "accum"} for param in flt.get("params", [])],
+            [_param_type_name(param) for param in flt.params],
+            [param.modifier in {"out", "accum"} for param in flt.params],
         )
 
-    layout = build_arena_layout(entities)
+    layout = build_arena_layout(program)
 
-    stream_slots: dict[str, int] = {stream["name"]: idx for idx, stream in enumerate(streams)}
-    stream_capacities: dict[str, int] = {}
-    for stream in streams:
-        stream_capacities[stream["name"]] = int(stream.get("capacity", 0))
-    accum_slots: dict[str, int] = {accum["name"]: idx for idx, accum in enumerate(accumulators)}
-    uniform_slots: dict[str, int] = {uniform["name"]: idx for idx, uniform in enumerate(uniforms)}
+    stream_slots: dict[str, int] = {
+        stream.name: idx for idx, stream in enumerate(streams)
+    }
+    stream_capacities: dict[str, int] = {
+        stream.name: int(stream.capacity) for stream in streams
+    }
+    accum_slots: dict[str, int] = {
+        accum.name: idx for idx, accum in enumerate(accumulators)
+    }
+    uniform_slots: dict[str, int] = {
+        uniform.name: idx for idx, uniform in enumerate(uniforms)
+    }
 
     leaf_specs: dict[tuple[str, str, tuple[str, ...]], tuple[int, int]] = {
         (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
         for leaf in layout.leaves
     }
-    accum_sizes: dict[str, int] = {
-        accum["name"]: int(accum.get("size", 1)) if accum.get("size") is not None else 1
-        for accum in accumulators
+    leaf_element_counts: dict[tuple[str, str, tuple[str, ...]], int] = {
+        (leaf.kind, leaf.binding_name, leaf.path): leaf.element_count
+        for leaf in layout.leaves
     }
+    accum_sizes: dict[str, int] = {accum.name: 1 for accum in accumulators}
     binding_declared_types: dict[tuple[str, str], str] = {}
     for stream in streams:
-        binding_declared_types[("stream", stream["name"])] = stream["type"]
+        binding_declared_types[("stream", stream.name)] = _type_name(
+            stream.declared_type
+        )
     for accum in accumulators:
-        binding_declared_types[("accum", accum["name"])] = accum["type"]
+        binding_declared_types[("accum", accum.name)] = _type_name(accum.declared_type)
     for uniform in uniforms:
-        binding_declared_types[("uniform", uniform["name"])] = uniform["type"]
+        binding_declared_types[("uniform", uniform.name)] = _type_name(
+            uniform.declared_type
+        )
 
-    kernel_signatures = {
-        shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
-        for shader in shaders
+    kernel_signatures: dict[str, tuple[AstKernelParam, ...]] = {
+        shader.name: shader.params for shader in shaders
     }
-    kernel_signatures.update(
-        {
-            flt["name"]: {"kind": "filter", "params": flt.get("params", [])}
-            for flt in filters
-        }
-    )
+    kernel_signatures.update({flt.name: flt.params for flt in filters})
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
 
@@ -852,11 +855,18 @@ def emit_llvm_ir(
     for leaf in layout.leaves:
         if leaf.type_name in _PRIMITIVE_TYPE_MAP:
             field_ty = _PRIMITIVE_TYPE_MAP[leaf.type_name]
-        elif leaf.type_name in known_structs and leaf.type_name not in layout.opaque_structs:
+        elif (
+            leaf.type_name in known_structs
+            and leaf.type_name not in layout.opaque_structs
+        ):
             field_ty = known_structs[leaf.type_name]
         else:
             field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
-        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(arena_field_types)
+        leaf_field_indices[(leaf.kind, leaf.binding_name, leaf.path)] = len(
+            arena_field_types
+        )
+        if leaf.element_count > 1:
+            field_ty = ir.ArrayType(field_ty, leaf.element_count)
         arena_field_types.append(field_ty)
 
     if not arena_field_types:
@@ -893,23 +903,26 @@ def emit_llvm_ir(
         leaf_type: ir.Type,
         loop_index_reg: ir.Value | None = None,
     ) -> ir.Value | None:
-        leaf_spec = leaf_specs.get((kind, name, path))
-        if leaf_spec is None:
+        leaf_key = (kind, name, path)
+        if leaf_key not in leaf_specs:
             return None
-        base_offset, element_size = leaf_spec
-        byte_offset: ir.Value = ir.Constant(ir.IntType(32), base_offset)
-        if kind in {"stream", "accum"} and loop_index_reg is not None:
-            stride = ir.Constant(ir.IntType(32), element_size)
-            byte_offset = tick_builder.add(
-                byte_offset,
-                tick_builder.mul(loop_index_reg, stride, name="loop_elem_stride"),
-                name="loop_elem_offset",
-            )
+        field_index = leaf_field_indices.get(leaf_key)
+        if field_index is None:
+            return None
+        element_count = leaf_element_counts.get(leaf_key, 1)
+        indices: list[ir.Value] = [
+            ir.Constant(ir.IntType(32), 0),
+            ir.Constant(ir.IntType(32), field_index),
+        ]
+        if element_count > 1:
+            indices.append(loop_index_reg or ir.Constant(ir.IntType(32), 0))
         raw_ptr = tick_builder.gep(
             arena_ptr,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0), byte_offset],
+            indices,
             name=f"{kind}_{_sanitize_symbol(name)}_{'_'.join(path) if path else 'value'}_raw",
         )
+        if raw_ptr.type.pointee == leaf_type:
+            return raw_ptr
         typed_ptr = tick_builder.bitcast(raw_ptr, leaf_type.as_pointer())
         if typed_ptr.type.pointee != leaf_type:
             return None
@@ -923,13 +936,18 @@ def emit_llvm_ir(
         path: tuple[str, ...] = (),
         element_index: ir.Value | None = None,
     ) -> ir.Value:
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
             aggregate = ir.Constant(value_type, ir.Undefined)
-            fields = struct_fields.get(declared_type, [])
+            fields = struct_fields.get(declared_type, ())
             for index, element_type in enumerate(value_type.elements):
-                field = fields[index] if index < len(fields) else {}
-                child_name = str(field.get("name", f"field{index}"))
-                child_type = str(field.get("type", "float"))
+                if index < len(fields):
+                    child_name = fields[index].name
+                    child_type = _type_name(fields[index].declared_type)
+                else:
+                    child_name = f"field{index}"
+                    child_type = "float"
                 field_value = _load_value(
                     kind,
                     name,
@@ -955,13 +973,18 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ):
         value_type = value.type
-        if declared_type in struct_fields and isinstance(value_type, ir.IdentifiedStructType):
-            fields = struct_fields.get(declared_type, [])
+        if declared_type in struct_fields and isinstance(
+            value_type, ir.IdentifiedStructType
+        ):
+            fields = struct_fields.get(declared_type, ())
             for index, element_type in enumerate(value_type.elements):
                 part = tick_builder.extract_value(value, index)
-                field = fields[index] if index < len(fields) else {}
-                child_name = str(field.get("name", f"field{index}"))
-                child_type = str(field.get("type", "float"))
+                if index < len(fields):
+                    child_name = fields[index].name
+                    child_type = _type_name(fields[index].declared_type)
+                else:
+                    child_name = f"field{index}"
+                    child_type = "float"
                 _store_value(
                     kind, name, part, child_type, path + (child_name,), element_index
                 )
@@ -978,7 +1001,9 @@ def emit_llvm_ir(
         element_index: ir.Value | None = None,
     ) -> ir.Value:
         declared_type = binding_declared_types.get((kind, name), "float")
-        return _load_value(kind, name, field_type, declared_type, element_index=element_index)
+        return _load_value(
+            kind, name, field_type, declared_type, element_index=element_index
+        )
 
     def _load_tick_param_ptr(
         kind: str,
@@ -1053,7 +1078,9 @@ def emit_llvm_ir(
                 name=f"fold_lane_{lane}",
             )
         if populated_lanes < simd_width:
-            zero_value = ir.Constant(uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0)
+            zero_value = ir.Constant(
+                uniform_type, 0 if isinstance(uniform_type, ir.IntType) else 0.0
+            )
             for lane in range(populated_lanes, simd_width):
                 vector_value = tick_builder.insert_element(
                     vector_value,
@@ -1118,28 +1145,25 @@ def emit_llvm_ir(
 
         return reduced
 
-    def _lower_kernel_route(route: dict[str, Any]):
-        kernel_name = str(route.get("kernel", ""))
+    def _lower_kernel_route(route: AstKernelBindRoute):
+        kernel_name = route.kernel
         callee = function_map.get(
             f"shader_{_sanitize_symbol(kernel_name)}"
         ) or function_map.get(f"filter_{_sanitize_symbol(kernel_name)}")
         if callee is None:
             return
 
-        signature = kernel_signatures.get(kernel_name, {})
-        params = signature.get("params", []) if isinstance(signature, dict) else []
-        arg_names = route.get("args") if isinstance(route.get("args"), list) else []
+        params = kernel_signatures.get(kernel_name, ())
+        arg_names = route.args
 
         trip_count = 0
         for index, arg_name in enumerate(arg_names):
             if index >= len(params):
                 break
-            modifier = params[index].get("modifier")
-            if modifier == "in" and arg_name in stream_capacities:
+            if params[index].modifier == "in" and arg_name in stream_capacities:
                 trip_count = max(trip_count, stream_capacities[arg_name])
-        target = route.get("target")
-        if isinstance(target, str) and target in stream_capacities:
-            trip_count = max(trip_count, stream_capacities[target])
+        if route.target in stream_capacities:
+            trip_count = max(trip_count, stream_capacities[route.target])
         if trip_count <= 0:
             trip_count = 1
 
@@ -1170,7 +1194,7 @@ def emit_llvm_ir(
         call_args = []
         for index, param in enumerate(callee.args):
             arg_name = arg_names[index] if index < len(arg_names) else ""
-            modifier = params[index].get("modifier") if index < len(params) else None
+            modifier = params[index].modifier if index < len(params) else None
             value = None
             if modifier in {"in", "out"} and arg_name in stream_slots:
                 raw_capacity = stream_capacities.get(arg_name, 0)
@@ -1184,7 +1208,9 @@ def emit_llvm_ir(
                         "stream", arg_name, param.type.pointee, clamped_index
                     )
                 else:
-                    value = _load_tick_param("stream", arg_name, param.type, clamped_index)
+                    value = _load_tick_param(
+                        "stream", arg_name, param.type, clamped_index
+                    )
             elif modifier == "accum" and arg_name in accum_slots:
                 value = _load_tick_param_ptr("accum", arg_name, param.type.pointee)
             elif modifier == "uniform" and arg_name in uniform_slots:
@@ -1202,34 +1228,25 @@ def emit_llvm_ir(
 
         tick_builder.position_at_end(loop_exit)
 
-    if bind_routes_ir:
-        for route in bind_routes_ir:
-            if route.get("kind") == "kernel":
-                _lower_kernel_route(route)
+    for route in bind_routes:
+        if isinstance(route, AstKernelBindRoute):
+            _lower_kernel_route(route)
+            continue
+        if isinstance(route, AstFoldBindRoute):
+            source_name = route.source
+            uniform_name = route.uniform_name
+            operator = route.operator
+            if source_name not in accum_slots or uniform_name not in uniform_slots:
                 continue
-            if route.get("kind") == "fold":
-                source_name = str(route.get("source", ""))
-                uniform_name = str(route.get("uniform_name", ""))
-                operator = str(route.get("operator", ""))
-                if source_name not in accum_slots or uniform_name not in uniform_slots:
-                    continue
-                uniform_type_name = str(route.get("uniform_type", "float"))
-                uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
-                reduced = _reduce_fold(operator, source_name, uniform_type)
-                _store_value("uniform", uniform_name, reduced, uniform_type_name)
-                continue
-            asm_ty = ir.FunctionType(ir.VoidType(), [])
-            escaped = (
-                str(route.get("route", route)).replace("\\", "\\\\").replace('"', '\\"')
-            )
-            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
-            tick_builder.call(asm, [])
-    else:
-        for route in bind_routes:
-            asm_ty = ir.FunctionType(ir.VoidType(), [])
-            escaped = str(route).replace("\\", "\\\\").replace('"', '\\"')
-            asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
-            tick_builder.call(asm, [])
+            uniform_type_name = _type_name(route.uniform_type)
+            uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+            reduced = _reduce_fold(operator, source_name, uniform_type)
+            _store_value("uniform", uniform_name, reduced, uniform_type_name)
+            continue
+        asm_ty = ir.FunctionType(ir.VoidType(), [])
+        escaped = route.route.replace("\\", "\\\\").replace('"', '\\"')
+        asm = ir.InlineAsm(asm_ty, f"; bind: {escaped}", "", side_effect=True)
+        tick_builder.call(asm, [])
     tick_builder.ret_void()
 
     return str(module)

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from .ast import AstProgram, AstStructDecl, AstType
+
 from .errors import LockstepCompileError
 from .models import LockstepDiagnostic
-
 
 _TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+|[][<>,]")
 
@@ -35,8 +36,14 @@ def _tokenize_type_name(type_name: str) -> list[str] | None:
     return tokens
 
 
-def _parse_type_name_tokens(tokens: list[str], index: int = 0) -> tuple[_ParsedTypeName | None, int]:
-    if index >= len(tokens) or not tokens[index][0].isalpha() and tokens[index][0] != "_":
+def _parse_type_name_tokens(
+    tokens: list[str], index: int = 0
+) -> tuple[_ParsedTypeName | None, int]:
+    if (
+        index >= len(tokens)
+        or not tokens[index][0].isalpha()
+        and tokens[index][0] != "_"
+    ):
         return None, index
 
     base = tokens[index]
@@ -46,7 +53,11 @@ def _parse_type_name_tokens(tokens: list[str], index: int = 0) -> tuple[_ParsedT
     while index < len(tokens):
         token = tokens[index]
         if token == "[":
-            if index + 2 >= len(tokens) or not tokens[index + 1].isdigit() or tokens[index + 2] != "]":
+            if (
+                index + 2 >= len(tokens)
+                or not tokens[index + 1].isdigit()
+                or tokens[index + 2] != "]"
+            ):
                 return None, index
             suffixes.append(_ArraySuffix(size=int(tokens[index + 1])))
             index += 3
@@ -94,13 +105,16 @@ def _type_multiplier(parsed_type: _ParsedTypeName) -> int:
 
 
 def _structural_type_name(parsed_type: _ParsedTypeName) -> str:
-    has_generic_suffix = any(isinstance(suffix, _GenericSuffix) for suffix in parsed_type.suffixes)
+    has_generic_suffix = any(
+        isinstance(suffix, _GenericSuffix) for suffix in parsed_type.suffixes
+    )
     if not has_generic_suffix:
         return parsed_type.base
     for suffix in parsed_type.suffixes:
         if isinstance(suffix, _GenericSuffix):
             return _structural_type_name(suffix.type_name)
     return parsed_type.base
+
 
 _PRIMITIVE_SIZE = {
     "bool": 1,
@@ -133,10 +147,27 @@ class ArenaLayout:
     total_size: int
 
 
-def normalize_structs(structs: list[Any]) -> list[dict[str, Any]]:
+def _type_name(value: AstType | str) -> str:
+    return value.name if isinstance(value, AstType) else value
+
+
+def normalize_structs(structs: list[Any] | tuple[Any, ...]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for struct_decl in structs:
-        if isinstance(struct_decl, str):
+        if isinstance(struct_decl, AstStructDecl):
+            normalized.append(
+                {
+                    "name": struct_decl.name,
+                    "fields": [
+                        {
+                            "name": field.name,
+                            "type": _type_name(field.declared_type),
+                        }
+                        for field in struct_decl.fields
+                    ],
+                }
+            )
+        elif isinstance(struct_decl, str):
             normalized.append({"name": struct_decl, "fields": []})
         elif isinstance(struct_decl, dict) and struct_decl.get("name"):
             fields = (
@@ -221,7 +252,7 @@ def _flatten_type_leaves(
     opaque_structs: set[str],
     *,
     path: tuple[str, ...] = (),
- ) -> list[tuple[tuple[str, ...], str, int]]:
+) -> list[tuple[tuple[str, ...], str, int]]:
     parsed = _parse_type_name(type_name)
     if parsed is None:
         return [(path, type_name, 1)]
@@ -249,27 +280,61 @@ def _flatten_type_leaves(
     return leaves
 
 
-def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
-    normalized_structs = normalize_structs(entities.get("structs", []))
+def build_arena_layout(program_or_entities: AstProgram | dict[str, Any]) -> ArenaLayout:
+    if isinstance(program_or_entities, AstProgram):
+        program = program_or_entities
+        normalized_structs = normalize_structs(program.structs)
+        bindings: list[tuple[str, str, str, int]] = []
+        for pipeline in program.pipelines:
+            for stream in pipeline.streams:
+                bindings.append(
+                    (
+                        "stream",
+                        stream.name,
+                        _type_name(stream.declared_type),
+                        int(stream.capacity),
+                    )
+                )
+            for accumulator in pipeline.accumulators:
+                bindings.append(
+                    (
+                        "accum",
+                        accumulator.name,
+                        _type_name(accumulator.declared_type),
+                        1,
+                    )
+                )
+            for uniform in pipeline.uniforms:
+                bindings.append(
+                    ("uniform", uniform.name, _type_name(uniform.declared_type), 1)
+                )
+    else:
+        entities = program_or_entities
+        normalized_structs = normalize_structs(entities.get("structs", []))
+        bindings = []
+        for stream in entities.get("streams", []):
+            capacity = int(stream["capacity"])
+            bindings.append(("stream", stream["name"], stream["type"], capacity))
+        for accumulator in entities.get("accumulators", []):
+            element_count = (
+                int(accumulator.get("size", 1))
+                if accumulator.get("size") is not None
+                else 1
+            )
+            bindings.append(
+                (
+                    "accum",
+                    accumulator["name"],
+                    accumulator["type"],
+                    max(element_count, 1),
+                )
+            )
+        for uniform in entities.get("uniforms", []):
+            bindings.append(("uniform", uniform["name"], uniform["type"], 1))
+
     known_structs = {struct["name"] for struct in normalized_structs}
     struct_sizes, opaque_structs = resolve_struct_layouts(normalized_structs)
     struct_map = {struct["name"]: struct for struct in normalized_structs}
-
-    bindings: list[tuple[str, str, str, int]] = []
-    for stream in entities.get("streams", []):
-        capacity = int(stream["capacity"])
-        bindings.append(("stream", stream["name"], stream["type"], capacity))
-    for accumulator in entities.get("accumulators", []):
-        element_count = (
-            int(accumulator.get("size", 1))
-            if accumulator.get("size") is not None
-            else 1
-        )
-        bindings.append(
-            ("accum", accumulator["name"], accumulator["type"], max(element_count, 1))
-        )
-    for uniform in entities.get("uniforms", []):
-        bindings.append(("uniform", uniform["name"], uniform["type"], 1))
 
     leaves: list[ArenaLeaf] = []
     top_level_offsets: list[tuple[str, str, int]] = []
