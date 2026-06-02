@@ -227,11 +227,177 @@ def test_compile_pipeline_lowers_fused_group_to_single_simd_loop_without_interme
             "source_routes": ["tmp=A(inp,tmp);", "dst=B(tmp,dst);"],
         }
     ]
-    assert 'fused_0_body' in result.llvm_ir
-    assert 'route_A_body' not in result.llvm_ir
-    assert 'route_B_body' not in result.llvm_ir
+    assert "fused_0_body" in result.llvm_ir
+    assert "route_A_body" not in result.llvm_ir
+    assert "route_B_body" not in result.llvm_ir
     assert 'float* %"fused_tmp_slot"' in result.llvm_ir
-    assert 'stream_tmp_value_ptr' not in result.llvm_ir
+    assert "stream_tmp_value_ptr" not in result.llvm_ir
     assert 'call void @"shader_A"' in result.llvm_ir
     assert 'call void @"shader_B"' in result.llvm_ir
     llvm.parse_assembly(result.llvm_ir)
+
+
+def test_compile_passes_per_pipeline_bind_optimization_to_codegen(monkeypatch):
+    import lockstep_compiler
+    import lockstep_compiler.compiler as compiler_module
+
+    source = """
+    shader A(in float src, out float tmp) { tmp = src + 1.0; }
+    shader B(in float tmp, out float dst) { dst = tmp * 2.0; }
+
+    pipeline P1 {
+        stream<float, 4> inp;
+        stream<float, 4> tmp;
+        stream<float, 4> dst;
+
+        bind {
+            tmp = A(inp, tmp);
+            dst = B(tmp, dst);
+        }
+    }
+
+    pipeline P2 {
+        stream<float, 4> inp2;
+        stream<float, 4> tmp2;
+        stream<float, 4> dst2;
+
+        bind {
+            tmp2 = A(inp2, tmp2);
+            dst2 = B(tmp2, dst2);
+        }
+    }
+    """
+
+    optimization_calls = []
+    captured_bind_optimization = None
+
+    def fake_optimize_bind_routes(bind_routes, **kwargs):
+        optimization_calls.append((list(bind_routes), kwargs))
+        pipeline_number = len(optimization_calls)
+        return {
+            "optimized_bind_routes": [f"optimized-pipeline-{pipeline_number}"],
+            "fused_groups": [{"pipeline": pipeline_number}],
+        }
+
+    def fake_emit_llvm_ir(_program, *, bind_optimization=None, **_kwargs):
+        nonlocal captured_bind_optimization
+        captured_bind_optimization = bind_optimization
+        return '; ModuleID = "lockstep"\n'
+
+    monkeypatch.setattr(
+        compiler_module, "optimize_bind_routes", fake_optimize_bind_routes
+    )
+    monkeypatch.setattr(compiler_module, "emit_llvm_ir", fake_emit_llvm_ir)
+
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=4,
+    )
+
+    assert [call[0] for call in optimization_calls] == [
+        ["tmp=A(inp,tmp);", "dst=B(tmp,dst);"],
+        ["tmp2=A(inp2,tmp2);", "dst2=B(tmp2,dst2);"],
+    ]
+    assert result.entities["optimized_bind_routes"] == [
+        "optimized-pipeline-1",
+        "optimized-pipeline-2",
+    ]
+    assert result.entities["fused_bind_groups"] == [
+        {"pipeline": 1},
+        {"pipeline": 2},
+    ]
+    assert captured_bind_optimization == {
+        "optimized_bind_routes": ["optimized-pipeline-1", "optimized-pipeline-2"],
+        "fused_groups": [{"pipeline": 1}, {"pipeline": 2}],
+        "pipeline_optimizations": [
+            {
+                "optimized_bind_routes": ["optimized-pipeline-1"],
+                "fused_groups": [{"pipeline": 1}],
+            },
+            {
+                "optimized_bind_routes": ["optimized-pipeline-2"],
+                "fused_groups": [{"pipeline": 2}],
+            },
+        ],
+    }
+    assert len(captured_bind_optimization["pipeline_optimizations"]) == len(
+        result.ast.pipelines
+    )
+
+
+def test_emit_llvm_ir_honors_per_pipeline_bind_optimization(monkeypatch):
+    from llvmlite import binding as llvm
+
+    import lockstep_compiler
+    import lockstep_compiler.codegen as codegen_module
+
+    source = """
+    shader A(in float src, out float tmp) { tmp = src + 1.0; }
+    shader B(in float tmp, out float dst) { dst = tmp * 2.0; }
+
+    pipeline P1 {
+        stream<float, 4> inp;
+        stream<float, 4> tmp;
+        stream<float, 4> dst;
+
+        bind {
+            tmp = A(inp, tmp);
+            dst = B(tmp, dst);
+        }
+    }
+
+    pipeline P2 {
+        stream<float, 4> inp2;
+        stream<float, 4> tmp2;
+        stream<float, 4> dst2;
+
+        bind {
+            tmp2 = A(inp2, tmp2);
+            dst2 = B(tmp2, dst2);
+        }
+    }
+    """
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=4,
+    )
+
+    def fail_if_codegen_reoptimizes(*_args, **_kwargs):
+        raise AssertionError("emit_llvm_ir ignored supplied pipeline optimizations")
+
+    monkeypatch.setattr(
+        codegen_module, "optimize_bind_routes", fail_if_codegen_reoptimizes
+    )
+
+    llvm_ir = codegen_module.emit_llvm_ir(
+        result.ast,
+        target_width=4,
+        bind_optimization={
+            "optimized_bind_routes": [
+                "tmp=A(inp,tmp);",
+                "dst=B(tmp,dst);",
+                "tmp2=A(inp2,tmp2);",
+                "dst2=B(tmp2,dst2);",
+            ],
+            "fused_groups": [],
+            "pipeline_optimizations": [
+                {
+                    "optimized_bind_routes": ["tmp=A(inp,tmp);", "dst=B(tmp,dst);"],
+                    "fused_groups": [],
+                },
+                {
+                    "optimized_bind_routes": [
+                        "tmp2=A(inp2,tmp2);",
+                        "dst2=B(tmp2,dst2);",
+                    ],
+                    "fused_groups": [],
+                },
+            ],
+        },
+    )
+
+    assert "route_A_body" in llvm_ir
+    assert "route_B_body" in llvm_ir
+    llvm.parse_assembly(llvm_ir)
