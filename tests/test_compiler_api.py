@@ -17,6 +17,8 @@ from lockstep_compiler.ast import (
     AstAssignStmt,
     AstProgram,
     AstPureDecl,
+    AstKernelParam,
+    AstType,
     AstExprBinary,
     AstExprCall,
     AstExprCast,
@@ -116,6 +118,88 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
     assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in result.llvm_ir
 
+
+def test_codegen_logical_and_short_circuits_rhs_division():
+    program = AstProgram(
+        pure_functions=(
+            AstPureDecl(
+                name="guarded",
+                return_type=AstType("bool"),
+                params=(
+                    AstKernelParam(
+                        modifier="", declared_type=AstType("int"), name="x"
+                    ),
+                ),
+                body=(
+                    AstReturnStmt(
+                        value=AstExprBinary(
+                            op="&&",
+                            left=AstExprBinary(
+                                op="!=",
+                                left=AstExprVar(path=("x",)),
+                                right=AstExprLiteral(kind="int", value="0"),
+                            ),
+                            right=AstExprBinary(
+                                op=">",
+                                left=AstExprBinary(
+                                    op="/",
+                                    left=AstExprLiteral(kind="int", value="100"),
+                                    right=AstExprVar(path=("x",)),
+                                ),
+                                right=AstExprLiteral(kind="int", value="5"),
+                            ),
+                        )
+                    ),
+                ),
+            ),
+        )
+    )
+
+    ir_text = emit_llvm_ir(program)
+
+    assert 'br i1 %".4", label %"logic_and_rhs", label %"logic_and_merge"' in ir_text
+    assert 'logic_and_rhs:' in ir_text
+    assert 'sdiv i32 100' in ir_text
+    assert 'logic_and_merge:' in ir_text
+    assert '[0, %"entry"], [%".7", %"logic_and_rhs"]' in ir_text
+
+
+def test_codegen_logical_or_short_circuits_rhs_call():
+    program = AstProgram(
+        pure_functions=(
+            AstPureDecl(
+                name="expensive",
+                return_type=AstType("bool"),
+                body=(AstReturnStmt(value=AstExprLiteral(kind="bool", value="true")),),
+            ),
+            AstPureDecl(
+                name="guarded",
+                return_type=AstType("bool"),
+                params=(
+                    AstKernelParam(
+                        modifier="", declared_type=AstType("bool"), name="ready"
+                    ),
+                ),
+                body=(
+                    AstReturnStmt(
+                        value=AstExprBinary(
+                            op="||",
+                            left=AstExprVar(path=("ready",)),
+                            right=AstExprCall(name="expensive", args=()),
+                        )
+                    ),
+                ),
+            ),
+        )
+    )
+
+    ir_text = emit_llvm_ir(program)
+
+    assert 'br i1 %"ready_val", label %"logic_or_merge", label %"logic_or_rhs"' in ir_text
+    assert 'logic_or_rhs:' in ir_text
+    assert 'call i1 @"pure_expensive"()' in ir_text
+    assert 'logic_or_merge:' in ir_text
+    assert '[1, %"entry"], [%"call_expensive", %"logic_or_rhs"]' in ir_text
 
 def test_compile_lockstep_surfaces_typed_ast_type_error_without_legacy_fallback(
     monkeypatch,
