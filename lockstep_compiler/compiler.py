@@ -480,7 +480,7 @@ def _resolve_dependency_sources(
                         "(or max_dependency_depth via API), or set it to 0 to disable."
                     ),
                 )
-            dependency_path = _resolve_reference(reference, current_file)
+            dependency_path = _resolve_reference(reference, current_file, line)
             if dependency_path in in_stack:
                 cycle_chain = [*in_stack, dependency_path]
                 cycle_text = " -> ".join(str(path) for path in cycle_chain)

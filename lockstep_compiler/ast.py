@@ -407,7 +407,14 @@ class AstBuilder(_AstBuilderMixin):
                 if nested_types
                 else self._resolve_type("void")
             )
-            int_token = self._call(suffix_ctx, "INT")
+            generic_width = self._call(suffix_ctx, "genericWidth")
+            int_token = (
+                self._call(generic_width, "INT")
+                if generic_width is not None
+                else self._call(suffix_ctx, "INT")
+            )
+            if isinstance(int_token, list):
+                int_token = int_token[0] if int_token else None
             suffixes.append(
                 AstTypeSuffix(
                     kind="template",

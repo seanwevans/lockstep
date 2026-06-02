@@ -12,9 +12,12 @@ declaration
     ;
 
 dependencyDecl
-    : 'import' STRING ';'
-    | INCLUDE_DIRECTIVE STRING ';'
+    : importDecl
+    | includeDecl
     ;
+
+importDecl: 'import' STRING ';';
+includeDecl: INCLUDE_DIRECTIVE STRING ';';
 
 structDecl: 'struct' ID '{' structMember* '}' ';';
 structMember: typeName ID ';';
@@ -99,8 +102,10 @@ lvalue: ID ('.' ID)*;
 typeName: ID typeSuffix*;
 typeSuffix
     : '[' INT ']'
-    | '<' typeName (',' INT)? '>'
+    | '<' typeName genericWidth? '>'
     ;
+
+genericWidth: ',' INT;
 
 BOOL: 'true' | 'false';
 INCLUDE_DIRECTIVE: '#include';
