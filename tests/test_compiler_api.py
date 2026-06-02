@@ -1551,6 +1551,10 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
     pure bool less_than(uint a, uint b) {
         return a < b;
     }
+
+    pure uint shift_right(uint value) {
+        return value >> 1;
+    }
     """
     result = lockstep_compiler.compile_lockstep(source)
     llvm_ir = result.llvm_ir
@@ -1558,6 +1562,7 @@ def test_codegen_uses_unsigned_ops_for_uint_math():
     assert "udiv i32" in llvm_ir
     assert "urem i32" in llvm_ir
     assert "icmp ult i32" in llvm_ir
+    assert "lshr i32" in llvm_ir
 
 
 def test_codegen_promotes_asymmetric_uint_binary_operands():
@@ -1570,8 +1575,16 @@ def test_codegen_promotes_asymmetric_uint_binary_operands():
         return 5 % value;
     }
 
+    pure uint literal_divided_by_casted_uint(int value) {
+        return 10 / uint(value);
+    }
+
     pure bool literal_less_than_uint(uint value) {
         return 5 < value;
+    }
+
+    pure bool literal_less_than_casted_uint(int value) {
+        return 5 < uint(value);
     }
 
     pure uint signed_divided_by_uint(int lhs, uint rhs) {
@@ -1589,9 +1602,9 @@ def test_codegen_promotes_asymmetric_uint_binary_operands():
     result = lockstep_compiler.compile_lockstep(source)
     llvm_ir = result.llvm_ir
 
-    assert llvm_ir.count("udiv i32") == 3
+    assert llvm_ir.count("udiv i32") == 4
     assert "urem i32" in llvm_ir
-    assert llvm_ir.count("icmp ult i32") == 3
+    assert llvm_ir.count("icmp ult i32") == 4
     assert "sdiv i32" not in llvm_ir
     assert "srem i32" not in llvm_ir
     assert "icmp slt i32" not in llvm_ir
