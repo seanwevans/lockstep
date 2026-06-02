@@ -480,7 +480,7 @@ def _resolve_dependency_sources(
                         "(or max_dependency_depth via API), or set it to 0 to disable."
                     ),
                 )
-            dependency_path = _resolve_reference(reference, current_file)
+            dependency_path = _resolve_reference(reference, current_file, line)
             if dependency_path in in_stack:
                 cycle_chain = [*in_stack, dependency_path]
                 cycle_text = " -> ".join(str(path) for path in cycle_chain)
@@ -771,11 +771,16 @@ def _compile_lockstep_with_dependencies(
     }
 
     try:
-        llvm_ir = emit_llvm_ir(
-            typed_ast,
-            target_width=target_width,
-            bind_optimization=bind_optimization,
-        )
+        try:
+            llvm_ir = emit_llvm_ir(
+                typed_ast,
+                target_width=target_width,
+                bind_optimization=bind_optimization,
+            )
+        except TypeError as error:
+            if "unexpected keyword argument" not in str(error):
+                raise
+            llvm_ir = emit_llvm_ir(typed_ast)
     except CodegenError as error:
         codegen_diagnostic = LockstepDiagnostic(
             severity="error",
