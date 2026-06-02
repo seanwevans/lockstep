@@ -86,7 +86,8 @@ def emit_c_header(
     cumulative_layout_total = 0
     for leaf in layout.leaves:
         leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
-        if cumulative_layout_total > _MAX_U64 - leaf_size:
+        leaf_allocation_size = leaf_size * leaf.element_count
+        if cumulative_layout_total > _MAX_U64 - leaf_allocation_size:
             diagnostic = LockstepDiagnostic(
                 severity="error",
                 code="LCK502",
@@ -108,7 +109,7 @@ def emit_c_header(
                 phase="codegen",
                 source_file=diagnostic.source_file,
             )
-        cumulative_layout_total += leaf_size
+        cumulative_layout_total += leaf_allocation_size
         c_type_name = _c_type(leaf.type_name, known_structs)
         path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
