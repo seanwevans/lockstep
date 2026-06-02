@@ -1013,6 +1013,38 @@ def test_emit_llvm_ir_strip_mines_fold_larger_than_target_width():
     assert '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in llvm_ir
 
 
+def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [{"name": "energy", "type": "float", "size": 512}],
+            "uniforms": [{"name": "total", "type": "float"}],
+            "bind_routes": ["uniform float total = fold sum(energy);"],
+            "bind_routes_ir": [
+                {
+                    "kind": "fold",
+                    "uniform_type": "float",
+                    "uniform_name": "total",
+                    "operator": "sum",
+                    "source": "energy",
+                    "route": "uniform float total = fold sum(energy);",
+                }
+            ],
+        },
+        target_width=8,
+    )
+
+    assert '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 512' in llvm_ir
+    assert '%"fold_index_next" = add i32 %"fold_index", 8' in llvm_ir
+    assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
+    assert '%"struct.Lockstep_Arena" = type {[512 x float], float}' in llvm_ir
+    assert '%"fold_elem_7" = add i32 %"fold_index", 7' in llvm_ir
+
+
 def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
     source = """
     shader Capture(in float src, accum float energy) { energy = src; }
