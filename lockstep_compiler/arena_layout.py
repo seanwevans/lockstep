@@ -365,8 +365,13 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
     return _build_layout_from_bindings(normalized_structs, bindings)
 
 
-def build_ast_arena_layout(program: AstProgram) -> ArenaLayout:
+def build_ast_arena_layout(
+    program: AstProgram,
+    *,
+    accumulator_sizes: dict[str, int] | None = None,
+) -> ArenaLayout:
     normalized_structs = normalize_ast_structs(program.structs)
+    accumulator_sizes = accumulator_sizes or {}
     bindings: list[tuple[str, str, str, int]] = []
     for pipeline in program.pipelines:
         for stream in pipeline.streams:
@@ -384,7 +389,7 @@ def build_ast_arena_layout(program: AstProgram) -> ArenaLayout:
                     "accum",
                     accumulator.name,
                     _ast_type_name(accumulator.declared_type),
-                    1,
+                    max(int(accumulator_sizes.get(accumulator.name, 1)), 1),
                 )
             )
         for uniform in pipeline.uniforms:

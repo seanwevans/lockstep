@@ -984,6 +984,45 @@ def test_emit_llvm_ir_strip_mines_fold_larger_than_target_width():
     assert '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in llvm_ir
 
 
+def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
+    source = """
+    shader Capture(in float src, accum float energy) { energy = src; }
+
+    pipeline P {
+        stream<float, 17> input;
+        accumulator<float> energy;
+        uniform float total;
+
+        bind {
+            energy = Capture(input, energy);
+            uniform float total = fold avg(energy);
+        }
+    }
+    """
+
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=8,
+    )
+
+    assert (
+        '%"struct.Lockstep_Arena" = type {[17 x float], [17 x float], float}'
+        in result.llvm_ir
+    )
+    assert 'br label %"fold_energy_strip_cond"' in result.llvm_ir
+    assert (
+        '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 16'
+        in result.llvm_ir
+    )
+    assert '%"fold_index_next" = add i32 %"fold_index", 8' in result.llvm_ir
+    assert 'mul i32 %"idx", 4' in result.llvm_ir
+    assert 'mul i32 16, 4' in result.llvm_ir
+    assert (
+        '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000'
+        in result.llvm_ir
+    )
+
 def test_emit_llvm_ir_honors_explicit_target_width_override():
     llvm_ir = emit_llvm_ir(
         {

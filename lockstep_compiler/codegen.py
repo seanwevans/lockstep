@@ -880,8 +880,6 @@ def emit_llvm_ir(
             [param.modifier in {"out", "accum"} for param in flt.params],
         )
 
-    layout = build_ast_arena_layout(program)
-
     stream_slots: dict[str, int] = {
         stream.name: idx for idx, stream in enumerate(streams)
     }
@@ -895,11 +893,60 @@ def emit_llvm_ir(
         uniform.name: idx for idx, uniform in enumerate(uniforms)
     }
 
+    kernel_signatures: dict[str, tuple[AstKernelDecl, tuple[AstKernelParam, ...]]] = {
+        shader.name: (shader, shader.params) for shader in shaders
+    }
+    kernel_signatures.update({flt.name: (flt, flt.params) for flt in filters})
+
+    def _infer_accumulator_sizes() -> dict[str, int]:
+        inferred_sizes = {accum.name: 1 for accum in accumulators}
+        for pipeline in program.pipelines:
+            pipeline_stream_capacities = {
+                stream.name: int(stream.capacity) for stream in pipeline.streams
+            }
+            pipeline_accumulators = {accum.name for accum in pipeline.accumulators}
+            for route in pipeline.bind_routes:
+                if not isinstance(route, AstKernelBindRoute):
+                    continue
+                signature = kernel_signatures.get(route.kernel)
+                if signature is None:
+                    continue
+                _, params = signature
+                trip_count = 0
+                for index, arg_name in enumerate(route.args):
+                    if index >= len(params):
+                        break
+                    if (
+                        params[index].modifier == "in"
+                        and arg_name in pipeline_stream_capacities
+                    ):
+                        trip_count = max(
+                            trip_count, pipeline_stream_capacities[arg_name]
+                        )
+                if route.target in pipeline_stream_capacities:
+                    trip_count = max(
+                        trip_count, pipeline_stream_capacities[route.target]
+                    )
+                trip_count = max(trip_count, 1)
+                for index, arg_name in enumerate(route.args):
+                    if index >= len(params):
+                        break
+                    if (
+                        params[index].modifier == "accum"
+                        and arg_name in pipeline_accumulators
+                    ):
+                        inferred_sizes[arg_name] = max(
+                            inferred_sizes[arg_name], trip_count
+                        )
+        return inferred_sizes
+
+    accum_sizes = _infer_accumulator_sizes()
+    layout = build_ast_arena_layout(program, accumulator_sizes=accum_sizes)
+
     leaf_specs: dict[tuple[str, str, tuple[str, ...]], tuple[int, int]] = {
         (leaf.kind, leaf.binding_name, leaf.path): (leaf.offset, leaf.size)
         for leaf in layout.leaves
     }
-    accum_sizes: dict[str, int] = {accum.name: 1 for accum in accumulators}
     binding_declared_types: dict[tuple[str, str], str] = {}
     for stream in streams:
         binding_declared_types[("stream", stream.name)] = _type_name(
@@ -911,11 +958,6 @@ def emit_llvm_ir(
         binding_declared_types[("uniform", uniform.name)] = _type_name(
             uniform.declared_type
         )
-
-    kernel_signatures: dict[str, tuple[AstKernelDecl, tuple[AstKernelParam, ...]]] = {
-        shader.name: (shader, shader.params) for shader in shaders
-    }
-    kernel_signatures.update({flt.name: (flt, flt.params) for flt in filters})
 
     arena_struct_ty = module.context.get_identified_type("struct.Lockstep_Arena")
 
@@ -1374,7 +1416,9 @@ def emit_llvm_ir(
                 )
             return _load_tick_param("stream", arg_name, param.type, clamped_index)
         if modifier == "accum" and arg_name in accum_slots:
-            return _load_tick_param_ptr("accum", arg_name, param.type.pointee)
+            return _load_tick_param_ptr(
+                "accum", arg_name, param.type.pointee, current
+            )
         if modifier == "uniform" and arg_name in uniform_slots:
             return _load_tick_param("uniform", arg_name, param.type)
         return _zero_value(param.type)
