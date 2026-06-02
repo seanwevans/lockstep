@@ -21,7 +21,9 @@ class RouteSimulation:
     notes: str | None = None
 
 
-def _fold_values(operator: str, values: list[Any], *, use_llvm_runtime: bool = False) -> Any:
+def _fold_values(
+    operator: str, values: list[Any], *, use_llvm_runtime: bool = False
+) -> Any:
     numeric = [value for value in values if isinstance(value, (int, float))]
     if not numeric:
         return None
@@ -220,6 +222,327 @@ def _apply_saturated_writes(rows: list[Any], capacity: int) -> list[Any]:
     return saturated_rows
 
 
+def _coerce_sim_value(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "true":
+            return True
+        if text == "false":
+            return False
+        try:
+            if any(marker in text for marker in (".", "e", "E")):
+                return float(text)
+            return int(text)
+        except ValueError:
+            return value
+    return value
+
+
+def _copy_sim_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _copy_sim_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_sim_value(item) for item in value]
+    return value
+
+
+def _default_sim_value(type_name: str | None = None) -> Any:
+    if type_name in {"float", "double"}:
+        return 0.0
+    if type_name in {"int", "uint"}:
+        return 0
+    if type_name == "bool":
+        return False
+    return {}
+
+
+def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
+    if not path:
+        return None
+    value = env.get(path[0], 0)
+    for part in path[1:]:
+        if isinstance(value, dict):
+            value = value.get(part, 0)
+        else:
+            return 0
+    return _coerce_sim_value(value)
+
+
+def _assign_sim_path(env: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    if not path:
+        return
+    if len(path) == 1:
+        env[path[0]] = value
+        return
+
+    current = env.get(path[0])
+    if not isinstance(current, dict):
+        current = {}
+        env[path[0]] = current
+    for part in path[1:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[path[-1]] = value
+
+
+def _truthy_sim_value(value: Any) -> bool:
+    return bool(_coerce_sim_value(value))
+
+
+def _eval_sim_call(
+    name: str,
+    args: list[Any],
+    pure_functions: dict[str, dict[str, Any]],
+) -> Any:
+    if name in {"int", "uint"}:
+        return int(_coerce_sim_value(args[0])) if args else 0
+    if name in {"float", "double"}:
+        return float(_coerce_sim_value(args[0])) if args else 0.0
+    if name == "bool":
+        return _truthy_sim_value(args[0]) if args else False
+    if name == "select" and len(args) == 3:
+        return args[1] if _truthy_sim_value(args[0]) else args[2]
+    if name == "step" and len(args) == 2:
+        return 0.0 if float(args[1]) < float(args[0]) else 1.0
+    if name == "mix" and len(args) == 3:
+        return args[0] * (1.0 - args[2]) + args[1] * args[2]
+    if name == "clamp" and len(args) == 3:
+        return max(args[1], min(args[0], args[2]))
+    if name == "max" and len(args) == 2:
+        return max(args[0], args[1])
+    if name == "min" and len(args) == 2:
+        return min(args[0], args[1])
+    if name == "abs" and len(args) == 1:
+        return abs(args[0])
+    if name == "sign" and len(args) == 1:
+        return -1.0 if args[0] < 0 else (1.0 if args[0] > 0 else 0.0)
+    if name == "smoothstep" and len(args) == 3:
+        edge0, edge1, x = map(float, args)
+        if edge0 == edge1:
+            t = 0.0
+        else:
+            t = max(0.0, min((x - edge0) / (edge1 - edge0), 1.0))
+        return t * t * (3.0 - 2.0 * t)
+
+    pure = pure_functions.get(name)
+    if pure is not None:
+        env = {
+            param.get("name"): args[index] if index < len(args) else 0
+            for index, param in enumerate(pure.get("params", []))
+        }
+        return _execute_sim_body(pure.get("body_ast", []), env, pure_functions)[0]
+
+    return None
+
+
+def _eval_sim_expr(
+    expr: Any,
+    env: dict[str, Any],
+    pure_functions: dict[str, dict[str, Any]],
+) -> Any:
+    from .ast import (
+        AstExprBinary,
+        AstExprCall,
+        AstExprCast,
+        AstExprLiteral,
+        AstExprUnary,
+        AstExprVar,
+    )
+
+    if isinstance(expr, AstExprLiteral):
+        if expr.kind == "bool":
+            return expr.value == "true"
+        if expr.kind in {"int", "uint"}:
+            return int(expr.value)
+        if expr.kind in {"float", "double"}:
+            return float(expr.value)
+        return expr.value
+    if isinstance(expr, AstExprVar):
+        return _resolve_sim_path(env, expr.path)
+    if isinstance(expr, AstExprUnary):
+        operand = _eval_sim_expr(expr.operand, env, pure_functions)
+        if expr.op == "-":
+            return -operand
+        return not _truthy_sim_value(operand)
+    if isinstance(expr, AstExprCast):
+        return _eval_sim_call(
+            str(expr.target_type),
+            [_eval_sim_expr(expr.value, env, pure_functions)],
+            pure_functions,
+        )
+    if isinstance(expr, AstExprCall):
+        return _eval_sim_call(
+            expr.name,
+            [_eval_sim_expr(arg, env, pure_functions) for arg in expr.args],
+            pure_functions,
+        )
+    if isinstance(expr, AstExprBinary):
+        if expr.op == "&&":
+            return _truthy_sim_value(
+                _eval_sim_expr(expr.left, env, pure_functions)
+            ) and _truthy_sim_value(_eval_sim_expr(expr.right, env, pure_functions))
+        if expr.op == "||":
+            return _truthy_sim_value(
+                _eval_sim_expr(expr.left, env, pure_functions)
+            ) or _truthy_sim_value(_eval_sim_expr(expr.right, env, pure_functions))
+        left = _eval_sim_expr(expr.left, env, pure_functions)
+        right = _eval_sim_expr(expr.right, env, pure_functions)
+        if expr.op == "+":
+            return left + right
+        if expr.op == "-":
+            return left - right
+        if expr.op == "*":
+            return left * right
+        if expr.op == "/":
+            return left / right
+        if expr.op == "%":
+            return left % right
+        if expr.op == "<":
+            return left < right
+        if expr.op == "<=":
+            return left <= right
+        if expr.op == ">":
+            return left > right
+        if expr.op == ">=":
+            return left >= right
+        if expr.op == "==":
+            return left == right
+        if expr.op == "!=":
+            return left != right
+        if expr.op == "&":
+            return int(left) & int(right)
+        if expr.op == "|":
+            return int(left) | int(right)
+        if expr.op == "^":
+            return int(left) ^ int(right)
+        if expr.op == "<<":
+            return int(left) << int(right)
+        if expr.op == ">>":
+            return int(left) >> int(right)
+    return None
+
+
+def _execute_sim_body(
+    body_ast: list[Any],
+    env: dict[str, Any],
+    pure_functions: dict[str, dict[str, Any]],
+) -> tuple[Any, set[str]]:
+    from .ast import AstAssignStmt, AstReturnStmt, AstVarDeclStmt
+
+    assigned: set[str] = set()
+    return_value = None
+    for statement in body_ast:
+        if isinstance(statement, AstVarDeclStmt):
+            env[statement.name] = (
+                _eval_sim_expr(statement.initializer, env, pure_functions)
+                if statement.initializer is not None
+                else _default_sim_value(
+                    str(statement.declared_type) if statement.declared_type else None
+                )
+            )
+            assigned.add(statement.name)
+            continue
+        if isinstance(statement, AstAssignStmt):
+            value = _eval_sim_expr(statement.value, env, pure_functions)
+            _assign_sim_path(env, statement.target, value)
+            if statement.target:
+                assigned.add(statement.target[0])
+            continue
+        if isinstance(statement, AstReturnStmt):
+            return_value = _eval_sim_expr(statement.value, env, pure_functions)
+            break
+    return return_value, assigned
+
+
+def _simulate_kernel_rows(
+    *,
+    kernel_name: str,
+    kernel: dict[str, Any],
+    args: list[Any],
+    rows: list[Any],
+    streams: dict[str, dict[str, Any]],
+    accumulators: dict[str, list[Any]],
+    uniforms: dict[str, Any],
+    pure_functions: dict[str, dict[str, Any]],
+) -> tuple[list[Any], dict[str, list[Any]]]:
+    body_ast = kernel.get("body_ast") or []
+    params = kernel.get("params", [])
+    if not body_ast:
+        if kernel["kind"] == "filter":
+            return [
+                row
+                for row in rows
+                if not isinstance(row, dict) or row.get("_keep", True)
+            ], {}
+        return [{"_source": row, "_kernel": kernel_name} for row in rows], {
+            arg_name: [1] * len(rows)
+            for index, arg_name in enumerate(args)
+            if index < len(params)
+            and params[index].get("modifier") == "accum"
+            and arg_name in accumulators
+        }
+
+    output_rows: list[Any] = []
+    pending_accum: dict[str, list[Any]] = {
+        arg_name: []
+        for index, arg_name in enumerate(args)
+        if index < len(params)
+        and params[index].get("modifier") == "accum"
+        and arg_name in accumulators
+    }
+
+    for row_index, row in enumerate(rows):
+        env: dict[str, Any] = {}
+        first_input = _copy_sim_value(row)
+        out_param_names: list[str] = []
+        accum_param_args: dict[str, str] = {}
+        for index, param in enumerate(params):
+            param_name = param.get("name")
+            modifier = param.get("modifier")
+            arg_name = args[index] if index < len(args) else None
+            if not isinstance(param_name, str):
+                continue
+            if modifier == "in" and isinstance(arg_name, str) and arg_name in streams:
+                arg_rows = streams[arg_name]["rows"]
+                source_index = min(row_index, len(arg_rows) - 1) if arg_rows else 0
+                env[param_name] = (
+                    _copy_sim_value(arg_rows[source_index])
+                    if arg_rows
+                    else _default_sim_value(param.get("type"))
+                )
+            elif modifier == "out":
+                out_param_names.append(param_name)
+                env[param_name] = _copy_sim_value(first_input)
+            elif modifier == "uniform" and isinstance(arg_name, str):
+                env[param_name] = _coerce_sim_value(uniforms.get(arg_name, 0))
+            elif modifier == "accum" and isinstance(arg_name, str):
+                accum_param_args[param_name] = arg_name
+                env[param_name] = _default_sim_value(param.get("type"))
+
+        return_value, assigned = _execute_sim_body(body_ast, env, pure_functions)
+        for param_name, arg_name in accum_param_args.items():
+            if param_name in assigned:
+                pending_accum[arg_name].append(_copy_sim_value(env.get(param_name)))
+
+        keep_row = True
+        if kernel["kind"] == "filter" and return_value is not None:
+            keep_row = _truthy_sim_value(return_value)
+        if not keep_row:
+            continue
+
+        if out_param_names:
+            output_rows.append(_copy_sim_value(env.get(out_param_names[0])))
+        elif return_value is not None and kernel["kind"] != "filter":
+            output_rows.append(return_value)
+        else:
+            output_rows.append(_copy_sim_value(row))
+
+    return output_rows, pending_accum
+
+
 def simulate_pipeline_entities(
     entities: dict[str, Any],
     *,
@@ -228,7 +551,12 @@ def simulate_pipeline_entities(
     use_llvm_runtime: bool | None = None,
 ) -> dict[str, Any]:
     if use_llvm_runtime is None:
-        use_llvm_runtime = os.getenv("LOCKSTEP_SIM_USE_LLVM", "").lower() in {"1", "true", "yes", "on"}
+        use_llvm_runtime = os.getenv("LOCKSTEP_SIM_USE_LLVM", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     streams = {
         stream["name"]: {
@@ -246,14 +574,27 @@ def simulate_pipeline_entities(
         uniform["name"]: uniform.get("initializer")
         for uniform in entities.get("uniforms", [])
     }
+    pure_functions = {
+        pure["name"]: pure
+        for pure in entities.get("pure_functions", [])
+        if not pure.get("intrinsic")
+    }
 
     kernels = {
-        shader["name"]: {"kind": "shader", "params": shader.get("params", [])}
+        shader["name"]: {
+            "kind": "shader",
+            "params": shader.get("params", []),
+            "body_ast": shader.get("body_ast", []),
+        }
         for shader in entities.get("shaders", [])
     }
     kernels.update(
         {
-            flt["name"]: {"kind": "filter", "params": flt.get("params", [])}
+            flt["name"]: {
+                "kind": "filter",
+                "params": flt.get("params", []),
+                "body_ast": flt.get("body_ast", []),
+            }
             for flt in entities.get("filters", [])
         }
     )
@@ -312,16 +653,16 @@ def simulate_pipeline_entities(
                     source_count = len(rows)
                     break
 
-            if kernel["kind"] == "filter":
-                output_rows = [
-                    row
-                    for row in rows
-                    if not isinstance(row, dict) or row.get("_keep", True)
-                ]
-            else:
-                output_rows = [
-                    {"_source": row, "_kernel": route_ir.get("kernel")} for row in rows
-                ]
+            output_rows, pending_accum = _simulate_kernel_rows(
+                kernel_name=str(route_ir.get("kernel", "")),
+                kernel=kernel,
+                args=args,
+                rows=rows,
+                streams=streams,
+                accumulators=accumulators,
+                uniforms=uniforms,
+                pure_functions=pure_functions,
+            )
 
             target = route_ir.get("target")
             if isinstance(target, str) and target in streams:
@@ -333,7 +674,7 @@ def simulate_pipeline_entities(
                 if index >= len(params):
                     break
                 if params[index]["modifier"] == "accum" and arg_name in accumulators:
-                    accumulators[arg_name].extend([1] * len(output_rows))
+                    accumulators[arg_name].extend(pending_accum.get(arg_name, []))
 
             routes.append(
                 RouteSimulation(
