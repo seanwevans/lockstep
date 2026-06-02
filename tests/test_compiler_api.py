@@ -1345,6 +1345,21 @@ def test_emit_c_header_raises_lck502_when_cumulative_offsets_overflow(monkeypatc
     assert [diag.code for diag in exc_info.value.errors] == ["LCK502"]
 
 
+def test_emit_c_header_raises_lck502_when_single_leaf_allocation_overflows(monkeypatch):
+    monkeypatch.setattr(c_header_module, "_MAX_U64", 4)
+
+    with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
+        emit_c_header(
+            {
+                "streams": [{"name": "samples", "type": "float", "capacity": "2"}],
+                "accumulators": [],
+                "uniforms": [],
+            }
+        )
+
+    assert [diag.code for diag in exc_info.value.errors] == ["LCK502"]
+
+
 def test_build_arena_layout_raises_lck503_for_recursive_struct_layout_cycle():
     with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
         build_arena_layout(
