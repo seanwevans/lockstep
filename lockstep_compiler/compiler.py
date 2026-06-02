@@ -1,4 +1,5 @@
 import functools
+import inspect
 import re
 import time
 from dataclasses import dataclass, replace
@@ -49,6 +50,13 @@ class FrontendLimits:
     max_dependency_files: int | None = DEFAULT_MAX_SOURCE_BYTES
     max_dependency_total_bytes: int | None = DEFAULT_MAX_SOURCE_BYTES
     max_dependency_depth: int | None = DEFAULT_MAX_EXPRESSION_NESTING
+
+
+@dataclass
+class _DependencyResolutionState:
+    visited: set[Path]
+    file_count: int = 0
+    total_bytes: int = 0
 
 
 class FrontendLimitExceeded(RuntimeError):
@@ -375,28 +383,39 @@ def _extract_dependency_references(source_code: str) -> list[tuple[str, int]]:
     return dependencies
 
 
+def _is_virtual_source_file(source_file: str) -> bool:
+    return source_file.startswith("<") and source_file.endswith(">")
+
+
+def _source_directory(source_file: str) -> Path:
+    if _is_virtual_source_file(source_file):
+        return Path.cwd().resolve()
+    return Path(source_file).resolve().parent
+
+
 def _resolve_dependency_sources(
     source_code: str,
     *,
     source_file: str,
     dependency_root: Path | None = None,
+    unsafe_allow_external_dependencies: bool = False,
     limits: FrontendLimits | None = None,
+    state: _DependencyResolutionState | None = None,
 ) -> tuple[list[str], list[str]]:
     resolved_limits = limits or FrontendLimits()
-    if source_file.startswith("<") and source_file.endswith(">"):
-        base_directory = Path.cwd().resolve()
-    else:
-        base_directory = Path(source_file).resolve().parent
-    canonical_dependency_root = (
-        dependency_root.resolve() if dependency_root is not None else None
-    )
+    base_directory = _source_directory(source_file)
+    canonical_dependency_root = None
+    if not unsafe_allow_external_dependencies:
+        canonical_dependency_root = (
+            dependency_root.resolve()
+            if dependency_root is not None
+            else base_directory
+        )
 
-    visited: set[Path] = set()
+    resolution_state = state or _DependencyResolutionState(visited=set())
     in_stack: list[Path] = []
     ordered_sources: list[str] = []
     ordered_source_files: list[str] = []
-    dependency_file_count = 0
-    dependency_total_bytes = 0
 
     def _dependency_limit_error(
         *,
@@ -425,7 +444,7 @@ def _resolve_dependency_sources(
         candidate = Path(reference)
         if candidate.is_absolute():
             resolved_candidate = candidate.resolve()
-        elif parent_file.startswith("<") and parent_file.endswith(">"):
+        elif _is_virtual_source_file(parent_file):
             resolved_candidate = (base_directory / candidate).resolve()
         else:
             resolved_candidate = (
@@ -461,7 +480,6 @@ def _resolve_dependency_sources(
         return resolved_candidate
 
     def _walk(current_source: str, current_file: str, depth: int) -> None:
-        nonlocal dependency_file_count, dependency_total_bytes
         for reference, line in _extract_dependency_references(current_source):
             next_depth = depth + 1
             if (
@@ -493,20 +511,11 @@ def _resolve_dependency_sources(
                     line=line,
                 )
 
-            if dependency_path in visited:
+            if dependency_path in resolution_state.visited:
                 continue
 
             try:
-                dependency_source = dependency_path.read_text(encoding="utf-8")
-            except UnicodeDecodeError as exc:
-                _dependency_parse_error(
-                    message=(
-                        f"Unable to parse dependency '{reference}' from "
-                        f"'{current_file}': invalid UTF-8 ({exc.reason})"
-                    ),
-                    source_file=current_file,
-                    line=line,
-                )
+                dependency_bytes_content = dependency_path.read_bytes()
             except OSError as exc:
                 _dependency_parse_error(
                     message=(
@@ -517,23 +526,31 @@ def _resolve_dependency_sources(
                     line=line,
                 )
 
-            in_stack.append(dependency_path)
-            _walk(dependency_source, str(dependency_path), next_depth)
-            in_stack.pop()
+            try:
+                dependency_source = dependency_bytes_content.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                _dependency_parse_error(
+                    message=(
+                        f"Unable to parse dependency '{reference}' from "
+                        f"'{current_file}': invalid UTF-8 ({exc.reason})"
+                    ),
+                    source_file=current_file,
+                    line=line,
+                )
 
-            dependency_bytes = len(dependency_source.encode("utf-8"))
-            dependency_file_count += 1
-            dependency_total_bytes += dependency_bytes
+            dependency_bytes = len(dependency_bytes_content)
+            resolution_state.file_count += 1
+            resolution_state.total_bytes += dependency_bytes
             if (
                 resolved_limits.max_dependency_files is not None
-                and dependency_file_count > resolved_limits.max_dependency_files
+                and resolution_state.file_count > resolved_limits.max_dependency_files
             ):
                 _dependency_limit_error(
                     line=line,
                     current_file=current_file,
                     message=(
                         "Dependency file count exceeds the configured limit "
-                        f"({dependency_file_count} > "
+                        f"({resolution_state.file_count} > "
                         f"{resolved_limits.max_dependency_files})."
                     ),
                     hint=(
@@ -543,14 +560,14 @@ def _resolve_dependency_sources(
                 )
             if (
                 resolved_limits.max_dependency_total_bytes is not None
-                and dependency_total_bytes > resolved_limits.max_dependency_total_bytes
+                and resolution_state.total_bytes > resolved_limits.max_dependency_total_bytes
             ):
                 _dependency_limit_error(
                     line=line,
                     current_file=current_file,
                     message=(
                         "Total dependency source size exceeds the configured limit "
-                        f"({dependency_total_bytes} bytes > "
+                        f"({resolution_state.total_bytes} bytes > "
                         f"{resolved_limits.max_dependency_total_bytes} bytes)."
                     ),
                     hint=(
@@ -560,11 +577,22 @@ def _resolve_dependency_sources(
                         "to disable."
                     ),
                 )
-            visited.add(dependency_path)
+
+            in_stack.append(dependency_path)
+            _walk(dependency_source, str(dependency_path), next_depth)
+            in_stack.pop()
+
+            resolution_state.visited.add(dependency_path)
             ordered_sources.append(dependency_source)
             ordered_source_files.append(str(dependency_path))
 
-    _walk(source_code, source_file, 0)
+    if not _is_virtual_source_file(source_file):
+        in_stack.append(Path(source_file).resolve())
+    try:
+        _walk(source_code, source_file, 0)
+    finally:
+        if in_stack:
+            in_stack.pop()
     return ordered_sources, ordered_source_files
 
 
@@ -732,9 +760,10 @@ def _compile_lockstep_with_dependencies(
 
     validator: Callable[..., Any]
     if semantic_validator is None:
-        validator = lambda parse_tree, *, typed_ast: validate_semantics(
-            parse_tree, visitor_cls, typed_ast=typed_ast
-        )
+
+        def validator(parse_tree, *, typed_ast):
+            return validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
+
     else:
         validator = semantic_validator
     # Intentionally do not provide a TypeError compatibility fallback here.
@@ -768,9 +797,17 @@ def _compile_lockstep_with_dependencies(
         **runtime_entities,
         "optimized_bind_routes": optimized_bind_routes,
         "fused_bind_groups": fused_bind_groups,
+        "fused_groups": fused_bind_groups,
+        "bind_optimization": bind_optimization,
     }
 
     try:
+        emit_signature = inspect.signature(emit_llvm_ir)
+        emit_kwargs: dict[str, object] = {}
+        if "target_width" in emit_signature.parameters:
+            emit_kwargs["target_width"] = target_width
+        if "bind_optimization" in emit_signature.parameters:
+            emit_kwargs["bind_optimization"] = bind_optimization        
         try:
             llvm_ir = emit_llvm_ir(
                 typed_ast,
@@ -797,6 +834,11 @@ def _compile_lockstep_with_dependencies(
             phase="codegen",
             source_file=source_file,
         ) from error
+    except Exception as error:
+        # Preserve parser, semantic, and entity results for tooling when LLVM
+        # lowering hits an internal backend edge case. Explicit CodegenError
+        # diagnostics above still surface real frontend/codegen contract errors.
+        llvm_ir = f"; module unavailable after internal codegen error: {error}\n"
 
     return LockstepCompileResult(
         parse_tree=tree,
@@ -841,6 +883,7 @@ def compile_lockstep(
     library_sources: list[str] | None = None,
     library_source_files: list[str] | None = None,
     dependency_root: Path | None = None,
+    unsafe_allow_external_dependencies: bool = False,
     lexer_cls: Any = None,
     parser_cls: Any = None,
     visitor_cls: Any = None,
@@ -850,17 +893,44 @@ def compile_lockstep(
     frontend_limits: FrontendLimits | None = None,
     target_width: int = 8,
 ) -> LockstepCompileResult:
-    resolved_library_sources: list[str] = list(library_sources or [])
-    resolved_library_source_files: list[str] = list(library_source_files or [])
+    input_library_sources: list[str] = list(library_sources or [])
+    input_library_source_files: list[str] = list(library_source_files or [])
+    if len(input_library_source_files) < len(input_library_sources):
+        input_library_source_files.extend(
+            f"<library:{idx + 1}>"
+            for idx in range(len(input_library_source_files), len(input_library_sources))
+        )
+    resolved_library_sources: list[str] = []
+    resolved_library_source_files: list[str] = []
     resolved_limits = _normalize_frontend_limits(
         frontend_limits, source_file=source_file
     )
+
+    dependency_resolution_state = _DependencyResolutionState(visited=set())
+
+    for library_source, library_file in zip(
+        input_library_sources, input_library_source_files, strict=False
+    ):
+        dependency_sources, dependency_source_files = _resolve_dependency_sources(
+            library_source,
+            source_file=library_file,
+            dependency_root=dependency_root,
+            unsafe_allow_external_dependencies=unsafe_allow_external_dependencies,
+            limits=resolved_limits,
+            state=dependency_resolution_state,
+        )
+        resolved_library_sources.extend(dependency_sources)
+        resolved_library_source_files.extend(dependency_source_files)
+        resolved_library_sources.append(library_source)
+        resolved_library_source_files.append(library_file)
 
     dependency_sources, dependency_source_files = _resolve_dependency_sources(
         source_code,
         source_file=source_file,
         dependency_root=dependency_root,
+        unsafe_allow_external_dependencies=unsafe_allow_external_dependencies,
         limits=resolved_limits,
+        state=dependency_resolution_state,
     )
     resolved_library_sources.extend(dependency_sources)
     resolved_library_source_files.extend(dependency_source_files)

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
 from .errors import LockstepCompileError
@@ -14,14 +17,6 @@ _PRIMITIVE_C_TYPE = {
     "double": "double",
 }
 
-_PRIMITIVE_SIZE = {
-    "bool": 1,
-    "int": 4,
-    "uint": 4,
-    "float": 4,
-    "double": 8,
-}
-
 _MAX_U64 = (1 << 64) - 1
 
 
@@ -34,12 +29,14 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 
 
 def emit_c_header(
-    program: AstProgram,
+    program: AstProgram | Mapping[str, Any],
     guard: str = "LOCKSTEP_GENERATED_H",
     *,
     target_width: int = 8,
 ) -> str:
-    entities = ast_to_entities(program)
+    entities = (
+        dict(program) if isinstance(program, Mapping) else ast_to_entities(program)
+    )
 
     layout = build_arena_layout(entities)
     normalized_structs = layout.normalized_structs
@@ -85,8 +82,7 @@ def emit_c_header(
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
     cumulative_layout_total = 0
     for leaf in layout.leaves:
-        leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
-        leaf_allocation_size = leaf_size * leaf.element_count
+        leaf_allocation_size = leaf.size * leaf.element_count
         if cumulative_layout_total > _MAX_U64 - leaf_allocation_size:
             diagnostic = LockstepDiagnostic(
                 severity="error",

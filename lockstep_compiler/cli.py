@@ -6,9 +6,11 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO, cast
 
+from .ast import ast_to_entities
 from .errors import LockstepCompileError
-from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 from .formatter import format_lockstep_source
+from .optimizer import optimize_bind_routes
+from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 
 
 def _non_negative_limit_value(flag_name: str):
@@ -233,6 +235,10 @@ def run_cli(
     else:
         source = stdin.read()
 
+    if args.format:
+        print(format_lockstep_source(source), end="", file=stdout)
+        return 0
+
     library_sources = []
     library_source_files = []
     for library_path in args.lib:
@@ -241,10 +247,6 @@ def run_cli(
             return 1
         library_sources.append(library_source)
         library_source_files.append(str(Path(library_path)))
-
-    if args.format:
-        print(format_lockstep_source(source), end="", file=stdout)
-        return 0
 
     if compiler is None:
         from .compiler import compile_lockstep
@@ -265,6 +267,7 @@ def run_cli(
     supports_frontend_limits = False
     supports_target_width = False
     supports_dependency_root = False
+    supports_unsafe_allow_external_dependencies = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -306,6 +309,11 @@ def run_cli(
             or parameter.name == "dependency_root"
             for parameter in signature.parameters.values()
         )
+        supports_unsafe_allow_external_dependencies = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "unsafe_allow_external_dependencies"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
@@ -334,6 +342,10 @@ def run_cli(
         if args.path and not args.unsafe_allow_external_dependencies:
             dependency_root = source_path.resolve().parent
         compile_kwargs["dependency_root"] = dependency_root
+    if supports_unsafe_allow_external_dependencies:
+        compile_kwargs["unsafe_allow_external_dependencies"] = (
+            args.unsafe_allow_external_dependencies
+        )
 
     try:
         if compile_kwargs:
