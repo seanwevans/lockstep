@@ -563,23 +563,50 @@ class _FunctionLowerer:
             return self.builder.ashr(lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._emit_relational_compare(op, lhs, rhs, type_name=type_name)
-        if op == "&&":
-            if (
-                not isinstance(lhs.type, ir.IntType)
-                or lhs.type.width != 1
-                or lhs.type != rhs.type
-            ):
-                self._compiler_error("operator '&&' expects matching boolean operands")
-            return self.builder.and_(lhs, rhs)
-        if op == "||":
-            if (
-                not isinstance(lhs.type, ir.IntType)
-                or lhs.type.width != 1
-                or lhs.type != rhs.type
-            ):
-                self._compiler_error("operator '||' expects matching boolean operands")
-            return self.builder.or_(lhs, rhs)
         self._compiler_error(f"unsupported binary operator '{op}'")
+
+    def _validate_logical_operand(self, op: str, value: ir.Value) -> ir.Value:
+        if not isinstance(value.type, ir.IntType) or value.type.width != 1:
+            self._compiler_error(f"operator '{op}' expects boolean operands")
+        return value
+
+    def _lower_logical_binary_op(self, node: AstExprBinary) -> ir.Value:
+        expr_type_name = self._infer_binary_operand_type(node)
+        bool_ty = ir.IntType(1)
+        lhs = self._validate_logical_operand(node.op, self._lower_expr(node.left))
+        if expr_type_name == "bool":
+            lhs = self._coerce_value_to_type(lhs, bool_ty, "bool")
+
+        lhs_block = self.builder.block
+        rhs_block = lhs_block.function.append_basic_block(
+            f"logic_{'and' if node.op == '&&' else 'or'}_rhs"
+        )
+        merge_block = lhs_block.function.append_basic_block(
+            f"logic_{'and' if node.op == '&&' else 'or'}_merge"
+        )
+
+        if node.op == "&&":
+            short_value = ir.Constant(bool_ty, 0)
+            self.builder.cbranch(lhs, rhs_block, merge_block)
+        else:
+            short_value = ir.Constant(bool_ty, 1)
+            self.builder.cbranch(lhs, merge_block, rhs_block)
+
+        self.builder.position_at_end(rhs_block)
+        rhs = self._validate_logical_operand(node.op, self._lower_expr(node.right))
+        if expr_type_name == "bool":
+            rhs = self._coerce_value_to_type(rhs, bool_ty, "bool")
+        rhs_value_block = self.builder.block
+        rhs_reaches_merge = not rhs_value_block.is_terminated
+        if rhs_reaches_merge:
+            self.builder.branch(merge_block)
+
+        self.builder.position_at_end(merge_block)
+        result = self.builder.phi(bool_ty, name="logic_result")
+        result.add_incoming(short_value, lhs_block)
+        if rhs_reaches_merge:
+            result.add_incoming(rhs, rhs_value_block)
+        return result
 
     def _lower_expr(
         self,
@@ -623,6 +650,8 @@ class _FunctionLowerer:
             )
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
+        if node.op in {"&&", "||"}:
+            return self._lower_logical_binary_op(node)
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
         expr_type_name = self._infer_binary_operand_type(node)
         if expr_type_name in _PRIMITIVE_TYPE_MAP:
