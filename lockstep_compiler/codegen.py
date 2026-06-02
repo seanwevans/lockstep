@@ -1049,9 +1049,14 @@ def emit_llvm_ir(
                 name=f"{kind}_{_sanitize_symbol(name)}_byte_offset",
             )
 
+        # Address leaves with raw byte arithmetic.  The arena struct layout is
+        # still useful for ABI/type descriptions, but using it as the GEP base
+        # would make LLVM scale offsets by the selected field type instead of
+        # treating ``leaf_offset`` as an exact byte position.
+        arena_byte_ptr_type = ir.IntType(8).as_pointer()
         bytes_ptr = tick_builder.bitcast(
             arena_ptr,
-            ir.IntType(8).as_pointer(),
+            arena_byte_ptr_type,
             name=f"{kind}_{_sanitize_symbol(name)}_arena_bytes",
         )
         leaf_byte_addr = tick_builder.gep(

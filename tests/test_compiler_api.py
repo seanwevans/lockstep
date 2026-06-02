@@ -699,7 +699,11 @@ def test_emit_llvm_ir_accepts_ast_program_input():
     assert '%"stream_inp_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*' in llvm_ir
     assert '%"stream_inp_value_byte_ptr" = getelementptr i8, i8* %"stream_inp_arena_bytes", i32 %"stream_inp_byte_offset"' in llvm_ir
     assert 'bitcast i8* %"stream_inp_value_byte_ptr" to float*' in llvm_ir
+    assert '%"stream_out_byte_offset" = add i32 8, %"stream_out_byte_index"' in llvm_ir
+    assert '%"stream_out_value_byte_ptr" = getelementptr i8, i8* %"stream_out_arena_bytes", i32 %"stream_out_byte_offset"' in llvm_ir
+    assert 'bitcast i8* %"stream_out_value_byte_ptr" to float*' in llvm_ir
     assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0' not in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' not in llvm_ir
 
 
 def test_emit_llvm_ir_uses_array_field_for_single_capacity_streams():
