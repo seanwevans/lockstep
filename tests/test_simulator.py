@@ -18,10 +18,27 @@ from lockstep_compiler.ast import (
 from lockstep_compiler.cli import run_cli
 from lockstep_compiler.simulator import (
     SimulatorRuntimeError,
+    _resolve_sim_path,
     parse_simulation_inputs,
     simulate_pipeline_entities,
     simulate_pipeline_source,
 )
+
+
+def test_resolve_sim_path_treats_zero_as_mapped_value():
+    assert _resolve_sim_path({"count": 0, "particle": {"mass": 0}}, ("count",)) == 0
+    assert _resolve_sim_path({"particle": {"mass": 0}}, ("particle", "mass")) == 0
+
+
+def test_resolve_sim_path_rejects_unmapped_direct_lookup():
+    try:
+        _resolve_sim_path({"count": 0}, ("missing",))
+    except SimulatorRuntimeError as err:
+        message = str(err)
+        assert "Unmapped simulator identifier 'missing'" in message
+        assert "available identifiers: count" in message
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError for unmapped lookup")
 
 
 def test_simulate_pipeline_source_uses_compiled_runtime_entities():

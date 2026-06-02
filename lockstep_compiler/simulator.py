@@ -289,19 +289,21 @@ def _format_available_sim_keys(value: dict[str, Any]) -> str:
     return ", ".join(sorted(str(key) for key in value))
 
 
+_MISSING_SIM_VALUE = object()
+
+
 def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
     if not path:
         return None
 
     root = path[0]
-    if root not in env:
+    value = env.get(root, _MISSING_SIM_VALUE)
+    if value is _MISSING_SIM_VALUE:
         raise SimulatorRuntimeError(
             "Unmapped simulator identifier "
             f"'{root}' while resolving '{_format_sim_path(path)}'; "
             f"available identifiers: {_format_available_sim_keys(env)}."
         )
-
-    value = env[root]
     resolved_path = (root,)
     for part in path[1:]:
         if not isinstance(value, dict):
@@ -311,14 +313,15 @@ def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
                 f"'{_format_sim_path(resolved_path)}' while resolving "
                 f"'{_format_sim_path(path)}'."
             )
-        if part not in value:
+        next_value = value.get(part, _MISSING_SIM_VALUE)
+        if next_value is _MISSING_SIM_VALUE:
             raise SimulatorRuntimeError(
                 "Unmapped simulator member "
                 f"'{part}' at '{_format_sim_path(resolved_path)}' while resolving "
                 f"'{_format_sim_path(path)}'; available members: "
                 f"{_format_available_sim_keys(value)}."
             )
-        value = value[part]
+        value = next_value
         resolved_path = (*resolved_path, part)
     return _coerce_sim_value(value)
 
