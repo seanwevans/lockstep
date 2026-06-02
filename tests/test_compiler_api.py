@@ -702,6 +702,31 @@ def test_emit_llvm_ir_accepts_ast_program_input():
     assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0' not in llvm_ir
 
 
+def test_emit_llvm_ir_uses_array_field_for_single_capacity_streams():
+    from lockstep_compiler.ast import (
+        AstPipelineDecl,
+        AstProgram,
+        AstStreamDecl,
+        AstUniformDecl,
+    )
+
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            pipelines=(
+                AstPipelineDecl(
+                    name="Main",
+                    streams=(
+                        AstStreamDecl(name="inp", declared_type="float", capacity="1"),
+                    ),
+                    uniforms=(AstUniformDecl(name="dt", declared_type="float"),),
+                ),
+            ),
+        )
+    )
+
+    assert '%"struct.Lockstep_Arena" = type {[1 x float], float}' in llvm_ir
+
+
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     llvm_ir = emit_llvm_ir(
         {

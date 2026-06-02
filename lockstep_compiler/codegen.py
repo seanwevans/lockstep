@@ -989,7 +989,7 @@ def emit_llvm_ir(
         else:
             field_ty = ir.ArrayType(ir.IntType(8), max(leaf.size, 1))
 
-        if leaf.element_count > 1:
+        if leaf.kind == "stream" or leaf.element_count > 1:
             arena_field_types.append(ir.ArrayType(field_ty, max(leaf.element_count, 1)))
         else:
             arena_field_types.append(field_ty)
