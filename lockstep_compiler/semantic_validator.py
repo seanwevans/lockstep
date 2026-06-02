@@ -1,3 +1,4 @@
+from difflib import get_close_matches
 from types import SimpleNamespace
 from typing import Any
 
@@ -60,9 +61,11 @@ def build_semantic_validator(base_visitor_cls):
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
-            self._primitive_types = {"int", "float", "bool", "string"}
+            self._primitive_types = {"int", "uint", "float", "double", "bool", "string"}
             self._current_pure_function: SemanticPureFunctionContext | None = None
-            self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = []
+            self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = (
+                []
+            )
             self._pipeline_bind_usage_stack: list[set[str]] = []
 
         def _line_col(self, ctx) -> tuple[int, int]:
@@ -551,7 +554,9 @@ def build_semantic_validator(base_visitor_cls):
                         if field.name in seen_field_names:
                             self._add_diagnostic(
                                 severity="error",
-                                code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                                code=SEMANTIC_DIAGNOSTIC_CODES[
+                                    "duplicate_struct_field"
+                                ],
                                 message=(
                                     f"Struct '{struct.name}' has duplicate field declaration "
                                     f"'{field.name}'."
@@ -579,7 +584,9 @@ def build_semantic_validator(base_visitor_cls):
                     if shader.name in self.shaders:
                         self._add_diagnostic(
                             severity="error",
-                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "duplicate_kernel_declaration"
+                            ],
                             message=f"Duplicate shader/filter declaration for '{shader.name}'.",
                             ctx=shader_ctx,
                             hint="Rename one declaration to avoid symbol collisions.",
@@ -600,7 +607,9 @@ def build_semantic_validator(base_visitor_cls):
                     if filter_decl.name in self.filters:
                         self._add_diagnostic(
                             severity="error",
-                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"],
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "duplicate_kernel_declaration"
+                            ],
                             message=f"Duplicate shader/filter declaration for '{filter_decl.name}'.",
                             ctx=filter_ctx,
                             hint="Rename one declaration to avoid symbol collisions.",
@@ -886,12 +895,15 @@ def build_semantic_validator(base_visitor_cls):
                 AstExprUnary: lambda node: (
                     "bool"
                     if node.op == "!"
-                    else self._resolve_ast_expr_type(node.operand)
-                    if (
-                        node.op != "-"
-                        or self._resolve_ast_expr_type(node.operand) in numeric_types
+                    else (
+                        self._resolve_ast_expr_type(node.operand)
+                        if (
+                            node.op != "-"
+                            or self._resolve_ast_expr_type(node.operand)
+                            in numeric_types
+                        )
+                        else None
                     )
-                    else None
                 ),
                 AstExprBinary: _resolve_binary,
                 AstExprCall: _resolve_call,
@@ -1135,9 +1147,11 @@ def build_semantic_validator(base_visitor_cls):
                 kind="stream",
             )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
-                    kind="stream",
-                    declaration_ctx=ctx,
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = (
+                    SemanticPipelineResource(
+                        kind="stream",
+                        declaration_ctx=ctx,
+                    )
                 )
             return self.visitChildren(ctx)
 
@@ -1153,9 +1167,11 @@ def build_semantic_validator(base_visitor_cls):
                 kind="accumulator",
             )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
-                    kind="accumulator",
-                    declaration_ctx=ctx,
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = (
+                    SemanticPipelineResource(
+                        kind="accumulator",
+                        declaration_ctx=ctx,
+                    )
                 )
             return self.visitChildren(ctx)
 
@@ -1189,9 +1205,11 @@ def build_semantic_validator(base_visitor_cls):
                         hint="Use an initializer expression with the same type as the declared uniform.",
                     )
             if self._pipeline_resource_stack:
-                self._pipeline_resource_stack[-1][ctx.ID().getText()] = SemanticPipelineResource(
-                    kind="uniform",
-                    declaration_ctx=ctx,
+                self._pipeline_resource_stack[-1][ctx.ID().getText()] = (
+                    SemanticPipelineResource(
+                        kind="uniform",
+                        declaration_ctx=ctx,
+                    )
                 )
             return self.visitChildren(ctx)
 
@@ -1302,7 +1320,9 @@ def build_semantic_validator(base_visitor_cls):
                                 hint="Pass exactly one expression to a cast.",
                             )
                     elif callee_name == "select":
-                        args = ctx.exprList().expr() if ctx.exprList() is not None else []
+                        args = (
+                            ctx.exprList().expr() if ctx.exprList() is not None else []
+                        )
                         if len(args) != 3:
                             self._add_diagnostic(
                                 severity="error",
@@ -1359,15 +1379,15 @@ def build_semantic_validator(base_visitor_cls):
             return self.visitChildren(ctx)
 
         def _validate_ast_program(self, program: AstProgram):
+            def _stmt_ctx(node):
+                return self._ctx_from_location(getattr(node, "location", None))
+
             def _validate_ast_expr(expr: AstExpr):
                 if isinstance(expr, AstExprLiteral):
                     return
                 if isinstance(expr, AstExprVar):
-                    expr_ctx = self._ctx_from_location(getattr(expr, "location", None))
-                    if expr.path:
-                        self._check_expression_identifier(
-                            expr.path[0], expr_ctx, require_assigned=True
-                        )
+                    expr_ctx = _stmt_ctx(expr)
+                    self._resolve_ast_lvalue_type(expr.path, expr_ctx, for_write=False)
                     return
                 if isinstance(expr, AstExprUnary):
                     _validate_ast_expr(expr.operand)
@@ -1377,26 +1397,164 @@ def build_semantic_validator(base_visitor_cls):
                     _validate_ast_expr(expr.right)
                     return
                 if isinstance(expr, AstExprCall):
+                    call_ctx = _stmt_ctx(expr)
                     for arg in expr.args:
                         _validate_ast_expr(arg)
+                    _validate_ast_call(expr, call_ctx)
                     return
                 if isinstance(expr, AstExprCast):
-                    cast_ctx = self._ctx_from_location(getattr(expr, "location", None))
-                    self._validate_declared_type(str(expr.target_type), cast_ctx, "LCK310")
+                    cast_ctx = _stmt_ctx(expr)
+                    self._validate_declared_type(
+                        str(expr.target_type), cast_ctx, "LCK310"
+                    )
                     _validate_ast_expr(expr.value)
 
-            def _validate_ast_statement(statement: AstStatement):
-                stmt_ctx = self._ctx_from_location(getattr(statement, "location", None))
-                if isinstance(statement, AstVarDeclStmt):
-                    if statement.declared_type is not None:
-                        self._validate_declared_type(
-                            str(statement.declared_type), stmt_ctx, "LCK310"
+            def _validate_ast_call(expr: AstExprCall, ctx):
+                callee_name = expr.name
+                if callee_name in {"int", "float", "double", "uint", "bool"}:
+                    if len(expr.args) != 1:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "pure_argument_count_mismatch"
+                            ],
+                            message=(
+                                f"Cast '{callee_name}(...)' expects 1 argument, but got {len(expr.args)}."
+                            ),
+                            ctx=ctx,
+                            hint="Pass exactly one expression to a cast.",
                         )
+                    return
+
+                if callee_name == "select":
+                    if len(expr.args) != 3:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "pure_argument_count_mismatch"
+                            ],
+                            message=(
+                                f"Built-in 'select(...)' expects 3 arguments, but got {len(expr.args)}."
+                            ),
+                            ctx=ctx,
+                            hint="Use `select(condition, when_true, when_false)`.",
+                        )
+                        return
+                    condition_type = self._resolve_ast_expr_type(expr.args[0])
+                    true_type = self._resolve_ast_expr_type(expr.args[1])
+                    false_type = self._resolve_ast_expr_type(expr.args[2])
+                    if condition_type is not None and condition_type != "bool":
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "pure_argument_type_mismatch"
+                            ],
+                            message=(
+                                "Type mismatch for built-in 'select' condition: "
+                                f"expected bool, got {condition_type}."
+                            ),
+                            ctx=ctx,
+                            hint="Pass a boolean condition as the first argument.",
+                        )
+                    if (
+                        true_type is not None
+                        and false_type is not None
+                        and true_type != false_type
+                    ):
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "pure_argument_type_mismatch"
+                            ],
+                            message=(
+                                "Type mismatch for built-in 'select' value arguments: "
+                                f"expected matching types, got {true_type} and {false_type}."
+                            ),
+                            ctx=ctx,
+                            hint="Pass true/false values with the same type.",
+                        )
+                    return
+
+                signature = self.pure_functions.get(callee_name)
+                if signature is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_unknown_function"],
+                        message=f"Undefined pure function '{callee_name}'.",
+                        ctx=ctx,
+                        hint="Declare the pure function before calling it.",
+                    )
+                    return
+
+                expected_params = signature.params
+                if len(expr.args) != len(expected_params):
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_argument_count_mismatch"],
+                        message=(
+                            f"Pure function '{callee_name}' expects {len(expected_params)} argument(s), "
+                            f"but got {len(expr.args)}."
+                        ),
+                        ctx=ctx,
+                        hint="Pass the exact number of arguments declared in the pure function signature.",
+                    )
+                    return
+
+                for index, (arg_expr, expected) in enumerate(
+                    zip(expr.args, expected_params), start=1
+                ):
+                    actual_type = self._resolve_ast_expr_type(arg_expr)
+                    if actual_type != expected.declared_type:
+                        resolved_actual = (
+                            actual_type if actual_type is not None else "<unresolved>"
+                        )
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "pure_argument_type_mismatch"
+                            ],
+                            message=(
+                                f"Type mismatch for argument {index} in pure call '{callee_name}': "
+                                f"expected {expected.declared_type}, got {resolved_actual}."
+                            ),
+                            ctx=ctx,
+                            hint="Ensure each argument type matches the pure function parameter type.",
+                        )
+
+            def _validate_ast_statement(statement: AstStatement):
+                stmt_ctx = _stmt_ctx(statement)
+                if isinstance(statement, AstVarDeclStmt):
+                    declared_type_name = (
+                        str(statement.declared_type)
+                        if statement.declared_type
+                        else None
+                    )
+                    if declared_type_name is not None:
+                        self._validate_declared_type(
+                            declared_type_name, stmt_ctx, "LCK310"
+                        )
+
+                    initializer_type = None
                     if statement.initializer is not None:
                         _validate_ast_expr(statement.initializer)
-                    declared_type_name = (
-                        str(statement.declared_type) if statement.declared_type else "unknown"
-                    )
+                        initializer_type = self._resolve_ast_expr_type(
+                            statement.initializer
+                        )
+
+                    if declared_type_name is None:
+                        if initializer_type is None:
+                            self._add_diagnostic(
+                                severity="error",
+                                code=SEMANTIC_DIAGNOSTIC_CODES["cannot_infer_type"],
+                                message=(
+                                    f"Cannot infer type for local variable '{statement.name}' without a typed initializer."
+                                ),
+                                ctx=stmt_ctx,
+                                hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
+                            )
+                            return
+                        declared_type_name = initializer_type
+
                     self._declare(
                         statement.name,
                         declared_type_name,
@@ -1405,22 +1563,116 @@ def build_semantic_validator(base_visitor_cls):
                         kind="local",
                         assigned=statement.initializer is not None,
                     )
+
+                    if (
+                        initializer_type is not None
+                        and initializer_type != declared_type_name
+                    ):
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "var_initializer_type_mismatch"
+                            ],
+                            message=(
+                                f"Type mismatch in initializer for '{statement.name}': "
+                                f"expected {declared_type_name}, got {initializer_type}."
+                            ),
+                            ctx=stmt_ctx,
+                            hint="Use an initializer expression with the same type as the declared variable.",
+                        )
                     return
+
                 if isinstance(statement, AstAssignStmt):
-                    if statement.target:
-                        target_name = statement.target[0]
-                        self._check_expression_identifier(target_name, stmt_ctx, require_assigned=False)
-                        self._set_symbol_assigned(target_name)
+                    lvalue_type = self._resolve_ast_lvalue_type(
+                        statement.target, stmt_ctx, for_write=True
+                    )
                     _validate_ast_expr(statement.value)
+                    expr_type = self._resolve_ast_expr_type(statement.value)
+                    if (
+                        lvalue_type is not None
+                        and expr_type is not None
+                        and lvalue_type != expr_type
+                    ):
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["assignment_type_mismatch"],
+                            message=(
+                                "Type mismatch in assignment: "
+                                f"left-hand side expects {lvalue_type}, got {expr_type}."
+                            ),
+                            ctx=stmt_ctx,
+                            hint="Assign expressions whose type matches the lvalue declaration.",
+                        )
+                    if statement.target:
+                        self._set_symbol_assigned(statement.target[0])
                     return
+
                 if isinstance(statement, AstReturnStmt):
                     _validate_ast_expr(statement.value)
+                    if self._current_pure_function is None:
+                        return
+                    expected_type = self._current_pure_function.return_type
+                    actual_type = self._resolve_ast_expr_type(statement.value)
+                    if actual_type is not None and actual_type != expected_type:
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["pure_return_type_mismatch"],
+                            message=(
+                                f"Return type mismatch in pure function '{self._current_pure_function.name}': "
+                                f"expected {expected_type}, got {actual_type}."
+                            ),
+                            ctx=stmt_ctx,
+                            hint="Return an expression whose type matches the pure function return type.",
+                        )
+
+            def _check_pure_return_shape(pure: AstPureDecl):
+                pure_ctx = _stmt_ctx(pure)
+                return_statements = [
+                    (index, statement)
+                    for index, statement in enumerate(pure.body)
+                    if isinstance(statement, AstReturnStmt)
+                ]
+                if not return_statements:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_missing_return"],
+                        message=f"Pure function '{pure.name}' must include a return statement.",
+                        ctx=pure_ctx,
+                        hint="Add a return statement that produces a value matching the declared return type.",
+                    )
+                    return
+                if len(return_statements) > 1:
+                    self._add_diagnostic(
+                        severity="warning",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_multiple_returns"],
+                        message=(
+                            f"Pure function '{pure.name}' contains multiple return statements; "
+                            "only the first return is reachable in straight-line semantics."
+                        ),
+                        ctx=_stmt_ctx(return_statements[1][1]),
+                        hint="Keep a single terminal return to avoid dead code and ambiguous intent.",
+                    )
+                first_return_index = return_statements[0][0]
+                for unreachable_stmt in pure.body[first_return_index + 1 :]:
+                    self._add_diagnostic(
+                        severity="warning",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["pure_unreachable_after_return"],
+                        message=(
+                            f"Unreachable statement in pure function '{pure.name}' after return statement."
+                        ),
+                        ctx=_stmt_ctx(unreachable_stmt),
+                        hint="Remove or move statements before the return.",
+                    )
 
             def _validate_ast_function_body(
                 params: tuple[SemanticKernelParam, ...] | list[SemanticKernelParam],
                 body: tuple[AstStatement, ...],
+                *,
+                current_pure_function: SemanticPureFunctionContext | None = None,
             ):
                 self._push_scope()
+                previous_pure_function = self._current_pure_function
+                self._current_pure_function = current_pure_function
                 for param in params:
                     self._declare(
                         param.name,
@@ -1431,34 +1683,154 @@ def build_semantic_validator(base_visitor_cls):
                     )
                 for statement in body:
                     _validate_ast_statement(statement)
+                self._current_pure_function = previous_pure_function
                 self._pop_scope()
+
+            def _validate_ast_fold_route(route: AstFoldBindRoute):
+                ctx = _stmt_ctx(route)
+                declared_type = str(route.uniform_type)
+                self._validate_declared_type(
+                    declared_type,
+                    ctx,
+                    SEMANTIC_DIAGNOSTIC_CODES["unknown_declared_type"],
+                )
+                self._declare(
+                    route.uniform_name,
+                    declared_type,
+                    ctx,
+                    duplicate_code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                    kind="uniform",
+                )
+                if route.operator not in {"sum", "avg", "min", "max"}:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["unknown_fold_operator"],
+                        message=f"Unsupported fold operator '{route.operator}'.",
+                        ctx=ctx,
+                        hint="Use a valid fold operator such as sum, avg, min, or max.",
+                    )
+                    return
+
+                fold_source_symbol = self._lookup(route.source)
+                if fold_source_symbol is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                        message=f"Fold source accumulator '{route.source}' is undefined.",
+                        ctx=ctx,
+                        hint="Declare an accumulator and use it as the fold source.",
+                    )
+                elif fold_source_symbol.kind != "accumulator":
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_unknown_source"],
+                        message=(
+                            f"Fold source '{route.source}' must reference an accumulator, "
+                            f"got {fold_source_symbol.kind}."
+                        ),
+                        ctx=ctx,
+                        hint="Use an accumulator as the input to fold.",
+                    )
+                elif fold_source_symbol.declared_type != declared_type:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["fold_type_mismatch"],
+                        message=(
+                            f"Fold target '{route.uniform_name}' has type {declared_type}, but fold source "
+                            f"'{route.source}' has accumulator type {fold_source_symbol.declared_type}."
+                        ),
+                        ctx=ctx,
+                        hint="Match the folded uniform type to the accumulator type.",
+                    )
+                else:
+                    self._mark_symbol_used(route.source)
+                    if self._pipeline_bind_usage_stack:
+                        self._pipeline_bind_usage_stack[-1].add(route.source)
 
             self._push_scope()
             for struct in program.structs:
                 struct_ctx = self._ctx_from_location(struct.location)
                 if struct.name in self.structs:
-                    self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"], message=f"Duplicate struct declaration for '{struct.name}'.", ctx=struct_ctx, hint="Rename one struct declaration to keep type names unique.")
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_declaration"],
+                        message=f"Duplicate struct declaration for '{struct.name}'.",
+                        ctx=struct_ctx,
+                        hint="Rename one struct declaration to keep type names unique.",
+                    )
                     continue
                 fields = {}
                 for field in struct.fields:
                     field_ctx = self._ctx_from_location(field.location)
+                    self._validate_declared_type(
+                        str(field.declared_type), field_ctx, "LCK310"
+                    )
                     if field.name in fields:
-                        self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"], message=f"Struct '{struct.name}' has duplicate field declaration '{field.name}'.", ctx=field_ctx, hint="Rename or remove duplicate struct member declarations.")
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_struct_field"],
+                            message=(
+                                f"Struct '{struct.name}' has duplicate field declaration '{field.name}'."
+                            ),
+                            ctx=field_ctx,
+                            hint="Rename or remove duplicate struct member declarations.",
+                        )
                         continue
-                    fields[field.name]=SemanticStructField(name=field.name, declared_type=str(field.declared_type))
-                self.structs[struct.name]=fields
+                    fields[field.name] = SemanticStructField(
+                        name=field.name, declared_type=str(field.declared_type)
+                    )
+                self.structs[struct.name] = fields
 
-            for collection, target in ((program.shaders, self.shaders), (program.filters, self.filters)):
+            for collection, target in (
+                (program.shaders, self.shaders),
+                (program.filters, self.filters),
+            ):
                 for kernel in collection:
-                    kctx=self._ctx_from_location(kernel.location)
-                    params=[SemanticKernelParam(name=p.name, declared_type=str(p.declared_type), modifier=p.modifier) for p in kernel.params]
+                    kctx = self._ctx_from_location(kernel.location)
+                    params = []
+                    for param in kernel.params:
+                        declared_type = str(param.declared_type)
+                        self._validate_declared_type(declared_type, kctx, "LCK310")
+                        params.append(
+                            SemanticKernelParam(
+                                name=param.name,
+                                declared_type=declared_type,
+                                modifier=param.modifier,
+                            )
+                        )
                     if kernel.name in target:
-                        self._add_diagnostic(severity="error", code=SEMANTIC_DIAGNOSTIC_CODES["duplicate_kernel_declaration"], message=f"Duplicate shader/filter declaration for '{kernel.name}'.", ctx=kctx, hint="Rename one declaration to avoid symbol collisions.")
+                        self._add_diagnostic(
+                            severity="error",
+                            code=SEMANTIC_DIAGNOSTIC_CODES[
+                                "duplicate_kernel_declaration"
+                            ],
+                            message=f"Duplicate shader/filter declaration for '{kernel.name}'.",
+                            ctx=kctx,
+                            hint="Rename one declaration to avoid symbol collisions.",
+                        )
                     else:
-                        target[kernel.name]=params
+                        target[kernel.name] = params
 
             for pure in program.pure_functions:
-                self.pure_functions[pure.name]=SemanticPureFunctionSignature(return_type=str(pure.return_type), params=tuple(SemanticKernelParam(name=p.name, declared_type=str(p.declared_type), modifier="value") for p in pure.params), intrinsic=pure.intrinsic)
+                pctx = self._ctx_from_location(pure.location)
+                self._validate_declared_type(str(pure.return_type), pctx, "LCK310")
+                pure_params = []
+                for param in pure.params:
+                    declared_type = str(param.declared_type)
+                    self._validate_declared_type(declared_type, pctx, "LCK310")
+                    pure_params.append(
+                        SemanticKernelParam(
+                            name=param.name,
+                            declared_type=declared_type,
+                            modifier="value",
+                        )
+                    )
+                self.pure_functions[pure.name] = SemanticPureFunctionSignature(
+                    return_type=str(pure.return_type),
+                    params=tuple(pure_params),
+                    intrinsic=pure.intrinsic,
+                )
+
             for kernel in (*program.shaders, *program.filters):
                 kernel_params = tuple(
                     SemanticKernelParam(
@@ -1469,7 +1841,11 @@ def build_semantic_validator(base_visitor_cls):
                     for param in kernel.params
                 )
                 _validate_ast_function_body(kernel_params, kernel.body)
+
             for pure in program.pure_functions:
+                if pure.intrinsic:
+                    continue
+                _check_pure_return_shape(pure)
                 pure_params = tuple(
                     SemanticKernelParam(
                         name=param.name,
@@ -1478,26 +1854,135 @@ def build_semantic_validator(base_visitor_cls):
                     )
                     for param in pure.params
                 )
-                _validate_ast_function_body(pure_params, pure.body)
+                _validate_ast_function_body(
+                    pure_params,
+                    pure.body,
+                    current_pure_function=SemanticPureFunctionContext(
+                        name=pure.name,
+                        return_type=str(pure.return_type),
+                    ),
+                )
 
             for pipeline in program.pipelines:
                 self._push_scope()
                 self._pipeline_resource_stack.append({})
                 self._pipeline_bind_usage_stack.append(set())
                 for stream in pipeline.streams:
-                    ctx=self._ctx_from_location(stream.location)
-                    self._declare(stream.name, str(stream.declared_type), ctx, duplicate_code="LCK306", kind="stream")
+                    ctx = self._ctx_from_location(stream.location)
+                    declared_type = str(stream.declared_type)
+                    self._validate_declared_type(declared_type, ctx, "LCK310")
+                    self._declare(
+                        stream.name,
+                        declared_type,
+                        ctx,
+                        duplicate_code="LCK306",
+                        kind="stream",
+                    )
+                    self._pipeline_resource_stack[-1][stream.name] = (
+                        SemanticPipelineResource(kind="stream", declaration_ctx=ctx)
+                    )
                 for accum in pipeline.accumulators:
-                    ctx=self._ctx_from_location(accum.location)
-                    self._declare(accum.name, str(accum.declared_type), ctx, duplicate_code="LCK306", kind="accumulator")
+                    ctx = self._ctx_from_location(accum.location)
+                    declared_type = str(accum.declared_type)
+                    self._validate_declared_type(declared_type, ctx, "LCK310")
+                    self._declare(
+                        accum.name,
+                        declared_type,
+                        ctx,
+                        duplicate_code="LCK306",
+                        kind="accumulator",
+                    )
+                    self._pipeline_resource_stack[-1][accum.name] = (
+                        SemanticPipelineResource(
+                            kind="accumulator", declaration_ctx=ctx
+                        )
+                    )
                 for uniform in pipeline.uniforms:
-                    ctx=self._ctx_from_location(uniform.location)
-                    self._declare(uniform.name, str(uniform.declared_type), ctx, duplicate_code="LCK306", kind="uniform")
-                self._pipeline_resource_stack.pop()
-                self._pipeline_bind_usage_stack.pop()
+                    ctx = self._ctx_from_location(uniform.location)
+                    declared_type = str(uniform.declared_type)
+                    self._validate_declared_type(declared_type, ctx, "LCK310")
+                    self._declare(
+                        uniform.name,
+                        declared_type,
+                        ctx,
+                        duplicate_code="LCK306",
+                        kind="uniform",
+                    )
+                    self._pipeline_resource_stack[-1][uniform.name] = (
+                        SemanticPipelineResource(kind="uniform", declaration_ctx=ctx)
+                    )
+
+                for route in pipeline.bind_routes:
+                    if isinstance(route, AstKernelBindRoute):
+                        self._type_check_bind_call(
+                            _stmt_ctx(route), route.target, route.kernel, route.args
+                        )
+                    elif isinstance(route, AstFoldBindRoute):
+                        _validate_ast_fold_route(route)
+
+                declared_resources = self._pipeline_resource_stack.pop()
+                bind_used_resources = self._pipeline_bind_usage_stack.pop()
+                for resource_name, resource in declared_resources.items():
+                    if resource_name in bind_used_resources:
+                        continue
+                    self._add_diagnostic(
+                        severity="warning",
+                        code=SEMANTIC_DIAGNOSTIC_CODES["unbound_pipeline_resource"],
+                        message=(
+                            f"Pipeline {resource.kind} '{resource_name}' is declared but not used in the bind block."
+                        ),
+                        ctx=resource.declaration_ctx,
+                        hint="Reference every declared stream/accumulator in at least one bind statement.",
+                    )
                 self._pop_scope()
 
             self._pop_scope()
+
+        def _resolve_ast_lvalue_type(
+            self, path: tuple[str, ...], ctx, *, for_write: bool = False
+        ):
+            if not path:
+                return None
+
+            root_identifier = path[0]
+            current_type = self._check_expression_identifier(
+                root_identifier,
+                ctx,
+                require_assigned=not for_write,
+            )
+            if current_type is None:
+                return None
+
+            for field_name in path[1:]:
+                struct_fields = self.structs.get(current_type)
+                if struct_fields is None:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "invalid_field_access_non_struct"
+                        ],
+                        message=(
+                            f"Cannot access field '{field_name}' on non-struct type "
+                            f"'{current_type}'."
+                        ),
+                        ctx=ctx,
+                        hint="Use field access only on values declared as struct types.",
+                    )
+                    return None
+                if field_name not in struct_fields:
+                    self._add_diagnostic(
+                        severity="error",
+                        code=SEMANTIC_DIAGNOSTIC_CODES[
+                            "invalid_field_access_unknown_field"
+                        ],
+                        message=f"Struct '{current_type}' has no field '{field_name}'.",
+                        ctx=ctx,
+                        hint="Use one of the fields declared on this struct.",
+                    )
+                    return None
+                current_type = struct_fields[field_name].declared_type
+
+            return current_type
 
         def validate(self, tree):
             typed_ast = getattr(self, "typed_ast", None)
