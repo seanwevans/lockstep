@@ -414,11 +414,29 @@ class _FunctionLowerer:
     def _infer_binary_operand_type(self, node: AstExprBinary) -> str | None:
         left_type = self._infer_expr_type(node.left)
         right_type = self._infer_expr_type(node.right)
-        if node.op in {"&&", "||"}:
+        op = node.op
+
+        if op in {"&&", "||"}:
             return "bool" if left_type == "bool" and right_type == "bool" else None
-        if node.op in {"<<", ">>"}:
-            return left_type
-        return self._promote_scalar_type_names(left_type, right_type)
+        if op in {"<<", ">>"}:
+            if left_type in {"int", "uint"} and (
+                right_type in {"int", "uint"} or right_type is None
+            ):
+                return left_type
+            return None
+        if op in {"+", "-", "*", "/", "%", "&", "|", "^"}:
+            return self._promote_scalar_type_names(left_type, right_type)
+        if op in {"<", "<=", ">", ">=", "==", "!="}:
+            return self._promote_scalar_type_names(left_type, right_type)
+        return None
+
+    def _infer_binary_result_type(self, node: AstExprBinary) -> str | None:
+        operand_type = self._infer_binary_operand_type(node)
+        if node.op in {"&&", "||"}:
+            return "bool" if operand_type == "bool" else None
+        if node.op in {"<", "<=", ">", ">=", "==", "!="}:
+            return "bool" if operand_type is not None else None
+        return operand_type
 
     def _infer_expr_type(
         self,
@@ -452,11 +470,7 @@ class _FunctionLowerer:
                 return node.name
             return self.function_return_types.get(f"pure_{_sanitize_symbol(node.name)}")
         if isinstance(node, AstExprBinary):
-            if node.op in {"&&", "||"}:
-                return "bool"
-            if node.op in {"<", "<=", ">", ">=", "==", "!="}:
-                return "bool"
-            return self._infer_binary_operand_type(node)
+            return self._infer_binary_result_type(node)
         return None
 
     def _load_var(self, name: str) -> ir.Value:
@@ -522,6 +536,8 @@ class _FunctionLowerer:
                 return self.builder.xor(lhs, rhs)
             if op == "<<":
                 return self.builder.shl(lhs, rhs)
+            if type_name == "uint":
+                return self.builder.lshr(lhs, rhs)
             return self.builder.ashr(lhs, rhs)
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._emit_relational_compare(op, lhs, rhs, type_name=type_name)
