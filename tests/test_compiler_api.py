@@ -757,6 +757,65 @@ def test_emit_llvm_ir_reports_undefined_kernel_bind_route():
         emit_llvm_ir(program)
 
 
+def test_emit_llvm_ir_reports_undefined_kernel_in_fused_trip_count():
+    from lockstep_compiler.ast import (
+        AstKernelBindRoute,
+        AstKernelDecl,
+        AstKernelParam,
+        AstPipelineDecl,
+        AstProgram,
+        AstStreamDecl,
+    )
+
+    first_route = AstKernelBindRoute(
+        target="tmp",
+        kernel="KnownKernel",
+        args=("inp", "tmp"),
+        route="tmp = KnownKernel(inp, tmp);",
+    )
+    missing_route = AstKernelBindRoute(
+        target="out",
+        kernel="MissingKernel",
+        args=("tmp", "out"),
+        route="out = MissingKernel(tmp, out);",
+    )
+    program = AstProgram(
+        shaders=(
+            AstKernelDecl(
+                name="KnownKernel",
+                params=(
+                    AstKernelParam(modifier="in", declared_type="float", name="inp"),
+                    AstKernelParam(modifier="out", declared_type="float", name="out"),
+                ),
+            ),
+        ),
+        pipelines=(
+            AstPipelineDecl(
+                name="Main",
+                streams=(
+                    AstStreamDecl(name="inp", declared_type="float", capacity="4"),
+                    AstStreamDecl(name="out", declared_type="float", capacity="4"),
+                ),
+                bind_routes=(first_route, missing_route),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CodegenError,
+        match=r"undefined shader/filter 'MissingKernel' in bind route: out = MissingKernel\(tmp, out\);",
+    ):
+        emit_llvm_ir(
+            program,
+            bind_optimization={
+                "optimized_bind_routes": [first_route.route, missing_route.route],
+                "fused_groups": [
+                    {"source_routes": [first_route.route, missing_route.route]}
+                ],
+            },
+        )
+
+
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     llvm_ir = emit_llvm_ir(
         {
