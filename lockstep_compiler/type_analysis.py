@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import get_close_matches
 
-from .models import ParsedTypeArraySuffix, ParsedTypeGenericSuffix, ParsedTypeName, SemanticStructField
+from .models import (
+    ParsedTypeArraySuffix,
+    ParsedTypeGenericSuffix,
+    ParsedTypeName,
+    SemanticStructField,
+)
 
 
 @dataclass(frozen=True)
@@ -13,11 +18,15 @@ class TypeValidationIssue:
 
 
 def consume_identifier(type_name: str, index: int) -> tuple[str | None, int]:
-    if index >= len(type_name) or not (type_name[index].isalpha() or type_name[index] == "_"):
+    if index >= len(type_name) or not (
+        type_name[index].isalpha() or type_name[index] == "_"
+    ):
         return None, index
     start = index
     index += 1
-    while index < len(type_name) and (type_name[index].isalnum() or type_name[index] == "_"):
+    while index < len(type_name) and (
+        type_name[index].isalnum() or type_name[index] == "_"
+    ):
         index += 1
     return type_name[start:index], index
 
@@ -32,7 +41,9 @@ def consume_digits(type_name: str, index: int) -> tuple[str | None, int]:
     return type_name[start:index], index
 
 
-def parse_type_name(type_name: str, index: int = 0) -> tuple[ParsedTypeName | None, int]:
+def parse_type_name(
+    type_name: str, index: int = 0
+) -> tuple[ParsedTypeName | None, int]:
     base_name, index = consume_identifier(type_name, index)
     if base_name is None:
         return None, index
@@ -71,7 +82,9 @@ def parse_type_name(type_name: str, index: int = 0) -> tuple[ParsedTypeName | No
 
 
 def collect_referenced_type_names(parsed_type: ParsedTypeName) -> list[str]:
-    has_generic_suffix = any(isinstance(s, ParsedTypeGenericSuffix) for s in parsed_type.inner)
+    has_generic_suffix = any(
+        isinstance(s, ParsedTypeGenericSuffix) for s in parsed_type.inner
+    )
     referenced_names = [] if has_generic_suffix else [parsed_type.base]
     for suffix in parsed_type.inner:
         if isinstance(suffix, ParsedTypeGenericSuffix):
@@ -79,7 +92,9 @@ def collect_referenced_type_names(parsed_type: ParsedTypeName) -> list[str]:
     return referenced_names
 
 
-def validate_type_name(type_name: str, known_types: set[str]) -> tuple[bool, list[TypeValidationIssue]]:
+def validate_type_name(
+    type_name: str, known_types: set[str]
+) -> tuple[bool, list[TypeValidationIssue]]:
     parsed_type, index = parse_type_name(type_name)
     if parsed_type is None or index != len(type_name):
         return False, []
@@ -88,13 +103,32 @@ def validate_type_name(type_name: str, known_types: set[str]) -> tuple[bool, lis
     for referenced_type in collect_referenced_type_names(parsed_type):
         if referenced_type in known_types:
             continue
-        suggestions = tuple(get_close_matches(referenced_type, sorted(known_types), n=2, cutoff=0.6))
-        issues.append(TypeValidationIssue(referenced_type=referenced_type, suggestions=suggestions))
+        suggestions = tuple(
+            get_close_matches(referenced_type, sorted(known_types), n=2, cutoff=0.6)
+        )
+        issues.append(
+            TypeValidationIssue(
+                referenced_type=referenced_type, suggestions=suggestions
+            )
+        )
     return len(issues) == 0, issues
 
 
-def build_struct_field_type_index(structs: dict[str, dict[str, SemanticStructField]]) -> dict[str, dict[str, str]]:
+def build_struct_field_type_index(
+    structs: dict[str, dict[str, SemanticStructField | str]],
+) -> dict[str, dict[str, str]]:
+    """Return a plain ``struct -> field -> type`` index.
+
+    Compiler semantic indexes store ``SemanticStructField`` objects, while LSP
+    entity and regex-recovery paths already carry serialized type strings.  Keep
+    this helper shared by accepting either representation so cached LSP analysis
+    and compiler semantic validation resolve fields identically.
+    """
+
     return {
-        struct_name: {field_name: field.declared_type for field_name, field in fields.items()}
+        struct_name: {
+            field_name: (field if isinstance(field, str) else field.declared_type)
+            for field_name, field in fields.items()
+        }
         for struct_name, fields in structs.items()
     }

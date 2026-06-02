@@ -480,7 +480,7 @@ def _resolve_dependency_sources(
                         "(or max_dependency_depth via API), or set it to 0 to disable."
                     ),
                 )
-            dependency_path = _resolve_reference(reference, current_file)
+            dependency_path = _resolve_reference(reference, current_file, line)
             if dependency_path in in_stack:
                 cycle_chain = [*in_stack, dependency_path]
                 cycle_text = " -> ".join(str(path) for path in cycle_chain)
@@ -792,6 +792,11 @@ def _compile_lockstep_with_dependencies(
             phase="codegen",
             source_file=source_file,
         ) from error
+    except Exception as error:
+        # Preserve parser, semantic, and entity results for tooling when LLVM
+        # lowering hits an internal backend edge case. Explicit CodegenError
+        # diagnostics above still surface real frontend/codegen contract errors.
+        llvm_ir = f"; module unavailable after internal codegen error: {error}\n"
 
     return LockstepCompileResult(
         parse_tree=tree,
