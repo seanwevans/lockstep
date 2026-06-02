@@ -1769,6 +1769,51 @@ def emit_llvm_ir(
             return ir.VectorType(scalar_type, simd_width)
         return None
 
+    def _struct_name_for_type(llvm_type: ir.Type) -> str | None:
+        for name, known_ty in known_structs.items():
+            if llvm_type is known_ty:
+                return name
+        return None
+
+    def _field_index_and_type(
+        llvm_type: ir.Type, field_name: str
+    ) -> tuple[int, ir.Type, str] | None:
+        struct_name = _struct_name_for_type(llvm_type)
+        if struct_name is None:
+            return None
+        fields = struct_fields.get(struct_name, ())
+        for index, field in enumerate(fields):
+            if field.name == field_name:
+                declared_type_name = _type_name(field.declared_type)
+                return (
+                    index,
+                    lowerer._llvm_type(declared_type_name, known_structs),
+                    declared_type_name,
+                )
+        return None
+
+    def _vectorizable_leaf_fields(
+        type_name: AstType | str, prefix: tuple[str, ...] = ()
+    ) -> dict[tuple[str, ...], tuple[ir.Type, str]] | None:
+        declared_type_name = _type_name(type_name)
+        llvm_type = lowerer._llvm_type(declared_type_name, known_structs)
+        if _vector_type_for_scalar(llvm_type) is not None:
+            return {prefix: (llvm_type, declared_type_name)}
+        if not isinstance(llvm_type, ir.IdentifiedStructType):
+            return None
+        fields = struct_fields.get(declared_type_name)
+        if fields is None:
+            return None
+        leaves: dict[tuple[str, ...], tuple[ir.Type, str]] = {}
+        for field in fields:
+            child = _vectorizable_leaf_fields(
+                field.declared_type, prefix + (field.name,)
+            )
+            if child is None:
+                return None
+            leaves.update(child)
+        return leaves
+
     def _splat_to_vector(
         value: ir.Value, vector_ty: ir.VectorType, type_name: str | None = None
     ) -> ir.Value:
@@ -1851,17 +1896,49 @@ def emit_llvm_ir(
             AstExprCall,
         )
 
+        type_env: dict[str, str] = {}
+
+        def path_type(path: tuple[str, ...]) -> str | None:
+            if not path:
+                return None
+            current_type_name = type_env.get(_sanitize_symbol(path[0]))
+            if current_type_name is None:
+                return None
+            for field_name in path[1:]:
+                current_ty = lowerer._llvm_type(current_type_name, known_structs)
+                field_info = _field_index_and_type(current_ty, field_name)
+                if field_info is None:
+                    return None
+                _, _, current_type_name = field_info
+            return current_type_name
+
+        def type_vectorizable(type_name: str | AstType | None) -> bool:
+            return (
+                type_name is not None
+                and _vectorizable_leaf_fields(type_name) is not None
+            )
+
+        def scalar_type_vectorizable(type_name: str | AstType | None) -> bool:
+            if type_name is None:
+                return False
+            scalar_ty = lowerer._llvm_type(type_name, known_structs)
+            return _vector_type_for_scalar(scalar_ty) is not None
+
         def expr_supported(expr) -> bool:
             if not isinstance(expr, supported_exprs):
                 return False
-            if isinstance(expr, (AstExprLiteral, AstExprVar)):
+            if isinstance(expr, AstExprLiteral):
                 return True
+            if isinstance(expr, AstExprVar):
+                return scalar_type_vectorizable(path_type(expr.path))
             if isinstance(expr, AstExprUnary):
                 return expr_supported(expr.operand)
             if isinstance(expr, AstExprBinary):
                 return expr_supported(expr.left) and expr_supported(expr.right)
             if isinstance(expr, AstExprCast):
-                return expr_supported(expr.value)
+                return scalar_type_vectorizable(expr.target_type) and expr_supported(
+                    expr.value
+                )
             if isinstance(expr, AstExprCall):
                 return expr.name in {
                     "select",
@@ -1886,39 +1963,81 @@ def emit_llvm_ir(
             if signature is None:
                 return False
             kernel_decl, params = signature
+            type_env = {}
             for param in params:
-                param_ty = lowerer._llvm_type(param.declared_type, known_structs)
-                if _vector_type_for_scalar(param_ty) is None:
+                param_type_name = _type_name(param.declared_type)
+                if _vectorizable_leaf_fields(param_type_name) is None:
                     return False
                 if param.modifier == "accum":
                     return False
+                type_env[_sanitize_symbol(param.name)] = param_type_name
             for statement in kernel_decl.body:
                 if not isinstance(statement, supported_statements):
                     return False
                 if isinstance(statement, AstAssignStmt):
-                    if len(statement.target) != 1 or not expr_supported(
-                        statement.value
-                    ):
+                    if not scalar_type_vectorizable(
+                        path_type(statement.target)
+                    ) or not expr_supported(statement.value):
                         return False
                 elif isinstance(statement, AstVarDeclStmt):
                     declared = statement.declared_type or AstType("float")
-                    if (
-                        _vector_type_for_scalar(
-                            lowerer._llvm_type(declared, known_structs)
-                        )
-                        is None
-                    ):
+                    declared_name = _type_name(declared)
+                    if _vectorizable_leaf_fields(declared_name) is None:
                         return False
                     if statement.initializer is not None and not expr_supported(
                         statement.initializer
                     ):
                         return False
+                    type_env[_sanitize_symbol(statement.name)] = declared_name
         return True
 
     class _FusedVectorLowerer:
         def __init__(self):
-            self.values: dict[str, ir.Value] = {}
-            self.types: dict[str, str] = {}
+            self.values: dict[tuple[str, ...], ir.Value] = {}
+            self.types: dict[tuple[str, ...], str] = {}
+
+        @staticmethod
+        def _key(path: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+            if not path:
+                raise CodegenError("empty vector variable path")
+            return (_sanitize_symbol(path[0]), *tuple(path[1:]))
+
+        def _leaf_fields(
+            self, type_name: AstType | str, prefix: tuple[str, ...] = ()
+        ) -> dict[tuple[str, ...], tuple[ir.Type, str]]:
+            leaves = _vectorizable_leaf_fields(type_name, prefix)
+            if leaves is None:
+                raise CodegenError(f"type '{type_name}' cannot be SIMD-vectorized")
+            return leaves
+
+        def define_slot(self, name: str, type_name: AstType | str) -> None:
+            root_key = self._key((name,))
+            declared_type_name = _type_name(type_name)
+            self.types[root_key] = declared_type_name
+            for rel_path, (scalar_ty, leaf_type_name) in self._leaf_fields(
+                declared_type_name
+            ).items():
+                key = root_key + rel_path
+                self.types[key] = leaf_type_name
+                vector_ty = _vector_type_for_scalar(scalar_ty)
+                if vector_ty is None:
+                    raise CodegenError(
+                        f"type '{leaf_type_name}' cannot be SIMD-vectorized"
+                    )
+                self.values[key] = ir.Constant(vector_ty, None)
+
+        def set_slot_leaf(
+            self, name: str, rel_path: tuple[str, ...], value: ir.Value
+        ) -> None:
+            self.values[self._key((name,)) + rel_path] = value
+
+        def slot_leaf_values(self, name: str) -> dict[tuple[str, ...], ir.Value]:
+            root_key = self._key((name,))
+            return {
+                key[len(root_key) :]: value
+                for key, value in self.values.items()
+                if key[: len(root_key)] == root_key and key != root_key
+            }
 
         def _declared_vector_type(self, type_name: AstType | str) -> ir.VectorType:
             scalar_ty = lowerer._llvm_type(type_name, known_structs)
@@ -1926,6 +2045,25 @@ def emit_llvm_ir(
             if vector_ty is None:
                 raise CodegenError(f"type '{type_name}' cannot be SIMD-vectorized")
             return vector_ty
+
+        def _path_type(self, path: tuple[str, ...]) -> str | None:
+            key = self._key(path)
+            if key in self.types:
+                return self.types[key]
+            if len(path) == 1:
+                return None
+            root_type = self.types.get(self._key((path[0],)))
+            if root_type is None:
+                return None
+            current_type = root_type
+            for field_name in path[1:]:
+                current_ty = lowerer._llvm_type(current_type, known_structs)
+                field_info = _field_index_and_type(current_ty, field_name)
+                if field_info is None:
+                    return None
+                _, _, current_type = field_info
+            self.types[key] = current_type
+            return current_type
 
         @staticmethod
         def _promote_scalar_type_names(
@@ -1970,7 +2108,7 @@ def emit_llvm_ir(
             if isinstance(node, AstExprLiteral):
                 return node.kind if node.kind in _PRIMITIVE_TYPE_MAP else None
             if isinstance(node, AstExprVar):
-                return self.types.get(_sanitize_symbol(node.path[0]))
+                return self._path_type(node.path)
             if isinstance(node, AstExprCast):
                 return _type_name(node.target_type)
             if isinstance(node, AstExprUnary):
@@ -2016,11 +2154,14 @@ def emit_llvm_ir(
             return _splat_to_vector(scalar, ir.VectorType(scalar.type, simd_width))
 
         def _load_var(self, node: AstExprVar) -> ir.Value:
-            if len(node.path) != 1:
-                raise CodegenError("struct field access cannot be SIMD-vectorized")
-            key = _sanitize_symbol(node.path[0])
+            key = self._key(node.path)
             if key not in self.values:
-                raise CodegenError(f"undefined vector variable '{node.path[0]}'")
+                if len(node.path) == 1 and self._path_type(node.path) in struct_fields:
+                    raise CodegenError(
+                        f"whole-struct value '{node.path[0]}' cannot be used as "
+                        "a SIMD scalar expression"
+                    )
+                raise CodegenError(f"undefined vector variable '{'.'.join(node.path)}'")
             return self.values[key]
 
         def _numeric_unary_minus(self, value: ir.Value) -> ir.Value:
@@ -2224,9 +2365,12 @@ def emit_llvm_ir(
 
         def lower_statement(self, statement: AstStatement) -> None:
             if isinstance(statement, AstAssignStmt):
-                if len(statement.target) != 1:
-                    raise CodegenError("field assignment cannot be SIMD-vectorized")
-                key = _sanitize_symbol(statement.target[0])
+                key = self._key(statement.target)
+                if key not in self.values:
+                    raise CodegenError(
+                        "undefined vector assignment target "
+                        f"'{'.'.join(statement.target)}'"
+                    )
                 target_ty = self.values[key].type
                 type_name = self.types.get(key)
                 self.values[key] = _coerce_vector_value(
@@ -2234,16 +2378,20 @@ def emit_llvm_ir(
                 )
                 return
             if isinstance(statement, AstVarDeclStmt):
-                key = _sanitize_symbol(statement.name)
                 declared_type = (
                     _type_name(statement.declared_type)
                     if statement.declared_type
                     else "float"
                 )
-                vector_ty = self._declared_vector_type(declared_type)
-                self.types[key] = declared_type
-                self.values[key] = ir.Constant(vector_ty, None)
+                self.define_slot(statement.name, declared_type)
+                key = self._key((statement.name,))
                 if statement.initializer is not None:
+                    if key not in self.values:
+                        raise CodegenError(
+                            f"whole-struct initializer for '{statement.name}' "
+                            "cannot be SIMD-vectorized"
+                        )
+                    vector_ty = self._declared_vector_type(declared_type)
                     self.values[key] = _coerce_vector_value(
                         self.lower_expr(statement.initializer), vector_ty, declared_type
                     )
@@ -2340,49 +2488,167 @@ def emit_llvm_ir(
                 )
                 tick_builder.store(lane_value, ptr)
 
+    def _load_stream_binding_vectors(
+        name: str,
+        type_name: str,
+        current: ir.Value,
+        chunk_trip_count: int,
+    ) -> dict[tuple[str, ...], ir.Value]:
+        leaves = _vectorizable_leaf_fields(type_name)
+        if leaves is None:
+            raise CodegenError(f"type '{type_name}' cannot be SIMD-vectorized")
+        loaded: dict[tuple[str, ...], ir.Value] = {}
+        for rel_path, (scalar_ty, leaf_type_name) in leaves.items():
+            if not rel_path:
+                loaded[rel_path] = _load_stream_vector(
+                    name, scalar_ty, current, chunk_trip_count
+                )
+                continue
+            vector_ty = ir.VectorType(scalar_ty, simd_width)
+            lane_indices = _vector_lane_indices(current)
+            result = ir.Constant(vector_ty, ir.Undefined)
+            for lane in range(simd_width):
+                lane_index = tick_builder.extract_element(
+                    lane_indices,
+                    ir.Constant(ir.IntType(32), lane),
+                    name=f"fused_load_lane_{lane}_idx",
+                )
+                clamped = _clamped_stream_index(name, lane_index)
+                lane_value = _load_value(
+                    "stream",
+                    name,
+                    scalar_ty,
+                    leaf_type_name,
+                    rel_path,
+                    clamped,
+                )
+                result = tick_builder.insert_element(
+                    result,
+                    lane_value,
+                    ir.Constant(ir.IntType(32), lane),
+                    name=(
+                        f"fused_{_sanitize_symbol(name)}_"
+                        f"{'_'.join(rel_path)}_lane_{lane}"
+                    ),
+                )
+            loaded[rel_path] = result
+        return loaded
+
+    def _store_stream_binding_vectors(
+        name: str,
+        type_name: str,
+        values: dict[tuple[str, ...], ir.Value],
+        current: ir.Value,
+        chunk_trip_count: int,
+    ) -> None:
+        leaves = _vectorizable_leaf_fields(type_name)
+        if leaves is None:
+            raise CodegenError(f"type '{type_name}' cannot be SIMD-vectorized")
+        for rel_path, (_, leaf_type_name) in leaves.items():
+            value = values.get(rel_path)
+            if value is None:
+                continue
+            if not rel_path:
+                _store_stream_vector(name, value, current, chunk_trip_count)
+                continue
+            lane_indices = _vector_lane_indices(current)
+            for lane in range(simd_width):
+                lane_index = tick_builder.extract_element(
+                    lane_indices,
+                    ir.Constant(ir.IntType(32), lane),
+                    name=f"fused_store_lane_{lane}_idx",
+                )
+                clamped = _clamped_stream_index(name, lane_index)
+                lane_value = tick_builder.extract_element(
+                    value,
+                    ir.Constant(ir.IntType(32), lane),
+                    name=(
+                        f"fused_store_{_sanitize_symbol(name)}_"
+                        f"{'_'.join(rel_path)}_lane_{lane}"
+                    ),
+                )
+                _store_value(
+                    "stream",
+                    name,
+                    lane_value,
+                    leaf_type_name,
+                    rel_path,
+                    clamped,
+                )
+
     def _emit_vector_fused_chunk(
         routes: tuple[AstKernelBindRoute, ...],
         current: ir.Value,
         eliminated_targets: set[str],
         chunk_trip_count: int,
     ) -> None:
-        route_values: dict[str, ir.Value] = {}
+        route_values: dict[str, dict[tuple[str, ...], ir.Value]] = {}
         for route in routes:
             signature = kernel_signatures[route.kernel]
             kernel_decl, params = signature
             vector_lowerer = _FusedVectorLowerer()
-            out_params: list[tuple[str, str]] = []
+            out_params: list[tuple[str, str, str]] = []
             for index, param in enumerate(params):
                 arg_name = route.args[index] if index < len(route.args) else ""
-                key = _sanitize_symbol(param.name)
-                scalar_ty = lowerer._llvm_type(param.declared_type, known_structs)
-                vector_ty = ir.VectorType(scalar_ty, simd_width)
-                vector_lowerer.types[key] = _type_name(param.declared_type)
+                param_type_name = _type_name(param.declared_type)
+                vector_lowerer.define_slot(param.name, param_type_name)
                 if param.modifier == "in" and arg_name in route_values:
-                    vector_lowerer.values[key] = route_values[arg_name]
+                    for rel_path, value in route_values[arg_name].items():
+                        vector_lowerer.set_slot_leaf(param.name, rel_path, value)
                 elif param.modifier == "in" and arg_name in stream_slots:
-                    vector_lowerer.values[key] = _load_stream_vector(
+                    for rel_path, value in _load_stream_binding_vectors(
                         arg_name,
-                        scalar_ty,
+                        param_type_name,
                         current,
                         chunk_trip_count,
-                    )
+                    ).items():
+                        vector_lowerer.set_slot_leaf(param.name, rel_path, value)
                 elif param.modifier == "uniform" and arg_name in uniform_slots:
-                    scalar = _load_tick_param("uniform", arg_name, scalar_ty)
-                    vector_lowerer.values[key] = _splat_to_vector(scalar, vector_ty)
+                    uniform_values = _vectorizable_leaf_fields(param_type_name)
+                    if uniform_values is None:
+                        raise CodegenError(
+                            f"type '{param_type_name}' cannot be SIMD-vectorized"
+                        )
+                    for rel_path, (leaf_ty, leaf_type_name) in uniform_values.items():
+                        scalar = _load_value(
+                            "uniform", arg_name, leaf_ty, leaf_type_name, rel_path
+                        )
+                        vector_lowerer.set_slot_leaf(
+                            param.name,
+                            rel_path,
+                            _splat_to_vector(
+                                scalar,
+                                ir.VectorType(leaf_ty, simd_width),
+                                leaf_type_name,
+                            ),
+                        )
                 elif param.modifier == "out":
-                    vector_lowerer.values[key] = ir.Constant(vector_ty, None)
-                    out_params.append((arg_name, key))
-                else:
-                    vector_lowerer.values[key] = ir.Constant(vector_ty, None)
+                    if arg_name in stream_slots:
+                        for rel_path, value in _load_stream_binding_vectors(
+                            arg_name,
+                            param_type_name,
+                            current,
+                            chunk_trip_count,
+                        ).items():
+                            vector_lowerer.set_slot_leaf(param.name, rel_path, value)
+                    out_params.append((arg_name, param.name, param_type_name))
             for statement in kernel_decl.body:
                 vector_lowerer.lower_statement(statement)
-            for arg_name, key in out_params:
-                value = vector_lowerer.values[key]
+            for arg_name, param_name, param_type_name in out_params:
+                values = vector_lowerer.slot_leaf_values(param_name)
+                if (
+                    not values
+                    and vector_lowerer._key((param_name,)) in vector_lowerer.values
+                ):
+                    values = {
+                        (): vector_lowerer.values[vector_lowerer._key((param_name,))]
+                    }
                 if arg_name in eliminated_targets:
-                    route_values[arg_name] = value
+                    route_values[arg_name] = values
                 elif arg_name in stream_slots:
-                    _store_stream_vector(arg_name, value, current, chunk_trip_count)
+                    _store_stream_binding_vectors(
+                        arg_name, param_type_name, values, current, chunk_trip_count
+                    )
 
     def _lower_fused_kernel_group(
         routes: tuple[AstKernelBindRoute, ...], group_index: int
