@@ -10,6 +10,68 @@ from typing import Any
 from llvmlite import ir
 
 from .compiler import compile_lockstep
+from .models import LockstepCompileResult
+
+
+def _clone_entities(entities: dict[str, Any]) -> dict[str, Any]:
+    cloned: dict[str, Any] = {}
+    for key, value in entities.items():
+        if isinstance(value, list):
+            cloned[key] = [
+                dict(item) if isinstance(item, dict) else item for item in value
+            ]
+        elif isinstance(value, dict):
+            cloned[key] = dict(value)
+        else:
+            cloned[key] = value
+    return cloned
+
+
+def _overlay_typed_ast_bodies(
+    entities: dict[str, Any], typed_ast: Any | None
+) -> dict[str, Any]:
+    if typed_ast is None:
+        return entities
+
+    def _body_index(attribute: str) -> dict[str, list[Any]]:
+        return {
+            decl.name: list(getattr(decl, "body", ()))
+            for decl in getattr(typed_ast, attribute, ())
+            if hasattr(decl, "name")
+        }
+
+    for entity_key, ast_attribute in (
+        ("pure_functions", "pure_functions"),
+        ("shaders", "shaders"),
+        ("filters", "filters"),
+    ):
+        bodies = _body_index(ast_attribute)
+        if not bodies:
+            continue
+        updated_decls = []
+        for declaration in entities.get(entity_key, []):
+            if not isinstance(declaration, dict):
+                updated_decls.append(declaration)
+                continue
+            name = declaration.get("name")
+            if isinstance(name, str) and name in bodies:
+                updated_decls.append({**declaration, "body_ast": bodies[name]})
+            else:
+                updated_decls.append(declaration)
+        entities[entity_key] = updated_decls
+    return entities
+
+
+def _normalize_simulation_entities(entities_or_result: Any) -> dict[str, Any]:
+    if isinstance(entities_or_result, LockstepCompileResult):
+        entities = _clone_entities(entities_or_result.entities)
+        return _overlay_typed_ast_bodies(entities, entities_or_result.ast)
+    if hasattr(entities_or_result, "entities"):
+        entities = _clone_entities(entities_or_result.entities)
+        return _overlay_typed_ast_bodies(
+            entities, getattr(entities_or_result, "ast", None)
+        )
+    return entities_or_result
 
 
 @dataclass
@@ -263,13 +325,38 @@ def _sim_path_tuple(path_value: Any) -> tuple[str, ...]:
     return ()
 
 
-def _default_sim_value(type_name: str | None = None) -> Any:
+def _struct_field_type_index(entities: dict[str, Any]) -> dict[str, dict[str, str]]:
+    structs: dict[str, dict[str, str]] = {}
+    for struct in entities.get("structs", []):
+        if not isinstance(struct, dict) or not isinstance(struct.get("name"), str):
+            continue
+        fields: dict[str, str] = {}
+        for field in struct.get("fields", []):
+            if not isinstance(field, dict):
+                continue
+            field_name = field.get("name")
+            field_type = field.get("type")
+            if isinstance(field_name, str) and field_type is not None:
+                fields[field_name] = str(field_type)
+        structs[struct["name"]] = fields
+    return structs
+
+
+def _default_sim_value(
+    type_name: str | None = None,
+    struct_field_types: dict[str, dict[str, str]] | None = None,
+) -> Any:
     if type_name in {"float", "double"}:
         return 0.0
     if type_name in {"int", "uint"}:
         return 0
     if type_name == "bool":
         return False
+    if type_name and struct_field_types and type_name in struct_field_types:
+        return {
+            field_name: _default_sim_value(field_type, struct_field_types)
+            for field_name, field_type in struct_field_types[type_name].items()
+        }
     return {}
 
 
@@ -354,16 +441,37 @@ def _assign_sim_path(env: dict[str, Any], path: tuple[str, ...], value: Any) -> 
         env[path[0]] = value
         return
 
-    current = env.get(path[0])
+    root = path[0]
+    current = env.get(root, _MISSING_SIM_VALUE)
+    if current is _MISSING_SIM_VALUE:
+        _raise_unmapped_sim_path(
+            path_kind="identifier",
+            missing_part=root,
+            full_path=path,
+            available_scope=env,
+        )
     if not isinstance(current, dict):
-        current = {}
-        env[path[0]] = current
+        raise SimulatorRuntimeError(
+            "Cannot assign simulator member "
+            f"'{path[1]}' on non-struct value at '{root}' while assigning "
+            f"'{_format_sim_path(path)}'."
+        )
+
+    resolved_path = (root,)
     for part in path[1:-1]:
-        child = current.get(part)
-        if not isinstance(child, dict):
+        child = current.get(part, _MISSING_SIM_VALUE)
+        if child is _MISSING_SIM_VALUE:
             child = {}
             current[part] = child
+        elif not isinstance(child, dict):
+            raise SimulatorRuntimeError(
+                "Cannot assign simulator member "
+                f"'{part}' on non-struct value at "
+                f"'{_format_sim_path(resolved_path)}' while assigning "
+                f"'{_format_sim_path(path)}'."
+            )
         current = child
+        resolved_path = (*resolved_path, part)
     current[path[-1]] = value
 
 
@@ -587,6 +695,7 @@ def _simulate_kernel_rows(
     accumulators: dict[str, list[Any]],
     uniforms: dict[str, Any],
     pure_functions: dict[str, dict[str, Any]],
+    struct_field_types: dict[str, dict[str, str]],
 ) -> tuple[list[Any], dict[str, list[Any]]]:
     body_ast = kernel.get("body_ast") or []
     params = kernel.get("params", [])
@@ -630,7 +739,7 @@ def _simulate_kernel_rows(
                 env[param_name] = (
                     _copy_sim_value(arg_rows[row_index])
                     if row_index < len(arg_rows)
-                    else _default_sim_value(param.get("type"))
+                    else _default_sim_value(param.get("type"), struct_field_types)
                 )
             elif modifier == "out":
                 out_param_names.append(param_name)
@@ -639,7 +748,9 @@ def _simulate_kernel_rows(
                 env[param_name] = _coerce_sim_value(uniforms.get(arg_name, 0))
             elif modifier == "accum" and isinstance(arg_name, str):
                 accum_param_args[param_name] = arg_name
-                env[param_name] = _default_sim_value(param.get("type"))
+                env[param_name] = _default_sim_value(
+                    param.get("type"), struct_field_types
+                )
 
         return_value, assigned = _execute_sim_body(body_ast, env, pure_functions)
         for param_name, arg_name in accum_param_args.items():
@@ -663,12 +774,14 @@ def _simulate_kernel_rows(
 
 
 def simulate_pipeline_entities(
-    entities: dict[str, Any],
+    entities: dict[str, Any] | LockstepCompileResult,
     *,
     stream_inputs: dict[str, list[Any]] | None = None,
     accumulator_inputs: dict[str, list[Any]] | None = None,
     use_llvm_runtime: bool | None = None,
 ) -> dict[str, Any]:
+    entities = _normalize_simulation_entities(entities)
+
     if use_llvm_runtime is None:
         use_llvm_runtime = os.getenv("LOCKSTEP_SIM_USE_LLVM", "").lower() in {
             "1",
@@ -676,6 +789,8 @@ def simulate_pipeline_entities(
             "yes",
             "on",
         }
+
+    struct_field_types = _struct_field_type_index(entities)
 
     streams = {
         stream["name"]: {
@@ -777,7 +892,7 @@ def simulate_pipeline_entities(
 
             if len(rows) < source_count:
                 rows = rows + [
-                    _default_sim_value(first_input_type)
+                    _default_sim_value(first_input_type, struct_field_types)
                     for _ in range(source_count - len(rows))
                 ]
 
@@ -790,6 +905,7 @@ def simulate_pipeline_entities(
                 accumulators=accumulators,
                 uniforms=uniforms,
                 pure_functions=pure_functions,
+                struct_field_types=struct_field_types,
             )
 
             target = route_ir.get("target")
@@ -860,7 +976,7 @@ def simulate_pipeline_source(
 ) -> dict[str, Any]:
     result = compile_lockstep(source_code, verbose=False)
     return simulate_pipeline_entities(
-        result.entities,
+        result,
         stream_inputs=stream_inputs,
         accumulator_inputs=accumulator_inputs,
     )
@@ -874,18 +990,31 @@ def parse_simulation_inputs(
     if not isinstance(payload, dict):
         raise ValueError("Invalid simulation input at '<root>': expected an object.")
 
+    allowed_fields = {"streams", "accumulators"}
+    for field in payload:
+        if field not in allowed_fields:
+            raise ValueError(
+                f"Invalid simulation input at '<root>': unexpected field '{field}'."
+            )
+
     def _validate_input_map(field: str) -> dict[str, list[Any]]:
         value = payload.get(field, {})
         if not isinstance(value, dict):
             raise ValueError(
                 f"Invalid simulation input at '{field}': expected an object map."
             )
+        validated: dict[str, list[Any]] = {}
         for name, rows in value.items():
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"Invalid simulation input at '{field}': expected string keys."
+                )
             if not isinstance(rows, list):
                 raise ValueError(
                     f"Invalid simulation input at '{field}.{name}': expected a list of values."
                 )
-        return value
+            validated[name] = rows
+        return validated
 
     streams = _validate_input_map("streams")
     accumulators = _validate_input_map("accumulators")
