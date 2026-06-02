@@ -7,6 +7,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from lockstep_compiler.ast import (
+    AstAssignStmt,
+    AstExprBinary,
+    AstExprCall,
+    AstExprLiteral,
+    AstExprVar,
+    AstReturnStmt,
+)
 from lockstep_compiler.cli import run_cli
 from lockstep_compiler.simulator import (
     parse_simulation_inputs,
@@ -65,6 +73,135 @@ def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():
     assert simulation["routes"][0]["output_count"] == 2
     assert simulation["routes"][1]["kind"] == "fold"
     assert simulation["uniforms"]["total"] == 2
+
+
+def test_simulate_pipeline_entities_executes_shader_body_ast_assignments():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "float", "capacity": "8"},
+            {"name": "out_stream", "type": "float", "capacity": "8"},
+        ],
+        "accumulators": [{"name": "energy", "type": "float"}],
+        "uniforms": [{"name": "gain", "type": "float", "initializer": "2.5"}],
+        "pure_functions": [
+            {
+                "name": "bias",
+                "return_type": "float",
+                "params": [{"type": "float", "name": "x"}],
+                "body_ast": [
+                    AstReturnStmt(
+                        value=AstExprBinary(
+                            op="+",
+                            left=AstExprVar(path=("x",)),
+                            right=AstExprLiteral(kind="float", value="1.0"),
+                        )
+                    )
+                ],
+            }
+        ],
+        "shaders": [
+            {
+                "name": "Scale",
+                "params": [
+                    {"modifier": "in", "type": "float", "name": "src"},
+                    {"modifier": "out", "type": "float", "name": "dst"},
+                    {"modifier": "accum", "type": "float", "name": "energy"},
+                    {"modifier": "uniform", "type": "float", "name": "gain"},
+                ],
+                "body_ast": [
+                    AstAssignStmt(
+                        target=("dst",),
+                        value=AstExprBinary(
+                            op="*",
+                            left=AstExprCall(
+                                name="bias", args=(AstExprVar(path=("src",)),)
+                            ),
+                            right=AstExprVar(path=("gain",)),
+                        ),
+                    ),
+                    AstAssignStmt(
+                        target=("energy",),
+                        value=AstExprCall(
+                            name="abs", args=(AstExprVar(path=("dst",)),)
+                        ),
+                    ),
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = Scale(in_stream, out_stream, energy, gain);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "Scale",
+                "args": ["in_stream", "out_stream", "energy", "gain"],
+                "route": "out_stream = Scale(in_stream, out_stream, energy, gain);",
+            }
+        ],
+    }
+
+    simulation = simulate_pipeline_entities(
+        entities, stream_inputs={"in_stream": [1.0, -3.0]}
+    )
+
+    assert simulation["streams"]["out_stream"] == [5.0, -5.0]
+    assert simulation["accumulators"]["energy"] == [5.0, 5.0]
+
+
+def test_simulate_pipeline_entities_executes_filter_return_predicate_and_struct_fields():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "Particle", "capacity": "8"},
+            {"name": "out_stream", "type": "Particle", "capacity": "8"},
+        ],
+        "accumulators": [],
+        "uniforms": [],
+        "shaders": [],
+        "filters": [
+            {
+                "name": "KeepLarge",
+                "params": [
+                    {"modifier": "in", "type": "Particle", "name": "src"},
+                    {"modifier": "out", "type": "Particle", "name": "dst"},
+                ],
+                "body_ast": [
+                    AstAssignStmt(
+                        target=("dst", "value"),
+                        value=AstExprBinary(
+                            op="+",
+                            left=AstExprVar(path=("src", "value")),
+                            right=AstExprLiteral(kind="int", value="10"),
+                        ),
+                    ),
+                    AstReturnStmt(
+                        value=AstExprBinary(
+                            op=">",
+                            left=AstExprVar(path=("src", "value")),
+                            right=AstExprLiteral(kind="int", value="1"),
+                        )
+                    ),
+                ],
+            }
+        ],
+        "bind_routes": ["out_stream = KeepLarge(in_stream, out_stream);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "KeepLarge",
+                "args": ["in_stream", "out_stream"],
+                "route": "out_stream = KeepLarge(in_stream, out_stream);",
+            }
+        ],
+    }
+
+    simulation = simulate_pipeline_entities(
+        entities,
+        stream_inputs={"in_stream": [{"value": 1}, {"value": 2}, {"value": 3}]},
+    )
+
+    assert simulation["streams"]["out_stream"] == [{"value": 12}, {"value": 13}]
 
 
 def test_run_cli_simulate_prints_json_for_compiler_result():
@@ -372,7 +509,9 @@ def test_jit_numeric_reduce_preserves_int_result_for_non_bool_int_inputs():
     assert isinstance(_jit_numeric_reduce("sum", [1, 2, 3]), int)
 
 
-def test_jit_numeric_reduce_raises_mode_specific_error_when_llvm_runtime_fails(monkeypatch):
+def test_jit_numeric_reduce_raises_mode_specific_error_when_llvm_runtime_fails(
+    monkeypatch,
+):
     from lockstep_compiler.simulator import SimulatorRuntimeError, _jit_numeric_reduce
 
     monkeypatch.setattr(
@@ -388,8 +527,12 @@ def test_jit_numeric_reduce_raises_mode_specific_error_when_llvm_runtime_fails(m
         raise AssertionError("Expected SimulatorRuntimeError when LLVM runtime fails")
 
 
-def test_simulate_pipeline_entities_defaults_to_python_mode_without_runtime_binaries(monkeypatch):
-    monkeypatch.setattr("lockstep_compiler.simulator._simulator_runtime_command", lambda: None)
+def test_simulate_pipeline_entities_defaults_to_python_mode_without_runtime_binaries(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "lockstep_compiler.simulator._simulator_runtime_command", lambda: None
+    )
 
     assert (
         simulate_pipeline_entities(
