@@ -1555,7 +1555,11 @@ def emit_llvm_ir(
         return callee, signature[1] if signature is not None else ()
 
     def _kernel_route_trip_count(route: AstKernelBindRoute) -> int:
-        _, params = _kernel_function_and_params(route.kernel)
+        callee, params = _kernel_function_and_params(route.kernel)
+        if callee is None:
+            raise CodegenError(
+                f"undefined shader/filter '{route.kernel}' in bind route: {route.route}"
+            )
         trip_count = 0
         for index, arg_name in enumerate(route.args):
             if index >= len(params):
