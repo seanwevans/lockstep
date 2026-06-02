@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
 from .errors import LockstepCompileError
@@ -26,12 +29,14 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 
 
 def emit_c_header(
-    program: AstProgram,
+    program: AstProgram | Mapping[str, Any],
     guard: str = "LOCKSTEP_GENERATED_H",
     *,
     target_width: int = 8,
 ) -> str:
-    entities = ast_to_entities(program)
+    entities = (
+        dict(program) if isinstance(program, Mapping) else ast_to_entities(program)
+    )
 
     layout = build_arena_layout(entities)
     normalized_structs = layout.normalized_structs

@@ -1,4 +1,5 @@
 import functools
+import inspect
 import re
 import time
 from dataclasses import dataclass, replace
@@ -796,9 +797,17 @@ def _compile_lockstep_with_dependencies(
         **runtime_entities,
         "optimized_bind_routes": optimized_bind_routes,
         "fused_bind_groups": fused_bind_groups,
+        "fused_groups": fused_bind_groups,
+        "bind_optimization": bind_optimization,
     }
 
     try:
+        emit_signature = inspect.signature(emit_llvm_ir)
+        emit_kwargs: dict[str, object] = {}
+        if "target_width" in emit_signature.parameters:
+            emit_kwargs["target_width"] = target_width
+        if "bind_optimization" in emit_signature.parameters:
+            emit_kwargs["bind_optimization"] = bind_optimization        
         try:
             llvm_ir = emit_llvm_ir(
                 typed_ast,
