@@ -61,7 +61,15 @@ def build_semantic_validator(base_visitor_cls):
                 for name, signature in load_intrinsics().items()
             }
             self.structs: dict[str, dict[str, SemanticStructField]] = {}
-            self._primitive_types = {"int", "uint", "float", "double", "bool", "string"}
+            # Keep this catalog aligned with backend primitive support in codegen.py.
+            self._primitive_types = {
+                "int",
+                "uint",
+                "float",
+                "double",
+                "bool",
+                "string",
+            }
             self._current_pure_function: SemanticPureFunctionContext | None = None
             self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = (
                 []
