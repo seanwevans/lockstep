@@ -731,6 +731,32 @@ def test_emit_llvm_ir_uses_array_field_for_single_capacity_streams():
     assert '%"struct.Lockstep_Arena" = type {[1 x float], float}' in llvm_ir
 
 
+def test_emit_llvm_ir_reports_undefined_kernel_bind_route():
+    from lockstep_compiler.ast import AstKernelBindRoute, AstPipelineDecl, AstProgram
+
+    program = AstProgram(
+        pipelines=(
+            AstPipelineDecl(
+                name="Main",
+                bind_routes=(
+                    AstKernelBindRoute(
+                        target="out",
+                        kernel="MissingKernel",
+                        args=(),
+                        route="out = MissingKernel();",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CodegenError,
+        match="undefined shader/filter 'MissingKernel' in bind route",
+    ):
+        emit_llvm_ir(program)
+
+
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     llvm_ir = emit_llvm_ir(
         {
