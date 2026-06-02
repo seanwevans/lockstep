@@ -265,6 +265,7 @@ def run_cli(
     supports_frontend_limits = False
     supports_target_width = False
     supports_dependency_root = False
+    supports_unsafe_allow_external_dependencies = False
     try:
         signature = inspect.signature(compiler)
     except (TypeError, ValueError):
@@ -306,6 +307,11 @@ def run_cli(
             or parameter.name == "dependency_root"
             for parameter in signature.parameters.values()
         )
+        supports_unsafe_allow_external_dependencies = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "unsafe_allow_external_dependencies"
+            for parameter in signature.parameters.values()
+        )
 
     compile_kwargs: dict[str, Any] = {}
     if supports_verbose:
@@ -334,6 +340,10 @@ def run_cli(
         if args.path and not args.unsafe_allow_external_dependencies:
             dependency_root = source_path.resolve().parent
         compile_kwargs["dependency_root"] = dependency_root
+    if supports_unsafe_allow_external_dependencies:
+        compile_kwargs["unsafe_allow_external_dependencies"] = (
+            args.unsafe_allow_external_dependencies
+        )
 
     try:
         if compile_kwargs:
