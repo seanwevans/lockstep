@@ -21,11 +21,14 @@ from .errors import ParseErrorCollector
 
 
 def _lex_tokens(source: str) -> list[str]:
-
     lexer = LockstepLexer(InputStream(source))
     stream = CommonTokenStream(lexer)
     stream.fill()
-    return [token.text for token in stream.tokens if token.type != -1]
+    return [
+        token.text
+        for token in stream.tokens
+        if token.type != -1 and token.channel == LockstepLexer.DEFAULT_TOKEN_CHANNEL
+    ]
 
 
 def _needs_space(previous: str, current: str) -> bool:
@@ -35,6 +38,8 @@ def _needs_space(previous: str, current: str) -> bool:
         return False
     if previous in {"(", "[", "{", ",", "<", ".", "="}:
         return False
+    if current[0] in {'"', "'"} and (previous[-1].isalnum() or previous[-1] == "_"):
+        return True
     if previous[-1] == ">" and (current[0].isalnum() or current[0] == "_"):
         return True
     return (previous[-1].isalnum() or previous[-1] == "_") and (
@@ -110,6 +115,22 @@ class _FormattingVisitor(LockstepVisitor):
         self._depth = max(self._depth - 1, 0)
         self._append(f"}}{suffix}")
 
+    def _format_context_tokens(self, ctx) -> str:
+        stream = ctx.parser.getTokenStream()
+        stream.fill()
+        if ctx.start is None or ctx.stop is None:
+            return ""
+
+        text = ""
+        for token in stream.tokens[ctx.start.tokenIndex : ctx.stop.tokenIndex + 1]:
+            if token.type == -1 or token.channel != LockstepLexer.DEFAULT_TOKEN_CHANNEL:
+                continue
+            if _needs_space(text, token.text):
+                text = f"{text} {token.text}"
+            else:
+                text = f"{text}{token.text}"
+        return text
+
     def _format_params(self, param_list_ctx):
         if param_list_ctx is None:
             return ""
@@ -122,6 +143,11 @@ class _FormattingVisitor(LockstepVisitor):
 
     def visitDeclaration(self, ctx: LockstepParser.DeclarationContext):
         return self.visitChildren(ctx)
+
+    def visitDependencyDecl(self, ctx: LockstepParser.DependencyDeclContext):
+        keyword = ctx.getChild(0).getText()
+        path = ctx.STRING().getText()
+        self._append(f"{keyword} {path};")
 
     def visitStructDecl(self, ctx: LockstepParser.StructDeclContext):
         self._open_block(f"struct {ctx.ID().getText()}")
@@ -244,37 +270,52 @@ class _FormattingVisitor(LockstepVisitor):
         return self.visit(ctx.logicalOrExpr())
 
     def visitLogicalOrExpr(self, ctx: LockstepParser.LogicalOrExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitLogicalAndExpr(self, ctx: LockstepParser.LogicalAndExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
+
+    def visitBitwiseOrExpr(self, ctx: LockstepParser.BitwiseOrExprContext):
+        return self._format_context_tokens(ctx)
+
+    def visitBitwiseXorExpr(self, ctx: LockstepParser.BitwiseXorExprContext):
+        return self._format_context_tokens(ctx)
+
+    def visitBitwiseAndExpr(self, ctx: LockstepParser.BitwiseAndExprContext):
+        return self._format_context_tokens(ctx)
 
     def visitEqualityExpr(self, ctx: LockstepParser.EqualityExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitRelExpr(self, ctx: LockstepParser.RelExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
+
+    def visitShiftExpr(self, ctx: LockstepParser.ShiftExprContext):
+        return self._format_context_tokens(ctx)
 
     def visitAddExpr(self, ctx: LockstepParser.AddExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitMulExpr(self, ctx: LockstepParser.MulExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitUnaryExpr(self, ctx: LockstepParser.UnaryExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitPrimaryExpr(self, ctx: LockstepParser.PrimaryExprContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitExprList(self, ctx: LockstepParser.ExprListContext):
         return ",".join(self.visit(expr) for expr in ctx.expr())
 
     def visitLvalue(self, ctx: LockstepParser.LvalueContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
 
     def visitTypeName(self, ctx: LockstepParser.TypeNameContext):
-        return ctx.getText()
+        return self._format_context_tokens(ctx)
+
+    def visitTypeSuffix(self, ctx: LockstepParser.TypeSuffixContext):
+        return self._format_context_tokens(ctx)
 
 
 def format_lockstep_source(source, *, indent="    "):
