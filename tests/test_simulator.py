@@ -41,6 +41,18 @@ def test_resolve_sim_path_rejects_unmapped_direct_lookup():
         raise AssertionError("Expected SimulatorRuntimeError for unmapped lookup")
 
 
+def test_resolve_sim_path_rejects_unmapped_nested_lookup():
+    try:
+        _resolve_sim_path({"particle": {"mass": 1}}, ("particle", "velocity"))
+    except SimulatorRuntimeError as err:
+        message = str(err)
+        assert "Unmapped simulator member 'velocity'" in message
+        assert "at 'particle'" in message
+        assert "available members: mass" in message
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError for unmapped member lookup")
+
+
 def test_simulate_pipeline_source_uses_compiled_runtime_entities():
     source = """
     shader Copy(in float src, out float dst) { dst = src; }
