@@ -35,6 +35,24 @@ class LockstepListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LockstepParser#importDecl.
+    def enterImportDecl(self, ctx:LockstepParser.ImportDeclContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#importDecl.
+    def exitImportDecl(self, ctx:LockstepParser.ImportDeclContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#includeDecl.
+    def enterIncludeDecl(self, ctx:LockstepParser.IncludeDeclContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#includeDecl.
+    def exitIncludeDecl(self, ctx:LockstepParser.IncludeDeclContext):
+        pass
+
+
     # Enter a parse tree produced by LockstepParser#structDecl.
     def enterStructDecl(self, ctx:LockstepParser.StructDeclContext):
         pass
@@ -383,6 +401,15 @@ class LockstepListener(ParseTreeListener):
 
     # Exit a parse tree produced by LockstepParser#typeSuffix.
     def exitTypeSuffix(self, ctx:LockstepParser.TypeSuffixContext):
+        pass
+
+
+    # Enter a parse tree produced by LockstepParser#genericWidth.
+    def enterGenericWidth(self, ctx:LockstepParser.GenericWidthContext):
+        pass
+
+    # Exit a parse tree produced by LockstepParser#genericWidth.
+    def exitGenericWidth(self, ctx:LockstepParser.GenericWidthContext):
         pass
 
 

@@ -124,6 +124,32 @@ _PRIMITIVE_SIZE = {
     "double": 8,
 }
 
+_MAX_U64 = (1 << 64) - 1
+
+
+def _arena_overflow_error() -> LockstepCompileError:
+    diagnostic = LockstepDiagnostic(
+        severity="error",
+        code="LCK502",
+        message=(
+            "Arena structural offset generation overflowed the platform "
+            "allocation threshold (2^64-1 bytes)."
+        ),
+        line=1,
+        column=0,
+        source_file="<arena_layout>",
+        hint=(
+            "Reduce aggregate stream or uniform layout size so cumulative "
+            "arena bytes fit within unsigned 64-bit limits."
+        ),
+    )
+    return LockstepCompileError(
+        [diagnostic],
+        diagnostics=[diagnostic],
+        phase="codegen",
+        source_file=diagnostic.source_file,
+    )
+
 
 @dataclass(frozen=True)
 class LayoutStructField:
@@ -201,7 +227,7 @@ def normalize_ast_structs(
 
 
 def _ast_type_name(type_ref: AstType | str) -> str:
-    return type_ref.name if isinstance(type_ref, AstType) else type_ref
+    return str(type_ref) if isinstance(type_ref, AstType) else type_ref
 
 
 def field_size(type_name: str, struct_sizes: dict[str, int]) -> int:
@@ -233,11 +259,16 @@ def resolve_struct_layouts(
             can_resolve = True
             size = 0
             for field in fields:
-                field_type_name = field.type_name
-                if field_type_name in unresolved:
+                parsed_field_type = _parse_type_name(field.type_name)
+                structural_field_type = (
+                    _structural_type_name(parsed_field_type)
+                    if parsed_field_type is not None
+                    else field.type_name
+                )
+                if structural_field_type in unresolved:
                     can_resolve = False
                     break
-                size += field_size(field_type_name, struct_sizes)
+                size += field_size(field.type_name, struct_sizes)
             if not can_resolve:
                 continue
             struct_sizes[struct_name] = size
@@ -321,6 +352,12 @@ def _build_layout_from_bindings(
         type_leaves = _flatten_type_leaves(type_name, struct_map, opaque_structs)
         for path, leaf_type, leaf_multiplier in type_leaves:
             size = field_size(leaf_type, struct_sizes) * leaf_multiplier
+            leaf_allocation_size = size * element_count
+            if (
+                leaf_allocation_size > _MAX_U64
+                or cursor > _MAX_U64 - leaf_allocation_size
+            ):
+                raise _arena_overflow_error()
             leaves.append(
                 ArenaLeaf(
                     kind=kind,
@@ -332,7 +369,7 @@ def _build_layout_from_bindings(
                     element_count=element_count,
                 )
             )
-            cursor += size * element_count
+            cursor += leaf_allocation_size
 
     return ArenaLayout(
         normalized_structs=normalized_structs,

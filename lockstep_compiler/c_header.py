@@ -17,14 +17,6 @@ _PRIMITIVE_C_TYPE = {
     "double": "double",
 }
 
-_PRIMITIVE_SIZE = {
-    "bool": 1,
-    "int": 4,
-    "uint": 4,
-    "float": 4,
-    "double": 8,
-}
-
 _MAX_U64 = (1 << 64) - 1
 
 
@@ -90,8 +82,7 @@ def emit_c_header(
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
     cumulative_layout_total = 0
     for leaf in layout.leaves:
-        leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
-        leaf_allocation_size = leaf_size * leaf.element_count
+        leaf_allocation_size = leaf.size * leaf.element_count
         if cumulative_layout_total > _MAX_U64 - leaf_allocation_size:
             diagnostic = LockstepDiagnostic(
                 severity="error",
