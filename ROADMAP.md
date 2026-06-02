@@ -34,9 +34,9 @@ The entity dict's `body` field (which contains statement text like `"new_pos.x =
 
 The remaining half of the semantic validator migration: `_resolve_expr_type` is rewritten to operate on the `AstExpr` discriminated union (`AstExprLiteral | AstExprVar | AstExprUnary | AstExprBinary | AstExprCall | AstExprCast`) using `isinstance` dispatch. This eliminates the `hasattr(ctx, 'mulExpr')` / `hasattr(ctx, 'bitwiseOrExpr')` pattern-matching on ANTLR context shapes, roughly halving the validator's line count and making it testable without constructing fake parse-tree nodes.
 
-### Exhaustive type inference for local variables
+### Explicit local variable declarations
 
-The current type inference for locals (`LCK423` when inference fails) is extended to propagate types through expression trees. If a variable is initialized with `mix(a, b, 0.5)` and `mix` is a known intrinsic returning `float`, the declared type is inferred as `float` without requiring an explicit annotation. This is a quality-of-life improvement that reduces boilerplate in shader bodies without weakening the strict type matching policy.
+Local variable declarations remain aligned with the grammar's `varDecl: typeName ID ('=' expr)? ';';` rule: every local declaration carries an explicit type annotation, and initializers are validated against that declared type. Editor tooling may still surface inferred hover information for already-declared variables, but the core language does not accept untyped local allocations.
 
 ### `uint` and `double` as first-class declared types
 

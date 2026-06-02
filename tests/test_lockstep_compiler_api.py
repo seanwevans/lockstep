@@ -25,6 +25,7 @@ from lockstep_compiler import (
 )
 from lockstep_compiler.cli import main as cli_main
 
+from lockstep_compiler.ast import AstExprLiteral
 from lockstep_compiler.models import (
     SemanticKernelParam,
     SemanticPureFunctionSignature,
@@ -2090,7 +2091,7 @@ def test_semantic_validator_reports_var_initializer_type_mismatch():
         start_col=1,
         ID=lambda: _token("count"),
         typeName=lambda: _token("int"),
-        expr=lambda: _ctx(declared_type="float"),
+        expr=lambda: AstExprLiteral(kind="float", value="1.0"),
     )
 
     validator.visitVarDecl(var_decl_ctx)
@@ -2103,50 +2104,6 @@ def test_semantic_validator_reports_var_initializer_type_mismatch():
             line=72,
             column=1,
             hint="Use an initializer expression with the same type as the declared variable.",
-        )
-    ]
-
-
-def test_semantic_validator_infers_var_type_from_initializer():
-    validator = LockstepSemanticValidator()
-    validator._push_scope()
-
-    var_decl_ctx = _ctx(
-        ID=lambda: _token("mass"),
-        typeName=lambda: None,
-        expr=lambda: _ctx(declared_type="float"),
-    )
-
-    validator.visitVarDecl(var_decl_ctx)
-
-    assert validator.diagnostics == []
-    assert validator.scopes[-1]["mass"] == SemanticSymbol(
-        name="mass", declared_type="float", kind="local"
-    )
-
-
-def test_semantic_validator_reports_uninferrable_var_type():
-    validator = LockstepSemanticValidator()
-    validator._push_scope()
-
-    var_decl_ctx = _ctx(
-        start_line=72,
-        start_col=8,
-        ID=lambda: _token("mass"),
-        typeName=lambda: None,
-        expr=lambda: None,
-    )
-
-    validator.visitVarDecl(var_decl_ctx)
-
-    assert validator.diagnostics == [
-        LockstepDiagnostic(
-            severity="error",
-            code="LCK423",
-            message="Cannot infer type for local variable 'mass' without a typed initializer.",
-            line=72,
-            column=8,
-            hint="Provide an explicit type or initialize with an expression whose type can be resolved.",
         )
     ]
 
