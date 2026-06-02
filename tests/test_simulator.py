@@ -19,7 +19,39 @@ from lockstep_compiler.cli import run_cli
 from lockstep_compiler.simulator import (
     parse_simulation_inputs,
     simulate_pipeline_entities,
+    simulate_pipeline_source,
 )
+
+
+def test_simulate_pipeline_source_uses_compiled_runtime_entities():
+    source = """
+    shader Copy(in float src, out float dst) { dst = src; }
+
+    pipeline P {
+        stream<float, 4> inp;
+        stream<float, 4> dst;
+
+        bind {
+            dst = Copy(inp, dst);
+        }
+    }
+    """
+
+    simulation = simulate_pipeline_source(
+        source,
+        stream_inputs={"inp": [1.0, 2.0]},
+    )
+
+    assert simulation["streams"]["dst"] == [1.0, 2.0]
+    assert simulation["routes"] == [
+        {
+            "route": "dst=Copy(inp,dst);",
+            "kind": "shader",
+            "input_count": 2,
+            "output_count": 2,
+            "notes": None,
+        }
+    ]
 
 
 def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():

@@ -708,7 +708,10 @@ def _compile_lockstep_with_dependencies(
 
     all_diagnostics = normalize_diagnostics(semantic_diagnostics)
 
-    entities = ast_to_entities(typed_ast)
+    # Runtime consumers (for example simulate_pipeline_source) rely on the
+    # compile result carrying the serialized compiler entities, not just the
+    # internal typed AST.
+    runtime_entities = ast_to_entities(typed_ast)
     optimized_bind_routes: list[str] = []
     fused_bind_groups: list[object] = []
     shader_names = {shader.name for shader in typed_ast.shaders}
@@ -751,8 +754,8 @@ def _compile_lockstep_with_dependencies(
         "optimized_bind_routes": optimized_bind_routes,
         "fused_groups": fused_bind_groups,
     }
-    entities = {
-        **entities,
+    runtime_entities = {
+        **runtime_entities,
         "optimized_bind_routes": optimized_bind_routes,
         "fused_bind_groups": fused_bind_groups,
     }
@@ -782,7 +785,7 @@ def _compile_lockstep_with_dependencies(
 
     return LockstepCompileResult(
         parse_tree=tree,
-        entities=entities,
+        entities=runtime_entities,
         ast=typed_ast,
         llvm_ir=llvm_ir,
         c_header=emit_c_header(typed_ast, target_width=target_width),
