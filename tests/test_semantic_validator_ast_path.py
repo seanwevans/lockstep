@@ -57,3 +57,13 @@ pipeline BadBind {
 
     assert "LCK305" in codes
     assert "LCK308" in codes
+
+
+def test_ast_validator_rejects_invalid_return_expression_operands():
+    codes = _semantic_error_codes("""
+pure int BadOperands(int value, float scale) {
+    return value + scale;
+}
+""")
+
+    assert "LCK424" in codes
