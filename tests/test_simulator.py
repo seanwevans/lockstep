@@ -84,6 +84,46 @@ def test_simulate_pipeline_source_uses_compiled_runtime_entities():
     ]
 
 
+def test_simulate_pipeline_entities_iterates_over_longest_input_stream():
+    source = """
+    shader Sum(in float a, in float b, out float dst) {
+        dst = a + b;
+    }
+
+    pipeline P {
+        stream<float, 16> a;
+        stream<float, 16> b;
+        stream<float, 16> dst;
+
+        bind {
+            dst = Sum(a, b, dst);
+        }
+    }
+    """
+
+    simulation = simulate_pipeline_source(
+        source,
+        stream_inputs={
+            "a": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "b": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0],
+        },
+    )
+
+    assert simulation["streams"]["dst"] == [
+        11.0,
+        22.0,
+        33.0,
+        44.0,
+        55.0,
+        60.0,
+        70.0,
+        80.0,
+        90.0,
+        100.0,
+    ]
+    assert simulation["routes"][0]["input_count"] == 10
+    assert simulation["routes"][0]["output_count"] == 10
+
 def test_simulate_pipeline_entities_tracks_route_cardinality_and_fold():
     entities = {
         "streams": [

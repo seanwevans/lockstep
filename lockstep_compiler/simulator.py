@@ -633,10 +633,9 @@ def _simulate_kernel_rows(
                 continue
             if modifier == "in" and isinstance(arg_name, str) and arg_name in streams:
                 arg_rows = streams[arg_name]["rows"]
-                source_index = min(row_index, len(arg_rows) - 1) if arg_rows else 0
                 env[param_name] = (
-                    _copy_sim_value(arg_rows[source_index])
-                    if arg_rows
+                    _copy_sim_value(arg_rows[row_index])
+                    if row_index < len(arg_rows)
                     else _default_sim_value(param.get("type"))
                 )
             elif modifier == "out":
@@ -767,17 +766,26 @@ def simulate_pipeline_entities(
 
             source_count = 0
             rows: list[Any] = []
+            first_input_type: str | None = None
             args = (
                 route_ir.get("args") if isinstance(route_ir.get("args"), list) else []
             )
+            params = kernel["params"]
             for index, arg_name in enumerate(args):
-                params = kernel["params"]
                 if index >= len(params):
                     break
                 if params[index]["modifier"] == "in" and arg_name in streams:
-                    rows = list(streams[arg_name]["rows"])
-                    source_count = len(rows)
-                    break
+                    arg_rows = list(streams[arg_name]["rows"])
+                    if first_input_type is None:
+                        first_input_type = params[index].get("type")
+                        rows = arg_rows
+                    source_count = max(source_count, len(arg_rows))
+
+            if len(rows) < source_count:
+                rows = rows + [
+                    _default_sim_value(first_input_type)
+                    for _ in range(source_count - len(rows))
+                ]
 
             output_rows, pending_accum = _simulate_kernel_rows(
                 kernel_name=str(route_ir.get("kernel", "")),
