@@ -115,19 +115,13 @@ def validate_type_name(
 
 
 def build_struct_field_type_index(
-    structs: dict[str, dict[str, SemanticStructField | str]],
+    structs: dict[str, dict[str, SemanticStructField]],
 ) -> dict[str, dict[str, str]]:
-    """Return a plain ``struct -> field -> type`` index.
-
-    Compiler semantic indexes store ``SemanticStructField`` objects, while LSP
-    entity and regex-recovery paths already carry serialized type strings.  Keep
-    this helper shared by accepting either representation so cached LSP analysis
-    and compiler semantic validation resolve fields identically.
-    """
-
     return {
         struct_name: {
-            field_name: (field if isinstance(field, str) else field.declared_type)
+            field_name: (
+                field.declared_type if hasattr(field, "declared_type") else str(field)
+            )
             for field_name, field in fields.items()
         }
         for struct_name, fields in structs.items()
