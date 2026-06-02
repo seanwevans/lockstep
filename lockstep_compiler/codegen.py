@@ -72,6 +72,7 @@ class _FunctionLowerer:
         self.local_types: dict[str, str] = {}
         self.local_indirections: dict[str, bool] = {}
         self.function_return_types: dict[str, str] = {}
+        self.function_param_types: dict[str, list[str | None]] = {}
         self._string_literal_counter = 0
 
     def _compiler_error(self, message: str) -> None:
@@ -197,19 +198,27 @@ class _FunctionLowerer:
 
     def _field_index_and_type(
         self, llvm_type: ir.Type, field_name: str
-    ) -> tuple[int, ir.Type] | None:
+    ) -> tuple[int, ir.Type, str] | None:
         struct_name = self._struct_name_for_type(llvm_type)
         if struct_name is None:
             return None
         fields = self.struct_fields.get(struct_name, [])
         for index, field in enumerate(fields):
             if field.name == field_name:
-                return index, self._llvm_type(
-                    _type_name(field.declared_type), self.known_structs
+                declared_type_name = _type_name(field.declared_type)
+                return (
+                    index,
+                    self._llvm_type(declared_type_name, self.known_structs),
+                    declared_type_name,
                 )
         return None
 
-    def _coerce_value_to_type(self, value: ir.Value, target_type: ir.Type) -> ir.Value:
+    def _coerce_value_to_type(
+        self,
+        value: ir.Value,
+        target_type: ir.Type,
+        target_type_name: str | None = None,
+    ) -> ir.Value:
         if value.type == target_type:
             return value
 
@@ -229,6 +238,8 @@ class _FunctionLowerer:
         if isinstance(target_type, ir.IntType) and isinstance(
             value.type, (ir.FloatType, ir.DoubleType)
         ):
+            if target_type_name == "uint":
+                return self.builder.fptoui(value, target_type)
             return self.builder.fptosi(value, target_type)
 
         if isinstance(target_type, ir.FloatType) and isinstance(
@@ -253,7 +264,7 @@ class _FunctionLowerer:
                 self._compiler_error(
                     f"unknown struct field '{field_name}' in access path"
                 )
-            index, _ = field_info
+            index, _, _ = field_info
             current = self.builder.extract_value(
                 current, index, name=f"{field_name}_field"
             )
@@ -265,9 +276,9 @@ class _FunctionLowerer:
         field_info = self._field_index_and_type(aggregate.type, path[0])
         if field_info is None:
             self._compiler_error(f"unknown struct field '{path[0]}' in assignment path")
-        index, field_type = field_info
+        index, field_type, field_type_name = field_info
         if len(path) == 1:
-            coerced = self._coerce_value_to_type(value, field_type)
+            coerced = self._coerce_value_to_type(value, field_type, field_type_name)
             return self.builder.insert_value(
                 aggregate, coerced, index, name=f"set_{path[0]}"
             )
@@ -517,9 +528,14 @@ class _FunctionLowerer:
                 self._compiler_error(
                     f"function '{name}' expects {len(callee.args)} argument(s), got {len(args)}"
                 )
+            param_type_names = self.function_param_types.get(
+                callee.name, [None] * len(args)
+            )
             coerced = [
-                self._coerce_value_to_type(arg, param.type)
-                for arg, param in zip(args, callee.args)
+                self._coerce_value_to_type(arg, param.type, param_type_name)
+                for arg, param, param_type_name in zip(
+                    args, callee.args, param_type_names
+                )
             ]
             return self.builder.call(callee, coerced, name=f"call_{name}")
         self._compiler_error(f"unknown function '{name}'")
@@ -602,15 +618,17 @@ class _FunctionLowerer:
             target_type = self._llvm_type(
                 _type_name(node.target_type), self.known_structs
             )
-            return self._coerce_value_to_type(self._lower_expr(node.value), target_type)
+            return self._coerce_value_to_type(
+                self._lower_expr(node.value), target_type, _type_name(node.target_type)
+            )
         if not isinstance(node, AstExprBinary):
             self._compiler_error(f"unsupported expression node '{type(node).__name__}'")
         lhs, rhs = self._lower_expr(node.left), self._lower_expr(node.right)
         expr_type_name = self._infer_binary_operand_type(node)
         if expr_type_name in _PRIMITIVE_TYPE_MAP:
             operand_type = self._llvm_type(expr_type_name, self.known_structs)
-            lhs = self._coerce_value_to_type(lhs, operand_type)
-            rhs = self._coerce_value_to_type(rhs, operand_type)
+            lhs = self._coerce_value_to_type(lhs, operand_type, expr_type_name)
+            rhs = self._coerce_value_to_type(rhs, operand_type, expr_type_name)
         return self._lower_binary_op(node.op, lhs, rhs, type_name=expr_type_name)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
@@ -623,12 +641,18 @@ class _FunctionLowerer:
                 ref_ptr = self.builder.load(self.locals[key], name=f"{key}_ptr")
                 slot_type = ref_ptr.type.pointee
                 self.builder.store(
-                    self._coerce_value_to_type(value, slot_type), ref_ptr
+                    self._coerce_value_to_type(
+                        value, slot_type, self.local_types.get(key)
+                    ),
+                    ref_ptr,
                 )
             else:
                 slot_type = self.locals[key].type.pointee
                 self.builder.store(
-                    self._coerce_value_to_type(value, slot_type), self.locals[key]
+                    self._coerce_value_to_type(
+                        value, slot_type, self.local_types.get(key)
+                    ),
+                    self.locals[key],
                 )
             return
 
@@ -644,13 +668,20 @@ class _FunctionLowerer:
         else:
             self.builder.store(updated, self.locals[key])
 
-    def _lower_statement(self, statement: AstStatement, return_type: ir.Type):
+    def _lower_statement(
+        self,
+        statement: AstStatement,
+        return_type: ir.Type,
+        return_type_name: str | None = None,
+    ):
         if isinstance(statement, AstReturnStmt):
             value = self._lower_expr(statement.value)
             if isinstance(return_type, ir.VoidType):
                 self.builder.ret_void()
             else:
-                self.builder.ret(self._coerce_value_to_type(value, return_type))
+                self.builder.ret(
+                    self._coerce_value_to_type(value, return_type, return_type_name)
+                )
             return
 
         if isinstance(statement, AstAssignStmt):
@@ -676,7 +707,10 @@ class _FunctionLowerer:
                 value = self._lower_expr(statement.initializer)
                 slot_type = self.locals[key].type.pointee
                 self.builder.store(
-                    self._coerce_value_to_type(value, slot_type), self.locals[key]
+                    self._coerce_value_to_type(
+                        value, slot_type, self.local_types.get(key)
+                    ),
+                    self.locals[key],
                 )
             return
 
@@ -688,6 +722,7 @@ class _FunctionLowerer:
         statements: list[AstStatement],
         return_type: ir.Type,
         param_type_names: list[str] | None = None,
+        return_type_name: str | None = None,
         param_by_ref: list[bool] | None = None,
     ):
         block = fn.append_basic_block("entry")
@@ -712,7 +747,7 @@ class _FunctionLowerer:
         for statement in statements:
             if self.builder.block.is_terminated:
                 break
-            self._lower_statement(statement, return_type)
+            self._lower_statement(statement, return_type, return_type_name)
 
         if not self.builder.block.is_terminated:
             if isinstance(return_type, ir.VoidType):
@@ -985,6 +1020,9 @@ def emit_llvm_ir(
             fn.args[idx].name = _sanitize_symbol(param.name)
         function_map[fn.name] = fn
         lowerer.function_return_types[fn.name] = _type_name(pure.return_type)
+        lowerer.function_param_types[fn.name] = [
+            _kernel_param_type(param) for param in pure.params
+        ]
 
     for shader in shaders:
         params = [
@@ -1025,6 +1063,7 @@ def emit_llvm_ir(
             list(pure.body),
             fn.function_type.return_type,
             [_kernel_param_type(param) for param in pure.params],
+            _type_name(pure.return_type),
         )
 
     for shader in shaders:
@@ -1034,6 +1073,7 @@ def emit_llvm_ir(
             list(shader.body),
             ir.VoidType(),
             [_kernel_param_type(param) for param in shader.params],
+            None,
             [param.modifier in {"out", "accum"} for param in shader.params],
         )
 
@@ -1044,6 +1084,7 @@ def emit_llvm_ir(
             list(flt.body),
             ir.VoidType(),
             [_kernel_param_type(param) for param in flt.params],
+            None,
             [param.modifier in {"out", "accum"} for param in flt.params],
         )
 
