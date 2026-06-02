@@ -1222,6 +1222,19 @@ def test_emit_llvm_ir_lowers_explicit_numeric_casts_to_llvm_conversions():
                         )
                     ],
                 },
+                {
+                    "name": "narrow_unsigned",
+                    "return_type": "uint",
+                    "params": [{"modifier": "in", "type": "float", "name": "x"}],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCast(
+                                target_type="uint",
+                                value=AstExprVar(path=("x",)),
+                            )
+                        )
+                    ],
+                },
             ],
             "shaders": [],
             "filters": [],
@@ -1234,6 +1247,39 @@ def test_emit_llvm_ir_lowers_explicit_numeric_casts_to_llvm_conversions():
 
     assert "sitofp i32" in llvm_ir
     assert "fptosi float" in llvm_ir
+    assert "fptoui float" in llvm_ir
+
+
+def test_emit_llvm_ir_uses_unsigned_float_to_integer_cast_for_uint_targets():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "float_to_uint",
+                    "return_type": "uint",
+                    "params": [{"modifier": "in", "type": "float", "name": "x"}],
+                    "body_ast": [
+                        AstVarDeclStmt(
+                            declared_type="uint",
+                            name="y",
+                            initializer=AstExprVar(path=("x",)),
+                        ),
+                        AstReturnStmt(value=AstExprVar(path=("y",))),
+                    ],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "fptoui float" in llvm_ir
+    assert "fptosi float" not in llvm_ir
 
 
 def test_compile_lockstep_builds_structured_statement_ast():
