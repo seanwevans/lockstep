@@ -159,7 +159,7 @@ def _run_reduce_subprocess(values: list[float]) -> float:
 
 
 class SimulatorRuntimeError(RuntimeError):
-    """Raised when optional LLVM-backed simulation fails."""
+    """Raised when simulator execution encounters an invalid runtime state."""
 
 
 def _python_numeric_reduce(operator: str, values: list[Any]) -> Any:
@@ -279,15 +279,47 @@ def _default_sim_value(type_name: str | None = None) -> Any:
     return {}
 
 
+def _format_sim_path(path: tuple[str, ...]) -> str:
+    return ".".join(path) if path else "<empty>"
+
+
+def _format_available_sim_keys(value: dict[str, Any]) -> str:
+    if not value:
+        return "none"
+    return ", ".join(sorted(str(key) for key in value))
+
+
 def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
     if not path:
         return None
-    value = env.get(path[0], 0)
+
+    root = path[0]
+    if root not in env:
+        raise SimulatorRuntimeError(
+            "Unmapped simulator identifier "
+            f"'{root}' while resolving '{_format_sim_path(path)}'; "
+            f"available identifiers: {_format_available_sim_keys(env)}."
+        )
+
+    value = env[root]
+    resolved_path = (root,)
     for part in path[1:]:
-        if isinstance(value, dict):
-            value = value.get(part, 0)
-        else:
-            return 0
+        if not isinstance(value, dict):
+            raise SimulatorRuntimeError(
+                "Cannot resolve simulator member "
+                f"'{part}' on non-struct value at "
+                f"'{_format_sim_path(resolved_path)}' while resolving "
+                f"'{_format_sim_path(path)}'."
+            )
+        if part not in value:
+            raise SimulatorRuntimeError(
+                "Unmapped simulator member "
+                f"'{part}' at '{_format_sim_path(resolved_path)}' while resolving "
+                f"'{_format_sim_path(path)}'; available members: "
+                f"{_format_available_sim_keys(value)}."
+            )
+        value = value[part]
+        resolved_path = (*resolved_path, part)
     return _coerce_sim_value(value)
 
 

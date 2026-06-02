@@ -17,6 +17,7 @@ from lockstep_compiler.ast import (
 )
 from lockstep_compiler.cli import run_cli
 from lockstep_compiler.simulator import (
+    SimulatorRuntimeError,
     parse_simulation_inputs,
     simulate_pipeline_entities,
     simulate_pipeline_source,
@@ -251,6 +252,142 @@ def test_simulate_pipeline_entities_interprets_mapping_body_ast_statements():
 
     assert simulation["streams"]["out_stream"] == [9.0, -6.0]
     assert simulation["accumulators"]["energy"] == [9.0, 6.0]
+
+
+def test_simulate_pipeline_entities_rejects_missing_identifier_reference():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "float", "capacity": "8"},
+            {"name": "out_stream", "type": "float", "capacity": "8"},
+        ],
+        "accumulators": [],
+        "uniforms": [],
+        "shaders": [
+            {
+                "name": "BadReference",
+                "params": [
+                    {"modifier": "in", "type": "float", "name": "src"},
+                    {"modifier": "out", "type": "float", "name": "dst"},
+                ],
+                "body_ast": [
+                    AstAssignStmt(target=("dst",), value=AstExprVar(path=("missing",)))
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = BadReference(in_stream, out_stream);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "BadReference",
+                "args": ["in_stream", "out_stream"],
+                "route": "out_stream = BadReference(in_stream, out_stream);",
+            }
+        ],
+    }
+
+    try:
+        simulate_pipeline_entities(entities, stream_inputs={"in_stream": [1.0]})
+    except SimulatorRuntimeError as err:
+        message = str(err)
+        assert "Unmapped simulator identifier 'missing'" in message
+        assert "available identifiers: dst, src" in message
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError for missing identifier")
+
+
+def test_simulate_pipeline_entities_rejects_missing_struct_member_reference():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "Particle", "capacity": "8"},
+            {"name": "out_stream", "type": "float", "capacity": "8"},
+        ],
+        "accumulators": [],
+        "uniforms": [],
+        "shaders": [
+            {
+                "name": "ReadMissingMember",
+                "params": [
+                    {"modifier": "in", "type": "Particle", "name": "src"},
+                    {"modifier": "out", "type": "float", "name": "dst"},
+                ],
+                "body_ast": [
+                    AstAssignStmt(
+                        target=("dst",), value=AstExprVar(path=("src", "missing"))
+                    )
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = ReadMissingMember(in_stream, out_stream);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "ReadMissingMember",
+                "args": ["in_stream", "out_stream"],
+                "route": "out_stream = ReadMissingMember(in_stream, out_stream);",
+            }
+        ],
+    }
+
+    try:
+        simulate_pipeline_entities(
+            entities, stream_inputs={"in_stream": [{"value": 1.0}]}
+        )
+    except SimulatorRuntimeError as err:
+        message = str(err)
+        assert "Unmapped simulator member 'missing'" in message
+        assert "while resolving 'src.missing'" in message
+        assert "available members: value" in message
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError for missing struct member")
+
+
+def test_simulate_pipeline_entities_rejects_member_reference_on_scalar():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "float", "capacity": "8"},
+            {"name": "out_stream", "type": "float", "capacity": "8"},
+        ],
+        "accumulators": [],
+        "uniforms": [],
+        "shaders": [
+            {
+                "name": "ScalarMember",
+                "params": [
+                    {"modifier": "in", "type": "float", "name": "src"},
+                    {"modifier": "out", "type": "float", "name": "dst"},
+                ],
+                "body_ast": [
+                    AstAssignStmt(
+                        target=("dst",), value=AstExprVar(path=("src", "field"))
+                    )
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = ScalarMember(in_stream, out_stream);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "ScalarMember",
+                "args": ["in_stream", "out_stream"],
+                "route": "out_stream = ScalarMember(in_stream, out_stream);",
+            }
+        ],
+    }
+
+    try:
+        simulate_pipeline_entities(entities, stream_inputs={"in_stream": [1.0]})
+    except SimulatorRuntimeError as err:
+        message = str(err)
+        assert "Cannot resolve simulator member 'field'" in message
+        assert "non-struct value at 'src'" in message
+    else:
+        raise AssertionError("Expected SimulatorRuntimeError for scalar member reference")
 
 
 def test_simulate_pipeline_entities_executes_filter_return_predicate_and_struct_fields():
