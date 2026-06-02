@@ -6,8 +6,26 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .compiler import compile_lockstep
+from .ast import (
+    AstAssignStmt,
+    AstExprBinary,
+    AstExprCall,
+    AstExprCast,
+    AstExprLiteral,
+    AstExprUnary,
+    AstExprVar,
+    AstVarDeclStmt,
+    ast_to_entities,
+    build_program_ast,
+)
+from .compiler import (
+    _build_bind_optimization,
+    _merge_intrinsic_pure_functions_into_ast,
+    compile_lockstep,
+    load_default_parser_classes,
+)
 from .errors import LockstepCompileError
+from antlr4 import CommonTokenStream, InputStream
 from .type_analysis import build_struct_field_type_index
 
 
@@ -56,6 +74,16 @@ class CachedLspSnapshot:
 
 _MEMBER_ACCESS_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
 _BIND_BLOCK_RE = re.compile(r"\bbind\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE)
+_STRUCT_RE = re.compile(
+    r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{(?P<body>[\s\S]*?)\}", re.MULTILINE
+)
+_FIELD_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:\s*(?:<[^;{}]+>|\[[0-9]+\]))*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+_CALLABLE_DECL_RE = re.compile(
+    r"\b(shader|filter)\s+([A-Za-z_][A-Za-z0-9_]*)|\bpure\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:<[^{}()]+>|\[[0-9]+\]))*\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.MULTILINE,
+)
 
 
 def _diagnostics_to_dicts(diagnostics: list[Any]) -> list[dict[str, Any]]:
@@ -85,12 +113,13 @@ def _is_inside_bind_block(source: str, line: int, column: int) -> bool:
         column, len(lines[line])
     )
 
-    for match in re.finditer(r"\bbind\s*\{", source):
+    clean = _source_without_non_code(source)
+    for match in re.finditer(r"\bbind\s*\{", clean):
         block_start = match.end()
         depth = 1
         index = block_start
-        while index < len(source) and depth > 0:
-            token = source[index]
+        while index < len(clean) and depth > 0:
+            token = clean[index]
             if token == "{":
                 depth += 1
             elif token == "}":
@@ -105,6 +134,74 @@ def _is_inside_bind_block(source: str, line: int, column: int) -> bool:
             return True
 
     return False
+
+
+def _entities_from_ast_for_lsp(source: str) -> dict[str, Any]:
+    lexer_cls, parser_cls, visitor_cls = load_default_parser_classes()
+    lexer = lexer_cls(InputStream(source))
+    stream = CommonTokenStream(lexer)
+    parser = parser_cls(stream)
+    tree = parser.program()
+    program = _merge_intrinsic_pure_functions_into_ast(
+        build_program_ast(tree, visitor_cls)
+    )
+    entities = ast_to_entities(program)
+    bind_optimization = _build_bind_optimization(program)
+    return {
+        **entities,
+        "optimized_bind_routes": bind_optimization["optimized_bind_routes"],
+        "fused_bind_groups": bind_optimization["fused_groups"],
+    }
+
+
+def _source_without_non_code(source: str) -> str:
+    mask = _code_mask(source)
+    return "".join(char if mask[index] else " " for index, char in enumerate(source))
+
+
+def _regex_struct_field_type_index(source: str) -> dict[str, dict[str, str]]:
+    clean = _source_without_non_code(source)
+    index: dict[str, dict[str, str]] = {}
+    for match in _STRUCT_RE.finditer(clean):
+        struct_name = match.group(1)
+        body = match.group("body")
+        fields = index.setdefault(struct_name, {})
+        for field_match in _FIELD_RE.finditer(body):
+            declared_type = re.sub(r"\s+", "", field_match.group(1))
+            fields.setdefault(field_match.group(2), declared_type)
+    return index
+
+
+def _regex_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
+    clean = _source_without_non_code(source)
+    index: dict[str, dict[str, MemberDefinition]] = {}
+    for match in _STRUCT_RE.finditer(clean):
+        struct_name = match.group(1)
+        body_start = match.start("body")
+        fields = index.setdefault(struct_name, {})
+        for field_match in _FIELD_RE.finditer(match.group("body")):
+            field_name = field_match.group(2)
+            field_offset = body_start + field_match.start(2)
+            line, column = _offset_to_line_column(source, field_offset)
+            fields.setdefault(
+                field_name,
+                MemberDefinition(
+                    struct_name=struct_name,
+                    field_name=field_name,
+                    line=line,
+                    column=column,
+                ),
+            )
+    return index
+
+
+def _merge_nested_dicts(
+    primary: dict[str, dict[str, Any]], fallback: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    merged = {outer: dict(inner) for outer, inner in fallback.items()}
+    for outer, inner in primary.items():
+        merged.setdefault(outer, {}).update(inner)
+    return merged
 
 
 def compile_for_lsp(source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -132,6 +229,15 @@ def compile_context_for_lsp(source: str) -> CompiledLspContext:
             # from the original compile failure so editors can surface true errors.
             entities = recovery.entities
         except Exception:
+            try:
+                entities = _entities_from_ast_for_lsp(source)
+            except Exception:
+                entities = {}
+    except Exception:
+        compile_diagnostics = []
+        try:
+            entities = _entities_from_ast_for_lsp(source)
+        except Exception:
             entities = {}
     return CompiledLspContext(
         entities=entities,
@@ -141,15 +247,33 @@ def compile_context_for_lsp(source: str) -> CompiledLspContext:
 
 def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, str]:
     inferred: dict[str, str] = {}
+    struct_field_types = _build_struct_field_type_index_from_entities(entities)
     callable_returns: dict[str, str] = {
         pure.get("name"): pure.get("return_type")
         for pure in entities.get("pure_functions", [])
         if pure.get("name") and pure.get("return_type")
     }
 
+    def _path_for_expr_var(expr: Any) -> tuple[str, ...]:
+        path = getattr(expr, "path", ())
+        if path:
+            return tuple(path)
+        name = getattr(expr, "name", "")
+        return (name,) if name else ()
+
+    def _member_type(root_type: str | None, path: tuple[str, ...]) -> str | None:
+        current_type = root_type
+        for member in path:
+            if current_type is None:
+                return None
+            current_type = struct_field_types.get(current_type, {}).get(member)
+        return current_type
+
     def _infer_expr_type(expr: Any) -> str | None:
         if expr is None:
             return None
+        if isinstance(expr, AstExprLiteral):
+            return expr.kind
         expr_type_name = type(expr).__name__
         if expr_type_name == "AstExprInt":
             return "int"
@@ -159,45 +283,62 @@ def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, s
             return "bool"
         if expr_type_name == "AstExprString":
             return "string"
-        if expr_type_name == "AstExprVar":
-            return inferred.get(getattr(expr, "name", ""))
-        if expr_type_name == "AstExprCall":
+        if isinstance(expr, AstExprVar) or expr_type_name == "AstExprVar":
+            path = _path_for_expr_var(expr)
+            if not path:
+                return None
+            root_type = inferred.get(path[0])
+            if len(path) == 1:
+                return root_type
+            return _member_type(root_type, path[1:])
+        if isinstance(expr, AstExprCall) or expr_type_name == "AstExprCall":
             return callable_returns.get(getattr(expr, "name", ""))
-        if expr_type_name == "AstExprUnary":
+        if isinstance(expr, AstExprCast) or expr_type_name == "AstExprCast":
+            return str(getattr(expr, "target_type", "")) or None
+        if isinstance(expr, AstExprUnary) or expr_type_name == "AstExprUnary":
             return _infer_expr_type(getattr(expr, "operand", None))
-        if expr_type_name == "AstExprBinary":
+        if isinstance(expr, AstExprBinary) or expr_type_name == "AstExprBinary":
             left_type = _infer_expr_type(getattr(expr, "left", None))
             right_type = _infer_expr_type(getattr(expr, "right", None))
             if left_type is not None and left_type == right_type:
                 return left_type
+            return left_type or right_type
         return None
 
-    for kernel in [*entities.get("shaders", []), *entities.get("filters", [])]:
-        for param in kernel.get("params", []):
+    def _record_params(params: list[dict[str, Any]]) -> None:
+        for param in params:
             name = param.get("name")
             declared_type = param.get("type")
             if name and declared_type:
                 inferred.setdefault(name, declared_type)
 
-        for stmt in kernel.get("body_ast", []):
+    def _record_statement(stmt: Any) -> None:
+        if isinstance(stmt, AstVarDeclStmt) or hasattr(stmt, "name"):
             name = getattr(stmt, "name", None)
-            if not name:
-                continue
-            declared_type = getattr(stmt, "declared_type", None)
-            if declared_type is not None:
-                inferred.setdefault(name, str(declared_type))
-                continue
-            initializer = getattr(stmt, "initializer", None)
-            initializer_type = _infer_expr_type(initializer)
-            if initializer_type is not None:
-                inferred.setdefault(name, initializer_type)
+            if name:
+                declared_type = getattr(stmt, "declared_type", None)
+                if declared_type is not None:
+                    inferred[name] = str(declared_type)
+                    return
+                initializer_type = _infer_expr_type(getattr(stmt, "initializer", None))
+                if initializer_type is not None:
+                    inferred[name] = initializer_type
+                    return
+        if isinstance(stmt, AstAssignStmt) or hasattr(stmt, "target"):
+            target = tuple(getattr(stmt, "target", ()) or ())
+            value_type = _infer_expr_type(getattr(stmt, "value", None))
+            if len(target) == 1 and value_type is not None:
+                inferred[target[0]] = value_type
+
+    for kernel in [*entities.get("shaders", []), *entities.get("filters", [])]:
+        _record_params(kernel.get("params", []))
+        for stmt in kernel.get("body_ast", []):
+            _record_statement(stmt)
 
     for pure in entities.get("pure_functions", []):
-        for param in pure.get("params", []):
-            name = param.get("name")
-            declared_type = param.get("type")
-            if name and declared_type:
-                inferred.setdefault(name, declared_type)
+        _record_params(pure.get("params", []))
+        for stmt in pure.get("body_ast", []):
+            _record_statement(stmt)
 
     return inferred
 
@@ -245,7 +386,10 @@ def _build_struct_field_type_index_from_entities(
 
 def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
     entities, _ = compile_for_lsp(source)
-    return _build_struct_member_index_from_entities(entities)
+    return _merge_nested_dicts(
+        _build_struct_member_index_from_entities(entities),
+        _regex_struct_member_index(source),
+    )
 
 
 def infer_variable_types(source: str) -> dict[str, str]:
@@ -259,10 +403,18 @@ def build_analysis_context(
 ) -> AnalysisContext:
     context = compiled_context or compile_context_for_lsp(source)
     entities = context.entities
+    struct_member_index = _merge_nested_dicts(
+        _build_struct_member_index_from_entities(entities),
+        _regex_struct_member_index(source),
+    )
+    struct_field_types = _merge_nested_dicts(
+        _build_struct_field_type_index_from_entities(entities),
+        _regex_struct_field_type_index(source),
+    )
     return AnalysisContext(
         variable_types=_infer_variable_types_from_entities(entities),
-        struct_member_index=_build_struct_member_index_from_entities(entities),
-        struct_field_types=_build_struct_field_type_index_from_entities(entities),
+        struct_member_index=struct_member_index,
+        struct_field_types=struct_field_types,
         callable_index=_build_callable_index(source, entities),
         entities=entities,
     )
@@ -283,7 +435,9 @@ def _line_column_to_offset(source: str, line: int, column: int) -> int | None:
     lines = source.splitlines(keepends=True)
     if line >= len(lines):
         return None
-    return sum(len(existing) for existing in lines[:line]) + min(column, len(lines[line]))
+    return sum(len(existing) for existing in lines[:line]) + min(
+        column, len(lines[line])
+    )
 
 
 def _code_mask(source: str) -> list[bool]:
@@ -332,10 +486,7 @@ def _identifier_at_position(source: str, line: int, column: int) -> str | None:
 
     index = offset
     if not (source[index].isalnum() or source[index] == "_"):
-        if index > 0 and (source[index - 1].isalnum() or source[index - 1] == "_"):
-            index -= 1
-        else:
-            return None
+        return None
 
     start = index
     while start > 0 and (source[start - 1].isalnum() or source[start - 1] == "_"):
@@ -358,11 +509,22 @@ def _path_at_position(source: str, line: int, column: int) -> tuple[str, ...] | 
         return None
 
     ident = _identifier_at_position(source, line, column)
+    if ident is None and source[offset] == ".":
+        left = offset - 1
+        while left >= 0 and (source[left].isalnum() or source[left] == "_"):
+            left -= 1
+        right = offset + 1
+        while right < len(source) and (source[right].isalnum() or source[right] == "_"):
+            right += 1
+        if left + 1 < offset and offset + 1 < right:
+            ident = source[offset + 1 : right]
     if ident is None:
         return None
 
     start = offset
-    while start > 0 and (source[start - 1].isalnum() or source[start - 1] in {"_", "."}):
+    while start > 0 and (
+        source[start - 1].isalnum() or source[start - 1] in {"_", "."}
+    ):
         start -= 1
     end = offset
     while end < len(source) and (source[end].isalnum() or source[end] in {"_", "."}):
@@ -377,7 +539,8 @@ def _path_at_position(source: str, line: int, column: int) -> tuple[str, ...] | 
     return parts
 
 
-def _resolve_path_member(source: str, context: AnalysisContext, line: int, column: int
+def _resolve_path_member(
+    source: str, context: AnalysisContext, line: int, column: int
 ) -> tuple[str, str, str] | None:
     path = _path_at_position(source, line, column)
     if path is None:
@@ -435,6 +598,16 @@ def _build_callable_index(
         target = _location_target_from_entity(pure)
         if target is not None:
             callable_index[name] = target
+
+    clean = _source_without_non_code(source)
+    for match in _CALLABLE_DECL_RE.finditer(clean):
+        name = match.group(2) or match.group(3)
+        if not name or name in callable_index:
+            continue
+        line, column = _offset_to_line_column(
+            source, match.start(2 if match.group(2) else 3)
+        )
+        callable_index[name] = DefinitionTarget(line=line, column=column, symbol=name)
 
     return callable_index
 
@@ -508,7 +681,9 @@ def provide_bind_completion_items(
             if isinstance(entry, dict) and entry.get("route")
         ]
         if not bind_route_labels:
-            bind_route_labels = [route for route in entities.get("bind_routes", []) if route]
+            bind_route_labels = [
+                route for route in entities.get("bind_routes", []) if route
+            ]
 
         for route in bind_route_labels:
             if route in seen_labels:
@@ -592,7 +767,9 @@ def provide_hover_info(
         return f"(struct) `struct {name}`"
     if any(shader.get("name") == name for shader in entities.get("shaders", [])):
         return f"(shader) `shader {name}(...)`"
-    if any(filter_decl.get("name") == name for filter_decl in entities.get("filters", [])):
+    if any(
+        filter_decl.get("name") == name for filter_decl in entities.get("filters", [])
+    ):
         return f"(filter) `filter {name}(...)`"
     if any(
         pure.get("name") == name and not pure.get("intrinsic")
@@ -627,7 +804,9 @@ def run_lsp_server() -> int:
     latest_snapshot_key_by_uri: dict[str, DocumentSnapshotKey] = {}
     pending_tasks: dict[str, asyncio.Task[Any]] = {}
 
-    def _snapshot_key(uri: str, source: str, version: int | None) -> DocumentSnapshotKey:
+    def _snapshot_key(
+        uri: str, source: str, version: int | None
+    ) -> DocumentSnapshotKey:
         return DocumentSnapshotKey(
             uri=uri,
             version=version,
@@ -668,7 +847,9 @@ def run_lsp_server() -> int:
 
         task = pending_compiles.get(key)
         if task is None:
-            task = asyncio.create_task(asyncio.to_thread(compile_context_for_lsp, source))
+            task = asyncio.create_task(
+                asyncio.to_thread(compile_context_for_lsp, source)
+            )
             pending_compiles[key] = task
         compiled = await task
         pending_compiles.pop(key, None)

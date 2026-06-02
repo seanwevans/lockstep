@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from .ast import AstProgram, ast_to_entities
 from .arena_layout import build_arena_layout
 from .errors import LockstepCompileError
@@ -14,14 +17,6 @@ _PRIMITIVE_C_TYPE = {
     "double": "double",
 }
 
-_PRIMITIVE_SIZE = {
-    "bool": 1,
-    "int": 4,
-    "uint": 4,
-    "float": 4,
-    "double": 8,
-}
-
 _MAX_U64 = (1 << 64) - 1
 
 
@@ -34,12 +29,14 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
 
 
 def emit_c_header(
-    program: AstProgram,
+    program: AstProgram | Mapping[str, Any],
     guard: str = "LOCKSTEP_GENERATED_H",
     *,
     target_width: int = 8,
 ) -> str:
-    entities = ast_to_entities(program)
+    entities = (
+        dict(program) if isinstance(program, Mapping) else ast_to_entities(program)
+    )
 
     layout = build_arena_layout(entities)
     normalized_structs = layout.normalized_structs
@@ -65,7 +62,7 @@ def emit_c_header(
     ]
 
     for struct_decl in normalized_structs:
-        struct_name = struct_decl["name"]
+        struct_name = struct_decl.name
         c_struct_name = f"Lockstep_{_sanitize_symbol(struct_name)}"
         if struct_name in opaque_structs:
             lines.append(
@@ -75,9 +72,9 @@ def emit_c_header(
             continue
 
         lines.append(f"LOCKSTEP_PACKED_STRUCT(struct {c_struct_name} {{")
-        for field in struct_decl.get("fields", []):
-            field_type = _c_type(field.get("type", "float"), known_structs)
-            field_name = _sanitize_symbol(field.get("name", "field"))
+        for field in struct_decl.fields:
+            field_type = _c_type(field.type_name, known_structs)
+            field_name = _sanitize_symbol(field.name)
             lines.append(f"    {field_type} {field_name};")
         lines.append("});")
         lines.append("")
@@ -85,8 +82,7 @@ def emit_c_header(
     lines.append("LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {")
     cumulative_layout_total = 0
     for leaf in layout.leaves:
-        leaf_size = _PRIMITIVE_SIZE.get(leaf.type_name, 1)
-        leaf_allocation_size = leaf_size * leaf.element_count
+        leaf_allocation_size = leaf.size * leaf.element_count
         if cumulative_layout_total > _MAX_U64 - leaf_allocation_size:
             diagnostic = LockstepDiagnostic(
                 severity="error",
@@ -111,7 +107,11 @@ def emit_c_header(
             )
         cumulative_layout_total += leaf_allocation_size
         c_type_name = _c_type(leaf.type_name, known_structs)
-        path_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path) if leaf.path else "value"
+        path_suffix = (
+            "_".join(_sanitize_symbol(part) for part in leaf.path)
+            if leaf.path
+            else "value"
+        )
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
         if leaf.element_count > 1:
             lines.append(f"    {c_type_name} {field_name}[{leaf.element_count}];")
@@ -138,7 +138,9 @@ def emit_c_header(
         if not leaf.path:
             continue
         leaf_suffix = "_".join(_sanitize_symbol(part) for part in leaf.path).upper()
-        macro_suffix = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{leaf_suffix}".upper()
+        macro_suffix = (
+            f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{leaf_suffix}".upper()
+        )
         lines.append(f"#define LOCKSTEP_OFFSET_{macro_suffix} {leaf.offset}")
     for stream in entities.get("streams", []):
         stream_name = _sanitize_symbol(stream["name"]).upper()
