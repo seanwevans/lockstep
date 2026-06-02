@@ -480,7 +480,7 @@ def _resolve_dependency_sources(
                         "(or max_dependency_depth via API), or set it to 0 to disable."
                     ),
                 )
-            dependency_path = _resolve_reference(reference, current_file)
+            dependency_path = _resolve_reference(reference, current_file, line)
             if dependency_path in in_stack:
                 cycle_chain = [*in_stack, dependency_path]
                 cycle_text = " -> ".join(str(path) for path in cycle_chain)
@@ -732,9 +732,10 @@ def _compile_lockstep_with_dependencies(
 
     validator: Callable[..., Any]
     if semantic_validator is None:
-        validator = lambda parse_tree, *, typed_ast: validate_semantics(
-            parse_tree, visitor_cls, typed_ast=typed_ast
-        )
+
+        def validator(parse_tree, *, typed_ast):
+            return validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
+
     else:
         validator = semantic_validator
     # Intentionally do not provide a TypeError compatibility fallback here.

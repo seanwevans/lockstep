@@ -69,9 +69,9 @@ def build_semantic_validator(base_visitor_cls):
                 "string",
             }
             self._current_pure_function: SemanticPureFunctionContext | None = None
-            self._pipeline_resource_stack: list[dict[str, SemanticPipelineResource]] = (
-                []
-            )
+            self._pipeline_resource_stack: list[
+                dict[str, SemanticPipelineResource]
+            ] = []
             self._pipeline_bind_usage_stack: list[set[str]] = []
 
         def _line_col(self, ctx) -> tuple[int, int]:
@@ -583,9 +583,27 @@ def build_semantic_validator(base_visitor_cls):
                 if left_type is None or right_type is None:
                     return None
                 if op in {"+", "-", "*", "/", "%"}:
-                    promoted_type = _promote_numeric(left_type, right_type)
-                    if promoted_type is not None:
-                        return promoted_type
+                    if left_type == right_type and left_type in numeric_types:
+                        return left_type
+                    if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                        return "uint" if "uint" in {left_type, right_type} else "int"
+                    if left_type in numeric_types and right_type in numeric_types:
+                        _report_invalid_operands(
+                            expr_binary,
+                            op,
+                            "matching numeric",
+                            left_type,
+                            right_type,
+                            code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
+                            message=(
+                                f"Operator '{op}' mixes numeric operand types without an explicit cast."
+                            ),
+                            hint=(
+                                "Use explicit casts so numeric widening is intentional "
+                                "and target-compatible."
+                            ),
+                        )
+                        return None
                     _report_invalid_operands(
                         expr_binary, op, "numeric", left_type, right_type
                     )

@@ -201,7 +201,7 @@ def normalize_ast_structs(
 
 
 def _ast_type_name(type_ref: AstType | str) -> str:
-    return type_ref.name if isinstance(type_ref, AstType) else type_ref
+    return str(type_ref) if isinstance(type_ref, AstType) else type_ref
 
 
 def field_size(type_name: str, struct_sizes: dict[str, int]) -> int:
