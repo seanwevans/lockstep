@@ -223,6 +223,7 @@ class AstStructDecl:
     name: str
     fields: tuple[AstStructField, ...] = ()
     location: AstLocation = AstLocation()
+    identifier_location: AstLocation = AstLocation()
 
 
 @dataclass(frozen=True)
@@ -467,6 +468,20 @@ class AstBuilder(_AstBuilderMixin):
             node = AstExprBinary(op=op, left=node, right=self.visit(part))
         return node
 
+    def _coerce_expr_literal_for_type(
+        self, declared_type: AstType | None, expr: AstExpr | None
+    ) -> AstExpr | None:
+        if declared_type is None or not isinstance(expr, AstExprLiteral):
+            return expr
+        if declared_type.suffixes:
+            return expr
+        if declared_type.name in {"uint", "double"} and (
+            expr.kind == "int"
+            or (expr.kind == "float" and declared_type.name == "double")
+        ):
+            return AstExprLiteral(kind=declared_type.name, value=expr.value)
+        return expr
+
     def _parse_expr(self, expr_ctx: Any):
         return self.visit(expr_ctx)
 
@@ -595,15 +610,18 @@ class AstBuilder(_AstBuilderMixin):
                 parsed.append(
                     AstVarDeclStmt(
                         declared_type=(
-                            self._resolve_type(declared_type.getText())
+                            self._resolve_type_ctx(declared_type)
                             if declared_type
                             else None
                         ),
                         name=self._call(var_decl, "ID").getText(),
-                        initializer=(
+                        initializer=self._coerce_expr_literal_for_type(
+                            self._resolve_type_ctx(declared_type)
+                            if declared_type
+                            else None,
                             self._parse_expr(initializer_ctx)
                             if initializer_ctx
-                            else None
+                            else None,
                         ),
                     )
                 )
@@ -648,11 +666,13 @@ class AstBuilder(_AstBuilderMixin):
             )
             for member in members
         )
+        id_token = self._call(ctx, "ID")
         self._structs.append(
             AstStructDecl(
-                name=self._call(ctx, "ID").getText(),
+                name=id_token.getText(),
                 fields=fields,
                 location=self._location(ctx),
+                identifier_location=self._token_location(id_token),
             )
         )
         return self.visitChildren(ctx)
@@ -922,6 +942,8 @@ def ast_to_entities(program: AstProgram | dict[str, Any]) -> dict[str, Any]:
         "structs": [
             {
                 "name": decl.name,
+                "line": decl.identifier_location.line,
+                "column": decl.identifier_location.column,
                 "fields": [
                     {
                         "type": _type_name(field.declared_type),
