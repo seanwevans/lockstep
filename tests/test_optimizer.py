@@ -231,8 +231,12 @@ def test_compile_pipeline_lowers_fused_group_to_single_simd_loop_without_interme
     assert "route_A_body" not in result.llvm_ir
     assert "route_B_body" not in result.llvm_ir
     assert "<4 x float>" in result.llvm_ir
+    assert '"fused_inp_vector" = load <4 x float>' in result.llvm_ir
+    assert 'store <4 x float> %"fused_math.1"' in result.llvm_ir
     assert '"fused_math" = fadd <4 x float>' in result.llvm_ir
     assert '"fused_math.1" = fmul <4 x float>' in result.llvm_ir
+    assert "fused_load_lane_" not in result.llvm_ir
+    assert "fused_store_lane_" not in result.llvm_ir
     assert "stream_tmp_value_ptr" not in result.llvm_ir
     assert 'call void @"shader_A"' not in result.llvm_ir
     assert 'call void @"shader_B"' not in result.llvm_ir
