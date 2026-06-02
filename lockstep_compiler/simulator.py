@@ -292,17 +292,43 @@ def _format_available_sim_keys(value: dict[str, Any]) -> str:
 _MISSING_SIM_VALUE = object()
 
 
+def _raise_unmapped_sim_path(
+    *,
+    path_kind: str,
+    missing_part: str,
+    full_path: tuple[str, ...],
+    available_scope: dict[str, Any],
+    parent_path: tuple[str, ...] | None = None,
+) -> None:
+    formatted_path = _format_sim_path(full_path)
+    available = _format_available_sim_keys(available_scope)
+    if parent_path is None:
+        raise SimulatorRuntimeError(
+            "Unmapped simulator identifier "
+            f"'{missing_part}' while resolving '{formatted_path}'; "
+            f"available identifiers: {available}."
+        )
+
+    raise SimulatorRuntimeError(
+        f"Unmapped simulator {path_kind} "
+        f"'{missing_part}' at '{_format_sim_path(parent_path)}' while resolving "
+        f"'{formatted_path}'; available members: {available}."
+    )
+
+
 def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
+    """Resolve a simulator variable/member path without implicit fallbacks."""
     if not path:
         return None
 
     root = path[0]
     value = env.get(root, _MISSING_SIM_VALUE)
     if value is _MISSING_SIM_VALUE:
-        raise SimulatorRuntimeError(
-            "Unmapped simulator identifier "
-            f"'{root}' while resolving '{_format_sim_path(path)}'; "
-            f"available identifiers: {_format_available_sim_keys(env)}."
+        _raise_unmapped_sim_path(
+            path_kind="identifier",
+            missing_part=root,
+            full_path=path,
+            available_scope=env,
         )
     resolved_path = (root,)
     for part in path[1:]:
@@ -315,11 +341,12 @@ def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
             )
         next_value = value.get(part, _MISSING_SIM_VALUE)
         if next_value is _MISSING_SIM_VALUE:
-            raise SimulatorRuntimeError(
-                "Unmapped simulator member "
-                f"'{part}' at '{_format_sim_path(resolved_path)}' while resolving "
-                f"'{_format_sim_path(path)}'; available members: "
-                f"{_format_available_sim_keys(value)}."
+            _raise_unmapped_sim_path(
+                path_kind="member",
+                missing_part=part,
+                full_path=path,
+                available_scope=value,
+                parent_path=resolved_path,
             )
         value = next_value
         resolved_path = (*resolved_path, part)
