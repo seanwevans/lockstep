@@ -45,22 +45,21 @@ pipeline StressTopology {
 
     assert exc_info.value.phase == "semantic"
     assert [diag.code for diag in exc_info.value.errors] == [
-        "LCK303",
         "LCK304",
-        "LCK303",
+        "LCK305",
+        "LCK308",
+        "LCK309",
         "LCK403",
     ]
+    assert "Undefined shader/filter 'MissingKernel'" in exc_info.value.errors[0].message
     assert (
-        "Invocation of 'Scatter' expects 2 argument(s), but got 0."
-        in exc_info.value.errors[0].message
+        "Type mismatch for argument 'dt' in 'Integrate'"
+        in exc_info.value.errors[1].message
     )
-    assert "Undefined shader/filter 'MissingKernel'" in exc_info.value.errors[1].message
+    assert "parameter 'energy' requires accum" in exc_info.value.errors[2].message
+    assert "kernel has no out parameter" in exc_info.value.errors[3].message
     assert (
-        "Invocation of 'Integrate' expects 2 argument(s), but got 0."
-        in exc_info.value.errors[2].message
-    )
-    assert (
-        "must reference an accumulator, got stream" in exc_info.value.errors[3].message
+        "must reference an accumulator, got stream" in exc_info.value.errors[4].message
     )
 
 
@@ -99,18 +98,10 @@ pipeline StageB {
 
     assert exc_info.value.phase == "semantic"
     assert [diag.code for diag in exc_info.value.errors] == [
-        "LCK303",
-        "LCK303",
+        "LCK301",
         "LCK403",
     ]
+    assert "Undefined identifier 'a0'" in exc_info.value.errors[0].message
     assert (
-        "Invocation of 'Blend' expects 3 argument(s), but got 0."
-        in exc_info.value.errors[0].message
-    )
-    assert (
-        "Invocation of 'Blend' expects 3 argument(s), but got 0."
-        in exc_info.value.errors[1].message
-    )
-    assert (
-        "must reference an accumulator, got uniform" in exc_info.value.errors[2].message
+        "must reference an accumulator, got uniform" in exc_info.value.errors[1].message
     )
