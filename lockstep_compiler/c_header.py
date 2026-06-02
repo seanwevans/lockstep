@@ -65,7 +65,7 @@ def emit_c_header(
     ]
 
     for struct_decl in normalized_structs:
-        struct_name = struct_decl["name"]
+        struct_name = struct_decl.name
         c_struct_name = f"Lockstep_{_sanitize_symbol(struct_name)}"
         if struct_name in opaque_structs:
             lines.append(
@@ -75,9 +75,9 @@ def emit_c_header(
             continue
 
         lines.append(f"LOCKSTEP_PACKED_STRUCT(struct {c_struct_name} {{")
-        for field in struct_decl.get("fields", []):
-            field_type = _c_type(field.get("type", "float"), known_structs)
-            field_name = _sanitize_symbol(field.get("name", "field"))
+        for field in struct_decl.fields:
+            field_type = _c_type(field.type_name, known_structs)
+            field_name = _sanitize_symbol(field.name)
             lines.append(f"    {field_type} {field_name};")
         lines.append("});")
         lines.append("")
