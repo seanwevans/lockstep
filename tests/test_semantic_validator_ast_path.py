@@ -67,3 +67,16 @@ pure int BadOperands(int value, float scale) {
 """)
 
     assert "LCK424" in codes
+
+
+def test_ast_validator_rejects_read_of_unassigned_struct_field_after_partial_assignment():
+    codes = _semantic_error_codes("""
+struct Point { float x; float y; float z; };
+pure float BadPartialStructRead() {
+    Point point;
+    point.x = 5.0;
+    return point.y;
+}
+""")
+
+    assert "LCK425" in codes

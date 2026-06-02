@@ -1,8 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .models import SemanticSymbol
-
 
 SEMANTIC_DIAGNOSTIC_CODES = {
     "undefined_identifier": "LCK301",
@@ -47,6 +46,7 @@ class ScopedSymbolData:
     usage_count: int
     declaration_ctx: Any
     is_assigned: bool
+    assigned_paths: set[tuple[str, ...]] = field(default_factory=set)
 
 
 class Scope:

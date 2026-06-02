@@ -155,17 +155,97 @@ def build_semantic_validator(base_visitor_cls):
             )
             return True
 
-        def _set_symbol_assigned(self, name: str):
+        def _lookup_scoped_symbol_data(self, name: str) -> ScopedSymbolData | None:
             for scope in reversed(self.scopes):
                 if name in scope.symbols:
-                    scope.symbols[name].is_assigned = True
-                    return
+                    return scope.symbols[name]
+            return None
+
+        def _set_symbol_assigned(self, name: str):
+            self._set_symbol_path_assigned((name,))
+
+        def _set_symbol_path_assigned(self, path: tuple[str, ...]):
+            if not path:
+                return
+            scoped_symbol_data = self._lookup_scoped_symbol_data(path[0])
+            if scoped_symbol_data is None:
+                return
+            if len(path) == 1:
+                scoped_symbol_data.is_assigned = True
+                scoped_symbol_data.assigned_paths.clear()
+                return
+
+            scoped_symbol_data.assigned_paths.add(tuple(path[1:]))
+            if self._is_composite_path_fully_assigned(scoped_symbol_data, ()):
+                scoped_symbol_data.is_assigned = True
+                scoped_symbol_data.assigned_paths.clear()
+
+        @staticmethod
+        def _path_has_assigned_prefix(
+            assigned_paths: set[tuple[str, ...]], path: tuple[str, ...]
+        ) -> bool:
+            return any(
+                len(assigned_path) <= len(path)
+                and path[: len(assigned_path)] == assigned_path
+                for assigned_path in assigned_paths
+            )
+
+        def _field_path_type(self, root_type: str, path: tuple[str, ...]) -> str | None:
+            current_type = root_type
+            for field_name in path:
+                fields = self.structs.get(current_type)
+                if fields is None or field_name not in fields:
+                    return None
+                current_type = fields[field_name].declared_type
+            return current_type
+
+        def _is_composite_path_fully_assigned(
+            self, scoped_symbol_data: ScopedSymbolData, path: tuple[str, ...]
+        ) -> bool:
+            if self._path_has_assigned_prefix(scoped_symbol_data.assigned_paths, path):
+                return True
+
+            path_type = self._field_path_type(
+                scoped_symbol_data.symbol.declared_type, path
+            )
+            if path_type is None:
+                return False
+            fields = self.structs.get(path_type)
+            if fields is None:
+                return path in scoped_symbol_data.assigned_paths
+            return all(
+                self._is_composite_path_fully_assigned(
+                    scoped_symbol_data, (*path, field_name)
+                )
+                for field_name in fields
+            )
 
         def _is_symbol_assigned(self, name: str) -> bool:
-            for scope in reversed(self.scopes):
-                if name in scope.symbols:
-                    return scope.symbols[name].is_assigned
-            return False
+            scoped_symbol_data = self._lookup_scoped_symbol_data(name)
+            return bool(scoped_symbol_data and scoped_symbol_data.is_assigned)
+
+        def _is_symbol_path_assigned(self, path: tuple[str, ...]) -> bool:
+            if not path:
+                return False
+            scoped_symbol_data = self._lookup_scoped_symbol_data(path[0])
+            if scoped_symbol_data is None:
+                return False
+            if scoped_symbol_data.is_assigned:
+                return True
+            if len(path) == 1:
+                return self._is_composite_path_fully_assigned(scoped_symbol_data, ())
+            return self._is_composite_path_fully_assigned(
+                scoped_symbol_data, tuple(path[1:])
+            )
+
+        def _report_use_before_definition(self, name: str, ctx):
+            self._add_diagnostic(
+                severity="error",
+                code=SEMANTIC_DIAGNOSTIC_CODES["use_before_definition"],
+                message=f"Local variable '{name}' is used before it is assigned.",
+                ctx=ctx,
+                hint="Assign a value to the variable before reading it.",
+            )
 
         def _mark_symbol_used(self, name: str):
             for scope in reversed(self.scopes):
@@ -267,15 +347,34 @@ def build_semantic_validator(base_visitor_cls):
                 and symbol.kind == "local"
                 and not self._is_symbol_assigned(name)
             ):
-                self._add_diagnostic(
-                    severity="error",
-                    code=SEMANTIC_DIAGNOSTIC_CODES["use_before_definition"],
-                    message=f"Local variable '{name}' is used before it is assigned.",
-                    ctx=ctx,
-                    hint="Assign a value to the variable before reading it.",
-                )
+                self._report_use_before_definition(name, ctx)
                 return None
             self._mark_symbol_used(name)
+            return symbol.declared_type
+
+        def _check_expression_path(
+            self, path: tuple[str, ...], ctx, *, require_assigned: bool = True
+        ):
+            if not path:
+                return None
+            symbol = self._lookup(path[0])
+            if symbol is None:
+                self._add_diagnostic(
+                    severity="error",
+                    code=SEMANTIC_DIAGNOSTIC_CODES["undefined_identifier"],
+                    message=f"Undefined identifier '{path[0]}'.",
+                    ctx=ctx,
+                    hint="Declare the identifier in scope before using it.",
+                )
+                return None
+            if (
+                require_assigned
+                and symbol.kind == "local"
+                and not self._is_symbol_path_assigned(path)
+            ):
+                self._report_use_before_definition(path[0], ctx)
+                return None
+            self._mark_symbol_used(path[0])
             return symbol.declared_type
 
         def _collect_id_tokens(self, ctx):
@@ -301,9 +400,9 @@ def build_semantic_validator(base_visitor_cls):
             if not id_tokens:
                 return None
 
-            root_identifier = id_tokens[0].getText()
-            current_type = self._check_expression_identifier(
-                root_identifier,
+            path = tuple(token.getText() for token in id_tokens)
+            current_type = self._check_expression_path(
+                path,
                 ctx,
                 require_assigned=not for_write,
             )
@@ -1119,7 +1218,9 @@ def build_semantic_validator(base_visitor_cls):
             if lvalue_ctx is not None:
                 id_tokens = self._collect_id_tokens(lvalue_ctx)
                 if id_tokens:
-                    self._set_symbol_assigned(id_tokens[0].getText())
+                    self._set_symbol_path_assigned(
+                        tuple(token.getText() for token in id_tokens)
+                    )
 
             return self.visitChildren(ctx)
 
@@ -1638,7 +1739,7 @@ def build_semantic_validator(base_visitor_cls):
                             hint="Assign expressions whose type matches the lvalue declaration.",
                         )
                     if statement.target:
-                        self._set_symbol_assigned(statement.target[0])
+                        self._set_symbol_path_assigned(statement.target)
                     return
 
                 if isinstance(statement, AstReturnStmt):
@@ -1978,9 +2079,8 @@ def build_semantic_validator(base_visitor_cls):
             if not path:
                 return None
 
-            root_identifier = path[0]
-            current_type = self._check_expression_identifier(
-                root_identifier,
+            current_type = self._check_expression_path(
+                path,
                 ctx,
                 require_assigned=not for_write,
             )
