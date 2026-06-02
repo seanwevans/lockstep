@@ -1437,9 +1437,7 @@ def emit_llvm_ir(
                 )
             return _load_tick_param("stream", arg_name, param.type, clamped_index)
         if modifier == "accum" and arg_name in accum_slots:
-            return _load_tick_param_ptr(
-                "accum", arg_name, param.type.pointee, current
-            )
+            return _load_tick_param_ptr("accum", arg_name, param.type.pointee, current)
         if modifier == "uniform" and arg_name in uniform_slots:
             return _load_tick_param("uniform", arg_name, param.type)
         return _zero_value(param.type)
@@ -1516,9 +1514,7 @@ def emit_llvm_ir(
             _lower_kernel_route(routes[0])
             return
 
-        index_ptr = tick_builder.alloca(
-            ir.IntType(32), name=f"fused_{group_index}_idx"
-        )
+        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fused_{group_index}_idx")
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
 
         loop_cond = tick.append_basic_block(f"fused_{group_index}_cond")
@@ -1570,9 +1566,7 @@ def emit_llvm_ir(
                 name=f"fused_lane_{lane}_active",
             )
             lane_body = tick.append_basic_block(f"fused_{group_index}_lane_{lane}")
-            lane_next = tick.append_basic_block(
-                f"fused_{group_index}_lane_{lane}_next"
-            )
+            lane_next = tick.append_basic_block(f"fused_{group_index}_lane_{lane}_next")
             tick_builder.cbranch(lane_active, lane_body, lane_next)
             tick_builder.position_at_end(lane_body)
             _emit_fused_lane(lane_index)
@@ -1597,7 +1591,7 @@ def emit_llvm_ir(
         reduced = _reduce_fold(route.operator, source_name, uniform_type)
         _store_value("uniform", uniform_name, reduced, uniform_type_name)
 
-    for pipeline in program.pipelines:
+    for pipeline_index, pipeline in enumerate(program.pipelines):
         route_texts = [route.route for route in pipeline.bind_routes]
         route_ir = []
         for route in pipeline.bind_routes:
@@ -1623,7 +1617,16 @@ def emit_llvm_ir(
                     }
                 )
 
-        if bind_optimization is not None and len(program.pipelines) == 1:
+        pipeline_optimizations = (
+            bind_optimization.get("pipeline_optimizations")
+            if isinstance(bind_optimization, dict)
+            else None
+        )
+        if isinstance(pipeline_optimizations, list) and len(
+            pipeline_optimizations
+        ) == len(program.pipelines):
+            pipeline_optimization = pipeline_optimizations[pipeline_index]
+        elif bind_optimization is not None and len(program.pipelines) == 1:
             pipeline_optimization = bind_optimization
         else:
             pipeline_optimization = optimize_bind_routes(

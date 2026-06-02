@@ -29,7 +29,6 @@ from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
 from .visitors import validate_semantics as _validate_semantics
 
-
 DEFAULT_SOURCE_FILE = "<stdin>"
 DEFAULT_MAX_SOURCE_BYTES = 1_048_576
 DEFAULT_PARSE_TIMEOUT_MS = 2_000
@@ -429,7 +428,9 @@ def _resolve_dependency_sources(
         elif parent_file.startswith("<") and parent_file.endswith(">"):
             resolved_candidate = (base_directory / candidate).resolve()
         else:
-            resolved_candidate = (Path(parent_file).resolve().parent / candidate).resolve()
+            resolved_candidate = (
+                Path(parent_file).resolve().parent / candidate
+            ).resolve()
 
         if canonical_dependency_root is not None:
             try:
@@ -596,6 +597,52 @@ def _remap_diagnostics(
     ]
 
 
+def _bind_route_ir(route: AstKernelBindRoute | AstFoldBindRoute) -> dict[str, object]:
+    if isinstance(route, AstKernelBindRoute):
+        return {
+            "kind": "kernel",
+            "target": route.target,
+            "kernel": route.kernel,
+            "args": list(route.args),
+            "route": route.route,
+        }
+    return {
+        "kind": "fold",
+        "uniform_type": route.uniform_type.name,
+        "uniform_name": route.uniform_name,
+        "operator": route.operator,
+        "source": route.source,
+        "route": route.route,
+    }
+
+
+def _build_bind_optimization(program: AstProgram) -> dict[str, object]:
+    optimized_bind_routes: list[str] = []
+    fused_bind_groups: list[object] = []
+    pipeline_optimizations: list[dict[str, list]] = []
+    shader_names = {shader.name for shader in program.shaders}
+    filter_names = {flt.name for flt in program.filters}
+
+    for pipeline in program.pipelines:
+        pipeline_routes = [route.route for route in pipeline.bind_routes]
+        pipeline_route_ir = [_bind_route_ir(route) for route in pipeline.bind_routes]
+        pipeline_optimization = optimize_bind_routes(
+            pipeline_routes,
+            shader_names=shader_names,
+            filter_names=filter_names,
+            bind_routes_ir=pipeline_route_ir,
+        )
+        pipeline_optimizations.append(pipeline_optimization)
+        optimized_bind_routes.extend(pipeline_optimization["optimized_bind_routes"])
+        fused_bind_groups.extend(pipeline_optimization["fused_groups"])
+
+    return {
+        "optimized_bind_routes": optimized_bind_routes,
+        "fused_groups": fused_bind_groups,
+        "pipeline_optimizations": pipeline_optimizations,
+    }
+
+
 def _compile_lockstep_with_dependencies(
     source_code: str,
     *,
@@ -612,7 +659,9 @@ def _compile_lockstep_with_dependencies(
     target_width: int = 8,
 ) -> LockstepCompileResult:
     source_map = source_map or [(1, _line_count(source_code), source_file)]
-    resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
+    resolved_limits = _normalize_frontend_limits(
+        frontend_limits, source_file=source_file
+    )
     _enforce_source_size_limit(
         source_code,
         source_file=source_file,
@@ -712,48 +761,9 @@ def _compile_lockstep_with_dependencies(
     # compile result carrying the serialized compiler entities, not just the
     # internal typed AST.
     runtime_entities = ast_to_entities(typed_ast)
-    optimized_bind_routes: list[str] = []
-    fused_bind_groups: list[object] = []
-    shader_names = {shader.name for shader in typed_ast.shaders}
-    filter_names = {flt.name for flt in typed_ast.filters}
-    for pipeline in typed_ast.pipelines:
-        pipeline_routes = [route.route for route in pipeline.bind_routes]
-        pipeline_route_ir = []
-        for route in pipeline.bind_routes:
-            if isinstance(route, AstKernelBindRoute):
-                pipeline_route_ir.append(
-                    {
-                        "kind": "kernel",
-                        "target": route.target,
-                        "kernel": route.kernel,
-                        "args": list(route.args),
-                        "route": route.route,
-                    }
-                )
-            elif isinstance(route, AstFoldBindRoute):
-                pipeline_route_ir.append(
-                    {
-                        "kind": "fold",
-                        "uniform_type": route.uniform_type.name,
-                        "uniform_name": route.uniform_name,
-                        "operator": route.operator,
-                        "source": route.source,
-                        "route": route.route,
-                    }
-                )
-        pipeline_optimization = optimize_bind_routes(
-            pipeline_routes,
-            shader_names=shader_names,
-            filter_names=filter_names,
-            bind_routes_ir=pipeline_route_ir,
-        )
-        optimized_bind_routes.extend(pipeline_optimization["optimized_bind_routes"])
-        fused_bind_groups.extend(pipeline_optimization["fused_groups"])
-
-    bind_optimization = {
-        "optimized_bind_routes": optimized_bind_routes,
-        "fused_groups": fused_bind_groups,
-    }
+    bind_optimization = _build_bind_optimization(typed_ast)
+    optimized_bind_routes = bind_optimization["optimized_bind_routes"]
+    fused_bind_groups = bind_optimization["fused_groups"]
     runtime_entities = {
         **runtime_entities,
         "optimized_bind_routes": optimized_bind_routes,
@@ -837,7 +847,9 @@ def compile_lockstep(
 ) -> LockstepCompileResult:
     resolved_library_sources: list[str] = list(library_sources or [])
     resolved_library_source_files: list[str] = list(library_source_files or [])
-    resolved_limits = _normalize_frontend_limits(frontend_limits, source_file=source_file)
+    resolved_limits = _normalize_frontend_limits(
+        frontend_limits, source_file=source_file
+    )
 
     dependency_sources, dependency_source_files = _resolve_dependency_sources(
         source_code,
