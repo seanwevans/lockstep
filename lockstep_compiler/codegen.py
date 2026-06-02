@@ -1436,22 +1436,12 @@ def emit_llvm_ir(
         identity_value = _identity_value()
         vector_accumulator = ir.Constant(vector_ty, [identity_value] * simd_width)
 
-        def _load_accum_chunk_vector(element_index: ir.Value) -> ir.Value:
+        def _load_accum_chunk_vector(chunk_vector_ptr: ir.Value) -> ir.Value:
             # The strip-mined fold consumes a contiguous SIMD-width chunk of the
-            # accumulator.  Load that chunk through one base pointer rather than
-            # synthesizing a separate scalar address stream for every lane; LLVM
-            # can then lower the vector load to the target's preferred memory
-            # access pattern.
-            chunk_base_ptr = _leaf_ptr(
-                "accum", source_name, (), uniform_type, element_index
-            )
-            if chunk_base_ptr is None:
-                return ir.Constant(vector_ty, [identity_value] * simd_width)
-            chunk_vector_ptr = tick_builder.bitcast(
-                chunk_base_ptr,
-                vector_ty.as_pointer(),
-                name=f"fold_{_sanitize_symbol(source_name)}_chunk_ptr",
-            )
+            # accumulator.  The strip loop carries a vector pointer induction
+            # variable, so the loop body performs one uniform vector load and
+            # one vector-strided pointer increment instead of rebuilding scalar
+            # byte offsets independently for every SIMD lane.
             return tick_builder.load(
                 chunk_vector_ptr, name=f"fold_{_sanitize_symbol(source_name)}_chunk"
             )
@@ -1505,47 +1495,66 @@ def emit_llvm_ir(
         # after the strip loop and any scalar tail have been merged.
         full_chunk_limit = (lane_count // simd_width) * simd_width
         if full_chunk_limit:
-            preheader_block = tick_builder.block
-            loop_cond = tick.append_basic_block(
-                f"fold_{_sanitize_symbol(source_name)}_strip_cond"
-            )
-            loop_body = tick.append_basic_block(
-                f"fold_{_sanitize_symbol(source_name)}_strip_body"
-            )
-            loop_exit = tick.append_basic_block(
-                f"fold_{_sanitize_symbol(source_name)}_strip_exit"
-            )
+            first_chunk_ptr = _leaf_ptr("accum", source_name, (), uniform_type)
+            if first_chunk_ptr is not None:
+                first_chunk_vector_ptr = tick_builder.bitcast(
+                    first_chunk_ptr,
+                    vector_ty.as_pointer(),
+                    name=f"fold_{_sanitize_symbol(source_name)}_chunk_ptr",
+                )
+                preheader_block = tick_builder.block
+                loop_cond = tick.append_basic_block(
+                    f"fold_{_sanitize_symbol(source_name)}_strip_cond"
+                )
+                loop_body = tick.append_basic_block(
+                    f"fold_{_sanitize_symbol(source_name)}_strip_body"
+                )
+                loop_exit = tick.append_basic_block(
+                    f"fold_{_sanitize_symbol(source_name)}_strip_exit"
+                )
 
-            tick_builder.branch(loop_cond)
-            tick_builder.position_at_end(loop_cond)
-            loop_index = tick_builder.phi(ir.IntType(32), name="fold_index")
-            loop_accumulator = tick_builder.phi(vector_ty, name="fold_vector_acc")
-            loop_index.add_incoming(ir.Constant(ir.IntType(32), 0), preheader_block)
-            loop_accumulator.add_incoming(vector_accumulator, preheader_block)
-            in_full_chunks = tick_builder.icmp_unsigned(
-                "<",
-                loop_index,
-                ir.Constant(ir.IntType(32), full_chunk_limit),
-                name="fold_has_full_chunk",
-            )
-            tick_builder.cbranch(in_full_chunks, loop_body, loop_exit)
+                tick_builder.branch(loop_cond)
+                tick_builder.position_at_end(loop_cond)
+                loop_index = tick_builder.phi(ir.IntType(32), name="fold_index")
+                loop_chunk_ptr = tick_builder.phi(
+                    first_chunk_vector_ptr.type, name="fold_chunk_ptr"
+                )
+                loop_accumulator = tick_builder.phi(vector_ty, name="fold_vector_acc")
+                loop_index.add_incoming(
+                    ir.Constant(ir.IntType(32), 0), preheader_block
+                )
+                loop_chunk_ptr.add_incoming(first_chunk_vector_ptr, preheader_block)
+                loop_accumulator.add_incoming(vector_accumulator, preheader_block)
+                in_full_chunks = tick_builder.icmp_unsigned(
+                    "<",
+                    loop_index,
+                    ir.Constant(ir.IntType(32), full_chunk_limit),
+                    name="fold_has_full_chunk",
+                )
+                tick_builder.cbranch(in_full_chunks, loop_body, loop_exit)
 
-            tick_builder.position_at_end(loop_body)
-            chunk_vector = _load_accum_chunk_vector(loop_index)
-            next_accumulator = _combine_vectors(
-                loop_accumulator, chunk_vector, "fold_vector_next"
-            )
-            next_index = tick_builder.add(
-                loop_index,
-                ir.Constant(ir.IntType(32), simd_width),
-                name="fold_index_next",
-            )
-            tick_builder.branch(loop_cond)
-            loop_index.add_incoming(next_index, tick_builder.block)
-            loop_accumulator.add_incoming(next_accumulator, tick_builder.block)
+                tick_builder.position_at_end(loop_body)
+                chunk_vector = _load_accum_chunk_vector(loop_chunk_ptr)
+                next_accumulator = _combine_vectors(
+                    loop_accumulator, chunk_vector, "fold_vector_next"
+                )
+                next_index = tick_builder.add(
+                    loop_index,
+                    ir.Constant(ir.IntType(32), simd_width),
+                    name="fold_index_next",
+                )
+                next_chunk_ptr = tick_builder.gep(
+                    loop_chunk_ptr,
+                    [ir.Constant(ir.IntType(32), 1)],
+                    name="fold_chunk_ptr_next",
+                )
+                tick_builder.branch(loop_cond)
+                loop_index.add_incoming(next_index, tick_builder.block)
+                loop_chunk_ptr.add_incoming(next_chunk_ptr, tick_builder.block)
+                loop_accumulator.add_incoming(next_accumulator, tick_builder.block)
 
-            tick_builder.position_at_end(loop_exit)
-            vector_accumulator = loop_accumulator
+                tick_builder.position_at_end(loop_exit)
+                vector_accumulator = loop_accumulator
 
         tail_count = lane_count - full_chunk_limit
         if tail_count:

@@ -1128,8 +1128,22 @@ def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width(
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {[512 x float], float}' in llvm_ir
     assert '%"fold_energy_chunk_ptr" = bitcast float*' in llvm_ir
-    assert '%"fold_energy_chunk" = load <8 x float>, <8 x float>* %"fold_energy_chunk_ptr"' in llvm_ir
-    assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' in llvm_ir
+    assert (
+        '%"fold_chunk_ptr" = phi  <8 x float>* '
+        '[%"fold_energy_chunk_ptr", %"entry"], '
+        '[%"fold_chunk_ptr_next", %"fold_energy_strip_body"]'
+        in llvm_ir
+    )
+    assert (
+        '%"fold_energy_chunk" = load <8 x float>, <8 x float>* %"fold_chunk_ptr"'
+        in llvm_ir
+    )
+    assert (
+        '%"fold_chunk_ptr_next" = getelementptr <8 x float>, '
+        '<8 x float>* %"fold_chunk_ptr", i32 1'
+        in llvm_ir
+    )
+    assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' not in llvm_ir
     assert '%"fold_elem_7" = add i32 %"fold_index", 7' not in llvm_ir
 
 
@@ -1167,6 +1181,15 @@ def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
     assert '%"fold_index_next" = add i32 %"fold_index", 8' in result.llvm_ir
     assert 'mul i32 %"idx", 4' in result.llvm_ir
     assert 'mul i32 16, 4' in result.llvm_ir
+    assert (
+        '%"fold_chunk_ptr_next" = getelementptr <8 x float>, '
+        '<8 x float>* %"fold_chunk_ptr", i32 1'
+        in result.llvm_ir
+    )
+    assert (
+        '%"accum_energy_byte_index" = mul i32 %"fold_index", 4'
+        not in result.llvm_ir
+    )
     assert (
         '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000'
         in result.llvm_ir
