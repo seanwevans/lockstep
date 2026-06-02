@@ -2216,10 +2216,39 @@ def emit_llvm_ir(
             _splat_to_vector(current, vector_ty), lanes, name="fused_lane_indices"
         )
 
+    def _stream_has_contiguous_vector_chunk(name: str, chunk_trip_count: int) -> bool:
+        return name in stream_capacities and stream_capacities[name] >= chunk_trip_count
+
+    def _stream_vector_ptr(
+        name: str, scalar_ty: ir.Type, current: ir.Value
+    ) -> ir.Value | None:
+        scalar_ptr = _load_tick_param_ptr("stream", name, scalar_ty, current)
+        if scalar_ptr is None:
+            return None
+        vector_ty = ir.VectorType(scalar_ty, simd_width)
+        return tick_builder.bitcast(
+            scalar_ptr,
+            vector_ty.as_pointer(),
+            name=f"fused_{_sanitize_symbol(name)}_vector_ptr",
+        )
+
     def _load_stream_vector(
-        name: str, scalar_ty: ir.Type, lane_indices: ir.Value
+        name: str,
+        scalar_ty: ir.Type,
+        current: ir.Value,
+        chunk_trip_count: int,
     ) -> ir.Value:
         vector_ty = ir.VectorType(scalar_ty, simd_width)
+        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count):
+            vector_ptr = _stream_vector_ptr(name, scalar_ty, current)
+            if vector_ptr is not None:
+                vector_load = tick_builder.load(
+                    vector_ptr, name=f"fused_{_sanitize_symbol(name)}_vector"
+                )
+                vector_load.align = 1
+                return vector_load
+
+        lane_indices = _vector_lane_indices(current)
         result = ir.Constant(vector_ty, ir.Undefined)
         for lane in range(simd_width):
             lane_index = tick_builder.extract_element(
@@ -2238,8 +2267,20 @@ def emit_llvm_ir(
         return result
 
     def _store_stream_vector(
-        name: str, value: ir.Value, lane_indices: ir.Value
+        name: str,
+        value: ir.Value,
+        current: ir.Value,
+        chunk_trip_count: int,
     ) -> None:
+        scalar_ty = value.type.element
+        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count):
+            vector_ptr = _stream_vector_ptr(name, scalar_ty, current)
+            if vector_ptr is not None:
+                vector_store = tick_builder.store(value, vector_ptr)
+                vector_store.align = 1
+                return
+
+        lane_indices = _vector_lane_indices(current)
         for lane in range(simd_width):
             lane_index = tick_builder.extract_element(
                 lane_indices,
@@ -2247,7 +2288,7 @@ def emit_llvm_ir(
                 name=f"fused_store_lane_{lane}_idx",
             )
             clamped = _clamped_stream_index(name, lane_index)
-            ptr = _load_tick_param_ptr("stream", name, value.type.element, clamped)
+            ptr = _load_tick_param_ptr("stream", name, scalar_ty, clamped)
             if ptr is not None:
                 lane_value = tick_builder.extract_element(
                     value,
@@ -2260,8 +2301,8 @@ def emit_llvm_ir(
         routes: tuple[AstKernelBindRoute, ...],
         current: ir.Value,
         eliminated_targets: set[str],
+        chunk_trip_count: int,
     ) -> None:
-        lane_indices = _vector_lane_indices(current)
         route_values: dict[str, ir.Value] = {}
         for route in routes:
             signature = kernel_signatures[route.kernel]
@@ -2278,7 +2319,10 @@ def emit_llvm_ir(
                     vector_lowerer.values[key] = route_values[arg_name]
                 elif param.modifier == "in" and arg_name in stream_slots:
                     vector_lowerer.values[key] = _load_stream_vector(
-                        arg_name, scalar_ty, lane_indices
+                        arg_name,
+                        scalar_ty,
+                        current,
+                        chunk_trip_count,
                     )
                 elif param.modifier == "uniform" and arg_name in uniform_slots:
                     scalar = _load_tick_param("uniform", arg_name, scalar_ty)
@@ -2295,7 +2339,7 @@ def emit_llvm_ir(
                 if arg_name in eliminated_targets:
                     route_values[arg_name] = value
                 elif arg_name in stream_slots:
-                    _store_stream_vector(arg_name, value, lane_indices)
+                    _store_stream_vector(arg_name, value, current, chunk_trip_count)
 
     def _lower_fused_kernel_group(
         routes: tuple[AstKernelBindRoute, ...], group_index: int
@@ -2332,7 +2376,7 @@ def emit_llvm_ir(
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
-        _emit_vector_fused_chunk(routes, current, eliminated_targets)
+        _emit_vector_fused_chunk(routes, current, eliminated_targets, trip_count)
         next_index = tick_builder.add(
             current, ir.Constant(ir.IntType(32), simd_width), name="fused_idx_next"
         )
