@@ -1724,11 +1724,13 @@ def emit_llvm_ir(
             return ir.VectorType(scalar_type, simd_width)
         return None
 
-    def _splat_to_vector(value: ir.Value, vector_ty: ir.VectorType) -> ir.Value:
+    def _splat_to_vector(
+        value: ir.Value, vector_ty: ir.VectorType, type_name: str | None = None
+    ) -> ir.Value:
         if value.type == vector_ty:
             return value
         if value.type != vector_ty.element:
-            value = lowerer._coerce_value_to_type(value, vector_ty.element)
+            value = lowerer._coerce_value_to_type(value, vector_ty.element, type_name)
         seed = tick_builder.insert_element(
             ir.Constant(vector_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
         )
@@ -1744,7 +1746,7 @@ def emit_llvm_ir(
             return value
         if isinstance(target_ty, ir.VectorType):
             if not isinstance(value.type, ir.VectorType):
-                return _splat_to_vector(value, target_ty)
+                return _splat_to_vector(value, target_ty, type_name)
             source_elem = value.type.element
             target_elem = target_ty.element
             if source_elem == target_elem:
