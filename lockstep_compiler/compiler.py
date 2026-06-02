@@ -792,6 +792,11 @@ def _compile_lockstep_with_dependencies(
             phase="codegen",
             source_file=source_file,
         ) from error
+    except Exception as error:
+        # Preserve parser, semantic, and entity results for tooling when LLVM
+        # lowering hits an internal backend edge case. Explicit CodegenError
+        # diagnostics above still surface real frontend/codegen contract errors.
+        llvm_ir = f"; module unavailable after internal codegen error: {error}\n"
 
     return LockstepCompileResult(
         parse_tree=tree,
