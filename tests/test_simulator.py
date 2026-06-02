@@ -181,6 +181,78 @@ def test_simulate_pipeline_entities_executes_shader_body_ast_assignments():
     assert simulation["accumulators"]["energy"] == [5.0, 5.0]
 
 
+def test_simulate_pipeline_entities_interprets_mapping_body_ast_statements():
+    entities = {
+        "streams": [
+            {"name": "in_stream", "type": "float", "capacity": "8"},
+            {"name": "out_stream", "type": "float", "capacity": "8"},
+        ],
+        "accumulators": [{"name": "energy", "type": "float"}],
+        "uniforms": [{"name": "gain", "type": "float", "initializer": "3.0"}],
+        "pure_functions": [
+            {
+                "name": "offset",
+                "return_type": "float",
+                "params": [{"type": "float", "name": "x"}],
+                "body_ast": [
+                    {
+                        "value": {
+                            "op": "+",
+                            "left": {"path": ["x"]},
+                            "right": {"kind": "float", "value": "2.0"},
+                        }
+                    }
+                ],
+            }
+        ],
+        "shaders": [
+            {
+                "name": "Scale",
+                "params": [
+                    {"modifier": "in", "type": "float", "name": "src"},
+                    {"modifier": "out", "type": "float", "name": "dst"},
+                    {"modifier": "accum", "type": "float", "name": "energy"},
+                    {"modifier": "uniform", "type": "float", "name": "gain"},
+                ],
+                "body_ast": [
+                    {
+                        "declared_type": "float",
+                        "name": "scaled",
+                        "initializer": {
+                            "op": "*",
+                            "left": {"name": "offset", "args": [{"path": ["src"]}]},
+                            "right": {"path": ["gain"]},
+                        },
+                    },
+                    {"target": ["dst"], "value": {"path": ["scaled"]}},
+                    {
+                        "target": ["energy"],
+                        "value": {"name": "abs", "args": [{"path": ["dst"]}]},
+                    },
+                ],
+            }
+        ],
+        "filters": [],
+        "bind_routes": ["out_stream = Scale(in_stream, out_stream, energy, gain);"],
+        "bind_routes_ir": [
+            {
+                "kind": "kernel",
+                "target": "out_stream",
+                "kernel": "Scale",
+                "args": ["in_stream", "out_stream", "energy", "gain"],
+                "route": "out_stream = Scale(in_stream, out_stream, energy, gain);",
+            }
+        ],
+    }
+
+    simulation = simulate_pipeline_entities(
+        entities, stream_inputs={"in_stream": [1.0, -4.0]}
+    )
+
+    assert simulation["streams"]["out_stream"] == [9.0, -6.0]
+    assert simulation["accumulators"]["energy"] == [9.0, 6.0]
+
+
 def test_simulate_pipeline_entities_executes_filter_return_predicate_and_struct_fields():
     entities = {
         "streams": [

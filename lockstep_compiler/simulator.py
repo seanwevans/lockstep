@@ -246,6 +246,29 @@ def _copy_sim_value(value: Any) -> Any:
     return value
 
 
+def _sim_mapping_value(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _sim_type_text(type_value: Any) -> str | None:
+    if type_value is None:
+        return None
+    if isinstance(type_value, dict):
+        name = type_value.get("name")
+        return str(name) if name is not None else None
+    return str(type_value)
+
+
+def _sim_path_tuple(path_value: Any) -> tuple[str, ...]:
+    if isinstance(path_value, str):
+        return tuple(part for part in path_value.split(".") if part)
+    if isinstance(path_value, (list, tuple)):
+        return tuple(str(part) for part in path_value)
+    return ()
+
+
 def _default_sim_value(type_name: str | None = None) -> Any:
     if type_name in {"float", "double"}:
         return 0.0
@@ -352,75 +375,97 @@ def _eval_sim_expr(
         AstExprVar,
     )
 
-    if isinstance(expr, AstExprLiteral):
-        if expr.kind == "bool":
-            return expr.value == "true"
-        if expr.kind in {"int", "uint"}:
-            return int(expr.value)
-        if expr.kind in {"float", "double"}:
-            return float(expr.value)
-        return expr.value
-    if isinstance(expr, AstExprVar):
-        return _resolve_sim_path(env, expr.path)
-    if isinstance(expr, AstExprUnary):
-        operand = _eval_sim_expr(expr.operand, env, pure_functions)
-        if expr.op == "-":
+    is_mapping_expr = isinstance(expr, dict)
+    if isinstance(expr, AstExprLiteral) or (
+        is_mapping_expr
+        and "kind" in expr
+        and "value" in expr
+        and "op" not in expr
+        and "target_type" not in expr
+    ):
+        kind = _sim_mapping_value(expr, "kind")
+        value = _sim_mapping_value(expr, "value")
+        if kind == "bool":
+            return value == "true" if isinstance(value, str) else bool(value)
+        if kind in {"int", "uint"}:
+            return int(value)
+        if kind in {"float", "double"}:
+            return float(value)
+        return value
+    if isinstance(expr, AstExprVar) or (is_mapping_expr and "path" in expr):
+        return _resolve_sim_path(env, _sim_path_tuple(_sim_mapping_value(expr, "path")))
+    if isinstance(expr, AstExprUnary) or (is_mapping_expr and "operand" in expr):
+        op = _sim_mapping_value(expr, "op")
+        operand = _eval_sim_expr(
+            _sim_mapping_value(expr, "operand"), env, pure_functions
+        )
+        if op == "-":
             return -operand
         return not _truthy_sim_value(operand)
-    if isinstance(expr, AstExprCast):
+    if isinstance(expr, AstExprCast) or (is_mapping_expr and "target_type" in expr):
         return _eval_sim_call(
-            str(expr.target_type),
-            [_eval_sim_expr(expr.value, env, pure_functions)],
+            str(_sim_type_text(_sim_mapping_value(expr, "target_type"))),
+            [_eval_sim_expr(_sim_mapping_value(expr, "value"), env, pure_functions)],
             pure_functions,
         )
-    if isinstance(expr, AstExprCall):
+    if isinstance(expr, AstExprCall) or (
+        is_mapping_expr and "name" in expr and "args" in expr
+    ):
+        args = _sim_mapping_value(expr, "args", []) or []
         return _eval_sim_call(
-            expr.name,
-            [_eval_sim_expr(arg, env, pure_functions) for arg in expr.args],
+            str(_sim_mapping_value(expr, "name")),
+            [_eval_sim_expr(arg, env, pure_functions) for arg in args],
             pure_functions,
         )
-    if isinstance(expr, AstExprBinary):
-        if expr.op == "&&":
+    if isinstance(expr, AstExprBinary) or (
+        is_mapping_expr and "op" in expr and "left" in expr and "right" in expr
+    ):
+        op = _sim_mapping_value(expr, "op")
+        if op == "&&":
             return _truthy_sim_value(
-                _eval_sim_expr(expr.left, env, pure_functions)
-            ) and _truthy_sim_value(_eval_sim_expr(expr.right, env, pure_functions))
-        if expr.op == "||":
+                _eval_sim_expr(_sim_mapping_value(expr, "left"), env, pure_functions)
+            ) and _truthy_sim_value(
+                _eval_sim_expr(_sim_mapping_value(expr, "right"), env, pure_functions)
+            )
+        if op == "||":
             return _truthy_sim_value(
-                _eval_sim_expr(expr.left, env, pure_functions)
-            ) or _truthy_sim_value(_eval_sim_expr(expr.right, env, pure_functions))
-        left = _eval_sim_expr(expr.left, env, pure_functions)
-        right = _eval_sim_expr(expr.right, env, pure_functions)
-        if expr.op == "+":
+                _eval_sim_expr(_sim_mapping_value(expr, "left"), env, pure_functions)
+            ) or _truthy_sim_value(
+                _eval_sim_expr(_sim_mapping_value(expr, "right"), env, pure_functions)
+            )
+        left = _eval_sim_expr(_sim_mapping_value(expr, "left"), env, pure_functions)
+        right = _eval_sim_expr(_sim_mapping_value(expr, "right"), env, pure_functions)
+        if op == "+":
             return left + right
-        if expr.op == "-":
+        if op == "-":
             return left - right
-        if expr.op == "*":
+        if op == "*":
             return left * right
-        if expr.op == "/":
+        if op == "/":
             return left / right
-        if expr.op == "%":
+        if op == "%":
             return left % right
-        if expr.op == "<":
+        if op == "<":
             return left < right
-        if expr.op == "<=":
+        if op == "<=":
             return left <= right
-        if expr.op == ">":
+        if op == ">":
             return left > right
-        if expr.op == ">=":
+        if op == ">=":
             return left >= right
-        if expr.op == "==":
+        if op == "==":
             return left == right
-        if expr.op == "!=":
+        if op == "!=":
             return left != right
-        if expr.op == "&":
+        if op == "&":
             return int(left) & int(right)
-        if expr.op == "|":
+        if op == "|":
             return int(left) | int(right)
-        if expr.op == "^":
+        if op == "^":
             return int(left) ^ int(right)
-        if expr.op == "<<":
+        if op == "<<":
             return int(left) << int(right)
-        if expr.op == ">>":
+        if op == ">>":
             return int(left) >> int(right)
     return None
 
@@ -435,24 +480,43 @@ def _execute_sim_body(
     assigned: set[str] = set()
     return_value = None
     for statement in body_ast:
-        if isinstance(statement, AstVarDeclStmt):
-            env[statement.name] = (
-                _eval_sim_expr(statement.initializer, env, pure_functions)
-                if statement.initializer is not None
+        is_mapping_statement = isinstance(statement, dict)
+        if isinstance(statement, AstVarDeclStmt) or (
+            is_mapping_statement
+            and "name" in statement
+            and ("declared_type" in statement or "initializer" in statement)
+        ):
+            name = str(_sim_mapping_value(statement, "name"))
+            initializer = _sim_mapping_value(statement, "initializer")
+            env[name] = (
+                _eval_sim_expr(initializer, env, pure_functions)
+                if initializer is not None
                 else _default_sim_value(
-                    str(statement.declared_type) if statement.declared_type else None
+                    _sim_type_text(_sim_mapping_value(statement, "declared_type"))
                 )
             )
-            assigned.add(statement.name)
+            assigned.add(name)
             continue
-        if isinstance(statement, AstAssignStmt):
-            value = _eval_sim_expr(statement.value, env, pure_functions)
-            _assign_sim_path(env, statement.target, value)
-            if statement.target:
-                assigned.add(statement.target[0])
+        if isinstance(statement, AstAssignStmt) or (
+            is_mapping_statement and "target" in statement and "value" in statement
+        ):
+            value = _eval_sim_expr(
+                _sim_mapping_value(statement, "value"), env, pure_functions
+            )
+            target = _sim_path_tuple(_sim_mapping_value(statement, "target"))
+            _assign_sim_path(env, target, value)
+            if target:
+                assigned.add(target[0])
             continue
-        if isinstance(statement, AstReturnStmt):
-            return_value = _eval_sim_expr(statement.value, env, pure_functions)
+        if isinstance(statement, AstReturnStmt) or (
+            is_mapping_statement
+            and "value" in statement
+            and "target" not in statement
+            and "declared_type" not in statement
+        ):
+            return_value = _eval_sim_expr(
+                _sim_mapping_value(statement, "value"), env, pure_functions
+            )
             break
     return return_value, assigned
 
