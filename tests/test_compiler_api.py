@@ -977,7 +977,140 @@ def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
     assert "fadd float" not in llvm_ir
 
 
+def test_emit_llvm_ir_promotes_mixed_numeric_binary_operands():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "promote_float_int",
+                    "return_type": "double",
+                    "params": [
+                        {"type": "float", "name": "f"},
+                        {"type": "int", "name": "i"},
+                        {"type": "double", "name": "d"},
+                        {"type": "uint", "name": "u"},
+                    ],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprBinary(
+                                op="+",
+                                left=AstExprBinary(
+                                    op="*",
+                                    left=AstExprVar(path=("f",)),
+                                    right=AstExprVar(path=("i",)),
+                                ),
+                                right=AstExprBinary(
+                                    op="/",
+                                    left=AstExprVar(path=("d",)),
+                                    right=AstExprVar(path=("u",)),
+                                ),
+                            )
+                        )
+                    ],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
 
+    assert "sitofp i32" in llvm_ir
+    assert "fmul float" in llvm_ir
+    assert "fpext float" in llvm_ir
+    assert "uitofp i32" in llvm_ir
+    assert "fdiv double" in llvm_ir
+    assert "fadd double" in llvm_ir
+
+
+def test_emit_llvm_ir_promotes_mixed_numeric_operands_in_fused_vectors():
+    first_route = "mid = Promote(inp, mid, scale, count);"
+    second_route = "out = Copy(mid, out);"
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "shaders": [
+                {
+                    "name": "Promote",
+                    "params": [
+                        {"modifier": "in", "type": "float", "name": "inp"},
+                        {"modifier": "out", "type": "double", "name": "out"},
+                        {"modifier": "uniform", "type": "double", "name": "scale"},
+                        {"modifier": "uniform", "type": "uint", "name": "count"},
+                    ],
+                    "body_ast": [
+                        AstAssignStmt(
+                            target=("out",),
+                            value=AstExprBinary(
+                                op="+",
+                                left=AstExprBinary(
+                                    op="*",
+                                    left=AstExprVar(path=("inp",)),
+                                    right=AstExprVar(path=("scale",)),
+                                ),
+                                right=AstExprVar(path=("count",)),
+                            ),
+                        )
+                    ],
+                },
+                {
+                    "name": "Copy",
+                    "params": [
+                        {"modifier": "in", "type": "double", "name": "inp"},
+                        {"modifier": "out", "type": "double", "name": "out"},
+                    ],
+                    "body_ast": [
+                        AstAssignStmt(
+                            target=("out",), value=AstExprVar(path=("inp",))
+                        )
+                    ],
+                },
+            ],
+            "filters": [],
+            "pure_functions": [],
+            "streams": [
+                {"name": "inp", "type": "float", "capacity": 8},
+                {"name": "mid", "type": "double", "capacity": 8},
+                {"name": "out", "type": "double", "capacity": 8},
+            ],
+            "accumulators": [],
+            "uniforms": [
+                {"name": "scale", "type": "double"},
+                {"name": "count", "type": "uint"},
+            ],
+            "bind_routes": [first_route, second_route],
+            "bind_routes_ir": [
+                {
+                    "kind": "kernel",
+                    "target": "mid",
+                    "kernel": "Promote",
+                    "args": ["inp", "mid", "scale", "count"],
+                    "route": first_route,
+                },
+                {
+                    "kind": "kernel",
+                    "target": "out",
+                    "kernel": "Copy",
+                    "args": ["mid", "out"],
+                    "route": second_route,
+                },
+            ],
+        },
+        bind_optimization={
+            "optimized_bind_routes": [first_route, second_route],
+            "fused_groups": [{"source_routes": [first_route, second_route]}],
+        },
+    )
+
+    assert "fused_0_body" in llvm_ir
+    assert "fpext <8 x float>" in llvm_ir
+    assert "uitofp <8 x i32>" in llvm_ir
+    assert "fmul <8 x double>" in llvm_ir
+    assert "fadd <8 x double>" in llvm_ir
 
 def test_emit_llvm_ir_lowers_select_builtin_for_integers():
     llvm_ir = emit_llvm_ir(
@@ -1308,35 +1441,37 @@ def test_emit_llvm_ir_honors_explicit_target_width_override():
     assert 'store float %"fold_reduce"' in llvm_ir
 
 
-def test_emit_llvm_ir_raises_on_mixed_int_float_expression():
-    with pytest.raises(CodegenError, match="requires matching operand types"):
-        emit_llvm_ir(
-            {
-                "structs": [],
-                "pure_functions": [
-                    {
-                        "name": "bad_mix",
-                        "return_type": "float",
-                        "params": [],
-                        "body_ast": [
-                            AstReturnStmt(
-                                value=AstExprBinary(
-                                    op="+",
-                                    left=AstExprLiteral(kind="int", value="1"),
-                                    right=AstExprLiteral(kind="float", value="1.0"),
-                                )
+def test_emit_llvm_ir_promotes_mixed_int_float_expression():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "mixed_int_float",
+                    "return_type": "float",
+                    "params": [],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprBinary(
+                                op="+",
+                                left=AstExprLiteral(kind="int", value="1"),
+                                right=AstExprLiteral(kind="float", value="1.0"),
                             )
-                        ],
-                    }
-                ],
-                "shaders": [],
-                "filters": [],
-                "streams": [],
-                "accumulators": [],
-                "uniforms": [],
-                "bind_routes": [],
-            }
-        )
+                        )
+                    ],
+                }
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert "sitofp i32 1 to float" in llvm_ir
+    assert "fadd float" in llvm_ir
 
 
 def test_compile_lockstep_supports_c_and_function_style_cast_syntax():

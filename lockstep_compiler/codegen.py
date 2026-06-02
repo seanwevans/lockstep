@@ -218,6 +218,7 @@ class _FunctionLowerer:
         value: ir.Value,
         target_type: ir.Type,
         target_type_name: str | None = None,
+        source_type_name: str | None = None,
     ) -> ir.Value:
         if value.type == target_type:
             return value
@@ -240,6 +241,8 @@ class _FunctionLowerer:
         if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
             value.type, ir.IntType
         ):
+            if source_type_name == "uint":
+                return self.builder.uitofp(value, target_type)
             return self.builder.sitofp(value, target_type)
 
         if isinstance(target_type, ir.IntType) and isinstance(
@@ -431,8 +434,10 @@ class _FunctionLowerer:
             return left_type or right_type
         if left_type == right_type:
             return left_type
-        if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
-            return "uint" if "uint" in {left_type, right_type} else "int"
+
+        numeric_rank = {"int": 0, "uint": 1, "float": 2, "double": 3}
+        if left_type in numeric_rank and right_type in numeric_rank:
+            return max((left_type, right_type), key=numeric_rank.__getitem__)
         return None
 
     def _infer_binary_operand_type(self, node: AstExprBinary) -> str | None:
@@ -448,8 +453,12 @@ class _FunctionLowerer:
             ):
                 return left_type
             return None
-        if op in {"+", "-", "*", "/", "%", "&", "|", "^"}:
+        if op in {"+", "-", "*", "/", "%"}:
             return self._promote_scalar_type_names(left_type, right_type)
+        if op in {"&", "|", "^"}:
+            if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                return self._promote_scalar_type_names(left_type, right_type)
+            return None
         if op in {"<", "<=", ">", ">=", "==", "!="}:
             return self._promote_scalar_type_names(left_type, right_type)
         return None
@@ -663,8 +672,14 @@ class _FunctionLowerer:
         expr_type_name = self._infer_binary_operand_type(node)
         if expr_type_name in _PRIMITIVE_TYPE_MAP:
             operand_type = self._llvm_type(expr_type_name, self.known_structs)
-            lhs = self._coerce_value_to_type(lhs, operand_type, expr_type_name)
-            rhs = self._coerce_value_to_type(rhs, operand_type, expr_type_name)
+            lhs_type_name = self._infer_expr_type(node.left)
+            rhs_type_name = self._infer_expr_type(node.right)
+            lhs = self._coerce_value_to_type(
+                lhs, operand_type, expr_type_name, lhs_type_name
+            )
+            rhs = self._coerce_value_to_type(
+                rhs, operand_type, expr_type_name, rhs_type_name
+            )
         return self._lower_binary_op(node.op, lhs, rhs, type_name=expr_type_name)
 
     def _lower_assignment(self, target_name: str, value: ir.Value):
@@ -1815,12 +1830,17 @@ def emit_llvm_ir(
         return leaves
 
     def _splat_to_vector(
-        value: ir.Value, vector_ty: ir.VectorType, type_name: str | None = None
+        value: ir.Value,
+        vector_ty: ir.VectorType,
+        type_name: str | None = None,
+        source_type_name: str | None = None,
     ) -> ir.Value:
         if value.type == vector_ty:
             return value
         if value.type != vector_ty.element:
-            value = lowerer._coerce_value_to_type(value, vector_ty.element, type_name)
+            value = lowerer._coerce_value_to_type(
+                value, vector_ty.element, type_name, source_type_name
+            )
         seed = tick_builder.insert_element(
             ir.Constant(vector_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
         )
@@ -1830,13 +1850,16 @@ def emit_llvm_ir(
         )
 
     def _coerce_vector_value(
-        value: ir.Value, target_ty: ir.Type, type_name: str | None = None
+        value: ir.Value,
+        target_ty: ir.Type,
+        type_name: str | None = None,
+        source_type_name: str | None = None,
     ) -> ir.Value:
         if value.type == target_ty:
             return value
         if isinstance(target_ty, ir.VectorType):
             if not isinstance(value.type, ir.VectorType):
-                return _splat_to_vector(value, target_ty, type_name)
+                return _splat_to_vector(value, target_ty, type_name, source_type_name)
             source_elem = value.type.element
             target_elem = target_ty.element
             if source_elem == target_elem:
@@ -1862,6 +1885,8 @@ def emit_llvm_ir(
             if isinstance(target_elem, (ir.FloatType, ir.DoubleType)) and isinstance(
                 source_elem, ir.IntType
             ):
+                if source_type_name == "uint":
+                    return tick_builder.uitofp(value, target_ty)
                 return tick_builder.sitofp(value, target_ty)
             if isinstance(target_elem, ir.IntType) and isinstance(
                 source_elem, (ir.FloatType, ir.DoubleType)
@@ -1883,7 +1908,9 @@ def emit_llvm_ir(
             raise CodegenError(
                 f"cannot coerce vector value of type '{value.type}' to '{target_ty}'"
             )
-        return lowerer._coerce_value_to_type(value, target_ty, type_name)
+        return lowerer._coerce_value_to_type(
+            value, target_ty, type_name, source_type_name
+        )
 
     def _can_vectorize_fused_group(routes: tuple[AstKernelBindRoute, ...]) -> bool:
         supported_statements = (AstAssignStmt, AstVarDeclStmt)
@@ -2073,8 +2100,10 @@ def emit_llvm_ir(
                 return left_type or right_type
             if left_type == right_type:
                 return left_type
-            if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
-                return "uint" if "uint" in {left_type, right_type} else "int"
+
+            numeric_rank = {"int": 0, "uint": 1, "float": 2, "double": 3}
+            if left_type in numeric_rank and right_type in numeric_rank:
+                return max((left_type, right_type), key=numeric_rank.__getitem__)
             return None
 
         def _infer_binary_operand_type(self, node: AstExprBinary) -> str | None:
@@ -2085,23 +2114,12 @@ def emit_llvm_ir(
                 return "bool" if left_type == "bool" and right_type == "bool" else None
             if op in {"<<", ">>"}:
                 return left_type if left_type in {"int", "uint"} else None
-            if op in {
-                "+",
-                "-",
-                "*",
-                "/",
-                "%",
-                "&",
-                "|",
-                "^",
-                "<",
-                "<=",
-                ">",
-                ">=",
-                "==",
-                "!=",
-            }:
+            if op in {"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!="}:
                 return self._promote_scalar_type_names(left_type, right_type)
+            if op in {"&", "|", "^"}:
+                if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                    return self._promote_scalar_type_names(left_type, right_type)
+                return None
             return None
 
         def _infer_expr_type(self, node) -> str | None:
@@ -2356,8 +2374,14 @@ def emit_llvm_ir(
                 )
                 if operand_type_name in _PRIMITIVE_TYPE_MAP:
                     vector_ty = self._declared_vector_type(operand_type_name)
-                    lhs = _coerce_vector_value(lhs, vector_ty, operand_type_name)
-                    rhs = _coerce_vector_value(rhs, vector_ty, operand_type_name)
+                    lhs_type_name = self._infer_expr_type(node.left)
+                    rhs_type_name = self._infer_expr_type(node.right)
+                    lhs = _coerce_vector_value(
+                        lhs, vector_ty, operand_type_name, lhs_type_name
+                    )
+                    rhs = _coerce_vector_value(
+                        rhs, vector_ty, operand_type_name, rhs_type_name
+                    )
                 return self._binary(node.op, lhs, rhs, operand_type_name)
             raise CodegenError(
                 f"unsupported vector expression node '{type(node).__name__}'"

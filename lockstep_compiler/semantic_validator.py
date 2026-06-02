@@ -532,6 +532,12 @@ def build_semantic_validator(base_visitor_cls):
         def _resolve_ast_expr_type(self, expr: AstExpr) -> str | None:
             numeric_types = {"int", "uint", "float", "double"}
             integer_types = {"int", "uint"}
+            numeric_rank = {"int": 0, "uint": 1, "float": 2, "double": 3}
+
+            def _promote_numeric(left_type: str, right_type: str) -> str | None:
+                if left_type in numeric_rank and right_type in numeric_rank:
+                    return max((left_type, right_type), key=numeric_rank.__getitem__)
+                return None
 
             def _operand_ctx(node):
                 return self._ctx_from_location(getattr(node, "location", None))
@@ -576,26 +582,13 @@ def build_semantic_validator(base_visitor_cls):
 
                 if left_type is None or right_type is None:
                     return None
-                if op in {"+", "-", "*", "/"}:
-                    if left_type in numeric_types and right_type == left_type:
-                        return left_type
-                    if left_type in numeric_types and right_type in numeric_types:
-                        _report_invalid_operands(
-                            expr_binary,
-                            op,
-                            "matching numeric",
-                            left_type,
-                            right_type,
-                            code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
-                            message=(
-                                f"Operator '{op}' mixes numeric operand types without an explicit cast."
-                            ),
-                            hint="Use explicit casts so numeric widening is intentional and target-compatible.",
-                        )
-                    else:
-                        _report_invalid_operands(
-                            expr_binary, op, "numeric", left_type, right_type
-                        )
+                if op in {"+", "-", "*", "/", "%"}:
+                    promoted_type = _promote_numeric(left_type, right_type)
+                    if promoted_type is not None:
+                        return promoted_type
+                    _report_invalid_operands(
+                        expr_binary, op, "numeric", left_type, right_type
+                    )
                     return None
                 if op in {"&", "|", "^"}:
                     if left_type in integer_types and right_type == left_type:
@@ -612,7 +605,9 @@ def build_semantic_validator(base_visitor_cls):
                     )
                     return None
                 if op in {"==", "!=", "<", "<=", ">", ">="}:
-                    if left_type == right_type:
+                    if left_type == right_type or _promote_numeric(
+                        left_type, right_type
+                    ):
                         return "bool"
                     _report_invalid_operands(
                         expr_binary, op, "matching", left_type, right_type
