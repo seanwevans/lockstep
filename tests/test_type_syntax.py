@@ -115,11 +115,13 @@ pipeline Main {
 def test_uint_and_double_are_supported_as_primitive_declared_types():
     source = """
 pure uint advance(uint value) {
-    return value + uint(1);
+    uint next = value + uint(1);
+    return next;
 }
 
 pure double amplify(double value) {
-    return value * double(2.0);
+    double scaled = value * double(2.0);
+    return scaled;
 }
 
 pipeline Main {
