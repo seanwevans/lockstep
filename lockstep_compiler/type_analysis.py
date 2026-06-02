@@ -10,6 +10,8 @@ from .models import (
     SemanticStructField,
 )
 
+PRIMITIVE_TYPES = frozenset({"int", "uint", "float", "double", "bool", "string"})
+
 
 @dataclass(frozen=True)
 class TypeValidationIssue:
@@ -119,10 +121,7 @@ def build_struct_field_type_index(
 ) -> dict[str, dict[str, str]]:
     return {
         struct_name: {
-            field_name: (
-                field.declared_type if hasattr(field, "declared_type") else str(field)
-            )
-            for field_name, field in fields.items()
+            field_name: field.declared_type for field_name, field in fields.items()
         }
         for struct_name, fields in structs.items()
     }
