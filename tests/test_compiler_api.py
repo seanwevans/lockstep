@@ -1419,6 +1419,51 @@ def test_emit_llvm_ir_lowers_explicit_numeric_casts_to_llvm_conversions():
     assert "fptoui float" in llvm_ir
 
 
+def test_emit_llvm_ir_casts_wide_integer_to_bool_with_nonzero_compare():
+    llvm_ir = emit_llvm_ir(
+        {
+            "structs": [],
+            "pure_functions": [
+                {
+                    "name": "int_to_bool",
+                    "return_type": "bool",
+                    "params": [{"modifier": "in", "type": "int", "name": "x"}],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCast(
+                                target_type="bool",
+                                value=AstExprVar(path=("x",)),
+                            )
+                        )
+                    ],
+                },
+                {
+                    "name": "uint_to_bool",
+                    "return_type": "bool",
+                    "params": [{"modifier": "in", "type": "uint", "name": "x"}],
+                    "body_ast": [
+                        AstReturnStmt(
+                            value=AstExprCast(
+                                target_type="bool",
+                                value=AstExprVar(path=("x",)),
+                            )
+                        )
+                    ],
+                },
+            ],
+            "shaders": [],
+            "filters": [],
+            "streams": [],
+            "accumulators": [],
+            "uniforms": [],
+            "bind_routes": [],
+        }
+    )
+
+    assert llvm_ir.count("icmp ne i32") == 2
+    assert "trunc i32" not in llvm_ir
+
+
 def test_emit_llvm_ir_uses_unsigned_float_to_integer_cast_for_uint_targets():
     llvm_ir = emit_llvm_ir(
         {

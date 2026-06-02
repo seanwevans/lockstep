@@ -228,6 +228,13 @@ class _FunctionLowerer:
                     return self.builder.zext(value, target_type)
                 return self.builder.sext(value, target_type)
             if value.type.width > target_type.width:
+                if target_type.width == 1:
+                    return self.builder.icmp_signed(
+                        "!=",
+                        value,
+                        ir.Constant(value.type, 0),
+                        name="int_to_bool",
+                    )
                 return self.builder.trunc(value, target_type)
 
         if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
@@ -1799,6 +1806,13 @@ def emit_llvm_ir(
                         else tick_builder.sext(value, target_ty)
                     )
                 if source_elem.width > target_elem.width:
+                    if target_elem.width == 1:
+                        return tick_builder.icmp_signed(
+                            "!=",
+                            value,
+                            ir.Constant(value.type, None),
+                            name="fused_int_to_bool",
+                        )
                     return tick_builder.trunc(value, target_ty)
             if isinstance(target_elem, (ir.FloatType, ir.DoubleType)) and isinstance(
                 source_elem, ir.IntType
