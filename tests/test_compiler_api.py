@@ -1003,7 +1003,7 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {float, float}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' in llvm_ir
+    assert '%"uniform_total_value_byte_ptr" = getelementptr i8, i8* %"uniform_total_arena_bytes", i32 4' in llvm_ir
     assert 'i32 0, i32 0, i32 4' not in llvm_ir
 
 
@@ -1068,7 +1068,10 @@ def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width(
     assert '%"fold_index_next" = add i32 %"fold_index", 8' in llvm_ir
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {[512 x float], float}' in llvm_ir
-    assert '%"fold_elem_7" = add i32 %"fold_index", 7' in llvm_ir
+    assert '%"fold_energy_chunk_ptr" = bitcast float*' in llvm_ir
+    assert '%"fold_energy_chunk" = load <8 x float>, <8 x float>* %"fold_energy_chunk_ptr"' in llvm_ir
+    assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' in llvm_ir
+    assert '%"fold_elem_7" = add i32 %"fold_index", 7' not in llvm_ir
 
 
 def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():

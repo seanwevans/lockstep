@@ -1436,6 +1436,26 @@ def emit_llvm_ir(
         identity_value = _identity_value()
         vector_accumulator = ir.Constant(vector_ty, [identity_value] * simd_width)
 
+        def _load_accum_chunk_vector(element_index: ir.Value) -> ir.Value:
+            # The strip-mined fold consumes a contiguous SIMD-width chunk of the
+            # accumulator.  Load that chunk through one base pointer rather than
+            # synthesizing a separate scalar address stream for every lane; LLVM
+            # can then lower the vector load to the target's preferred memory
+            # access pattern.
+            chunk_base_ptr = _leaf_ptr(
+                "accum", source_name, (), uniform_type, element_index
+            )
+            if chunk_base_ptr is None:
+                return ir.Constant(vector_ty, [identity_value] * simd_width)
+            chunk_vector_ptr = tick_builder.bitcast(
+                chunk_base_ptr,
+                vector_ty.as_pointer(),
+                name=f"fold_{_sanitize_symbol(source_name)}_chunk_ptr",
+            )
+            return tick_builder.load(
+                chunk_vector_ptr, name=f"fold_{_sanitize_symbol(source_name)}_chunk"
+            )
+
         def _insert_accum_chunk_lane(
             vector_value: ir.Value, lane: int, element_index: ir.Value
         ) -> ir.Value:
@@ -1511,16 +1531,7 @@ def emit_llvm_ir(
             tick_builder.cbranch(in_full_chunks, loop_body, loop_exit)
 
             tick_builder.position_at_end(loop_body)
-            chunk_vector = ir.Constant(vector_ty, ir.Undefined)
-            for lane in range(simd_width):
-                element_index = tick_builder.add(
-                    loop_index,
-                    ir.Constant(ir.IntType(32), lane),
-                    name=f"fold_elem_{lane}",
-                )
-                chunk_vector = _insert_accum_chunk_lane(
-                    chunk_vector, lane, element_index
-                )
+            chunk_vector = _load_accum_chunk_vector(loop_index)
             next_accumulator = _combine_vectors(
                 loop_accumulator, chunk_vector, "fold_vector_next"
             )
