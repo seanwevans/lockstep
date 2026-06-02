@@ -852,6 +852,43 @@ def build_semantic_validator(base_visitor_cls):
 
         def _resolve_ast_expr_type(self, expr: AstExpr) -> str | None:
             numeric_types = {"int", "uint", "float", "double"}
+            integer_types = {"int", "uint"}
+
+            def _operand_ctx(node):
+                return self._ctx_from_location(getattr(node, "location", None))
+
+            def _format_operand_types(*types: str) -> str:
+                return f"[{', '.join(types)}]"
+
+            def _report_invalid_operands(
+                node,
+                op: str,
+                expectation: str,
+                *actual_types: str,
+                code: str = SEMANTIC_DIAGNOSTIC_CODES["invalid_operand_types"],
+                message: str | None = None,
+                hint: str = "Adjust operand types so they match the operator semantics.",
+            ):
+                reported_nodes = getattr(self, "_reported_ast_operand_errors", None)
+                if reported_nodes is None:
+                    reported_nodes = set()
+                    self._reported_ast_operand_errors = reported_nodes
+                diagnostic_key = (id(node), op, code, actual_types)
+                if diagnostic_key in reported_nodes:
+                    return
+                reported_nodes.add(diagnostic_key)
+                if message is None:
+                    message = (
+                        f"Operator '{op}' expects {expectation} operand type(s), "
+                        f"but got {_format_operand_types(*actual_types)}."
+                    )
+                self._add_diagnostic(
+                    severity="error",
+                    code=code,
+                    message=message,
+                    ctx=_operand_ctx(node),
+                    hint=hint,
+                )
 
             def _resolve_binary(expr_binary: AstExprBinary) -> str | None:
                 left_type = self._resolve_ast_expr_type(expr_binary.left)
@@ -863,22 +900,51 @@ def build_semantic_validator(base_visitor_cls):
                 if op in {"+", "-", "*", "/"}:
                     if left_type in numeric_types and right_type == left_type:
                         return left_type
+                    if left_type in numeric_types and right_type in numeric_types:
+                        _report_invalid_operands(
+                            expr_binary,
+                            op,
+                            "matching numeric",
+                            left_type,
+                            right_type,
+                            code=SEMANTIC_DIAGNOSTIC_CODES["implicit_numeric_widening"],
+                            message=(
+                                f"Operator '{op}' mixes numeric operand types without an explicit cast."
+                            ),
+                            hint="Use explicit casts so numeric widening is intentional and target-compatible.",
+                        )
+                    else:
+                        _report_invalid_operands(
+                            expr_binary, op, "numeric", left_type, right_type
+                        )
                     return None
                 if op in {"&", "|", "^"}:
-                    if left_type in {"int", "uint"} and right_type == left_type:
+                    if left_type in integer_types and right_type == left_type:
                         return left_type
+                    _report_invalid_operands(
+                        expr_binary, op, "integer", left_type, right_type
+                    )
                     return None
                 if op in {"&&", "||"}:
                     if left_type == "bool" and right_type == "bool":
                         return "bool"
+                    _report_invalid_operands(
+                        expr_binary, op, "bool", left_type, right_type
+                    )
                     return None
                 if op in {"==", "!=", "<", "<=", ">", ">="}:
                     if left_type == right_type:
                         return "bool"
+                    _report_invalid_operands(
+                        expr_binary, op, "matching", left_type, right_type
+                    )
                     return None
                 if op in {"<<", ">>"}:
-                    if left_type in {"int", "uint"} and right_type in {"int", "uint"}:
+                    if left_type in integer_types and right_type in integer_types:
                         return left_type
+                    _report_invalid_operands(
+                        expr_binary, op, "integer", left_type, right_type
+                    )
                     return None
                 return None
 
@@ -897,25 +963,33 @@ def build_semantic_validator(base_visitor_cls):
                 signature = self.pure_functions.get(expr_call.name)
                 return signature.return_type if signature is not None else None
 
+            def _resolve_unary(expr_unary: AstExprUnary) -> str | None:
+                operand_type = self._resolve_ast_expr_type(expr_unary.operand)
+                if operand_type is None:
+                    return None
+                if expr_unary.op == "!":
+                    if operand_type == "bool":
+                        return "bool"
+                    _report_invalid_operands(
+                        expr_unary, expr_unary.op, "bool", operand_type
+                    )
+                    return None
+                if expr_unary.op == "-":
+                    if operand_type in numeric_types:
+                        return operand_type
+                    _report_invalid_operands(
+                        expr_unary, expr_unary.op, "numeric", operand_type
+                    )
+                    return None
+                return operand_type
+
             type_dispatch = {
                 AstExprLiteral: lambda node: node.kind,
                 AstExprVar: lambda node: self._lookup_path(node.path),
-                AstExprUnary: lambda node: (
-                    "bool"
-                    if node.op == "!"
-                    else (
-                        self._resolve_ast_expr_type(node.operand)
-                        if (
-                            node.op != "-"
-                            or self._resolve_ast_expr_type(node.operand)
-                            in numeric_types
-                        )
-                        else None
-                    )
-                ),
+                AstExprUnary: _resolve_unary,
                 AstExprBinary: _resolve_binary,
                 AstExprCall: _resolve_call,
-                AstExprCast: lambda node: node.target_type.name,
+                AstExprCast: lambda node: str(node.target_type),
             }
 
             for expr_type, resolver in type_dispatch.items():
