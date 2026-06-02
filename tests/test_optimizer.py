@@ -243,6 +243,60 @@ def test_compile_pipeline_lowers_fused_group_to_single_simd_loop_without_interme
     llvm.parse_assembly(result.llvm_ir)
 
 
+def test_compile_pipeline_vectorizes_fused_struct_field_assignments(monkeypatch):
+    from llvmlite import binding as llvm
+
+    import lockstep_compiler
+    import lockstep_compiler.compiler as compiler_module
+
+    source = """
+    struct Vec2 { float x; float y; };
+    struct Particle { Vec2 velocity; float mass; };
+
+    shader Kick(in Particle src, out Particle tmp) {
+        tmp.velocity.x = src.velocity.x + 1.0;
+        tmp.velocity.y = src.velocity.y + 2.0;
+        tmp.mass = src.mass;
+    }
+
+    shader Damp(in Particle tmp, out Particle dst) {
+        dst.velocity.x = tmp.velocity.x * 0.5;
+        dst.velocity.y = tmp.velocity.y * 0.25;
+        dst.mass = tmp.mass;
+    }
+
+    pipeline P {
+        stream<Particle, 4> src;
+        stream<Particle, 4> tmp;
+        stream<Particle, 4> dst;
+
+        bind {
+            tmp = Kick(src, tmp);
+            dst = Damp(tmp, dst);
+        }
+    }
+    """
+
+    monkeypatch.setattr(compiler_module, "emit_c_header", lambda *_args, **_kwargs: "")
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=4,
+    )
+
+    assert result.entities["optimized_bind_routes"] == ["dst = FUSED[Kick -> Damp];"]
+    assert "fused_0_body" in result.llvm_ir
+    assert "route_Kick_body" not in result.llvm_ir
+    assert "route_Damp_body" not in result.llvm_ir
+    assert 'call void @"shader_Kick"' not in result.llvm_ir
+    assert 'call void @"shader_Damp"' not in result.llvm_ir
+    assert "fadd <4 x float>" in result.llvm_ir
+    assert "fmul <4 x float>" in result.llvm_ir
+    assert "insertelement <4 x float>" in result.llvm_ir
+    assert "extractelement <4 x float>" in result.llvm_ir
+    llvm.parse_assembly(result.llvm_ir)
+
+
 def test_compile_passes_per_pipeline_bind_optimization_to_codegen(monkeypatch):
     import lockstep_compiler
     import lockstep_compiler.compiler as compiler_module
