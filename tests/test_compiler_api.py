@@ -696,6 +696,10 @@ def test_emit_llvm_ir_accepts_ast_program_input():
 
     assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 2' in llvm_ir
+    assert '%"stream_inp_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*' in llvm_ir
+    assert '%"stream_inp_value_byte_ptr" = getelementptr i8, i8* %"stream_inp_arena_bytes", i32 %"stream_inp_byte_offset"' in llvm_ir
+    assert 'bitcast i8* %"stream_inp_value_byte_ptr" to float*' in llvm_ir
+    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0' not in llvm_ir
 
 
 def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
