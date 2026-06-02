@@ -213,13 +213,7 @@ def _apply_saturated_writes(rows: list[Any], capacity: int) -> list[Any]:
     if capacity <= 0:
         return []
 
-    saturated_rows: list[Any] = []
-    for value in rows:
-        if len(saturated_rows) < capacity:
-            saturated_rows.append(value)
-            continue
-        saturated_rows[capacity - 1] = value
-    return saturated_rows
+    return list(rows[-capacity:])
 
 
 def _coerce_sim_value(value: Any) -> Any:

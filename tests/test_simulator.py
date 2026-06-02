@@ -614,7 +614,7 @@ def test_run_cli_rejects_combined_dump_and_simulate_modes():
         )
 
 
-def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
+def test_simulate_pipeline_entities_keeps_fifo_window_for_saturated_stream_writes():
     entities = {
         "streams": [
             {"name": "in_stream", "type": "int", "capacity": "5"},
@@ -649,7 +649,7 @@ def test_simulate_pipeline_entities_saturates_stream_writes_at_capacity():
     )
 
     assert simulation["streams"]["out_stream"] == [
-        {"_source": 1, "_kernel": "Project"},
+        {"_source": 3, "_kernel": "Project"},
         {"_source": 4, "_kernel": "Project"},
     ]
 
