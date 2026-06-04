@@ -279,13 +279,36 @@ class _FunctionLowerer:
             f"cannot coerce value of type '{value.type}' to '{target_type}'"
         )
 
+    def _array_index_and_type(
+        self, llvm_type: ir.Type, field_name: str
+    ) -> tuple[int, ir.Type, str | None] | None:
+        if not isinstance(llvm_type, ir.ArrayType):
+            return None
+        try:
+            index = int(field_name)
+        except ValueError:
+            return None
+        if index < 0 or index >= llvm_type.count:
+            self._compiler_error(
+                f"array index '{field_name}' is out of bounds for access path"
+            )
+        return index, llvm_type.element, None
+
+    def _aggregate_index_and_type(
+        self, llvm_type: ir.Type, field_name: str
+    ) -> tuple[int, ir.Type, str | None] | None:
+        array_info = self._array_index_and_type(llvm_type, field_name)
+        if array_info is not None:
+            return array_info
+        return self._field_index_and_type(llvm_type, field_name)
+
     def _extract_field_path(self, value: ir.Value, path: list[str]) -> ir.Value:
         current = value
         for field_name in path:
-            field_info = self._field_index_and_type(current.type, field_name)
+            field_info = self._aggregate_index_and_type(current.type, field_name)
             if field_info is None:
                 self._compiler_error(
-                    f"unknown struct field '{field_name}' in access path"
+                    f"unknown aggregate field or array index '{field_name}' in access path"
                 )
             index, _, _ = field_info
             current = self.builder.extract_value(
@@ -296,9 +319,11 @@ class _FunctionLowerer:
     def _insert_field_path(
         self, aggregate: ir.Value, path: list[str], value: ir.Value
     ) -> ir.Value:
-        field_info = self._field_index_and_type(aggregate.type, path[0])
+        field_info = self._aggregate_index_and_type(aggregate.type, path[0])
         if field_info is None:
-            self._compiler_error(f"unknown struct field '{path[0]}' in assignment path")
+            self._compiler_error(
+                f"unknown aggregate field or array index '{path[0]}' in assignment path"
+            )
         index, field_type, field_type_name = field_info
         if len(path) == 1:
             coerced = self._coerce_value_to_type(value, field_type, field_type_name)

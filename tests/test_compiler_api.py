@@ -503,6 +503,65 @@ def test_emit_llvm_ir_rejects_assignment_to_undeclared_local():
         emit_llvm_ir(program)
 
 
+def test_emit_llvm_ir_lowers_array_element_extract_and_insert():
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            pure_functions=(
+                AstPureDecl(
+                    name="set_and_get_array_element",
+                    return_type="float",
+                    body=(
+                        AstVarDeclStmt(
+                            declared_type="float[2]", name="values", initializer=None
+                        ),
+                        AstAssignStmt(
+                            target=("values", "0"),
+                            value=AstExprLiteral(kind="float", value="1.0"),
+                        ),
+                        AstAssignStmt(
+                            target=("values", "1"),
+                            value=AstExprLiteral(kind="float", value="2.0"),
+                        ),
+                        AstReturnStmt(value=AstExprVar(path=("values", "1"))),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert "insertvalue [2 x float]" in llvm_ir
+    assert "extractvalue [2 x float]" in llvm_ir
+
+
+def test_emit_llvm_ir_lowers_nested_array_element_extract_and_insert():
+    llvm_ir = emit_llvm_ir(
+        AstProgram(
+            pure_functions=(
+                AstPureDecl(
+                    name="set_and_get_nested_array_element",
+                    return_type="float",
+                    body=(
+                        AstVarDeclStmt(
+                            declared_type="float[2][3]",
+                            name="matrix",
+                            initializer=None,
+                        ),
+                        AstAssignStmt(
+                            target=("matrix", "1", "2"),
+                            value=AstExprLiteral(kind="float", value="4.0"),
+                        ),
+                        AstReturnStmt(value=AstExprVar(path=("matrix", "1", "2"))),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    assert "insertvalue [3 x float]" in llvm_ir
+    assert "insertvalue [2 x [3 x float]]" in llvm_ir
+    assert "extractvalue [3 x float]" in llvm_ir
+
+
 def test_emit_llvm_ir_lowers_struct_member_extract_and_insert():
     llvm_ir = emit_llvm_ir(
         {
