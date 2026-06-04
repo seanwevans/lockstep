@@ -3,9 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-
 _BIND_ROUTE_RE = re.compile(
     r"^\s*(?P<target>[A-Za-z_]\w*)\s*=\s*(?P<callee>[A-Za-z_]\w*)\s*\((?P<args>[^)]*)\)\s*;\s*$"
+)
+_FOLD_BIND_ROUTE_RE = re.compile(
+    r"^\s*uniform\s+(?P<uniform_type>.+?)\s+(?P<target>[A-Za-z_]\w*)"
+    r"\s*=\s*fold\s+(?P<operator>sum|avg|min|max)\s*"
+    r"\((?P<source>[A-Za-z_]\w*)\)\s*;\s*$"
 )
 
 
@@ -15,9 +19,20 @@ class ParsedBindRoute:
     callee: str
     args: tuple[str, ...]
     raw: str
+    kind: str = "kernel"
 
 
 def _parse_bind_route(route: str) -> ParsedBindRoute | None:
+    fold_match = _FOLD_BIND_ROUTE_RE.match(route)
+    if fold_match:
+        return ParsedBindRoute(
+            target=fold_match.group("target"),
+            callee=f"fold:{fold_match.group('operator')}",
+            args=(fold_match.group("source"),),
+            raw=route,
+            kind="fold",
+        )
+
     match = _BIND_ROUTE_RE.match(route)
     if not match:
         return None
@@ -48,6 +63,20 @@ def optimize_bind_routes(
     if bind_routes_ir:
         parsed_routes = []
         for index, route in enumerate(bind_routes_ir):
+            if route.get("kind") == "fold":
+                parsed_routes.append(
+                    ParsedBindRoute(
+                        target=route.get("uniform_name", ""),
+                        callee=f"fold:{route.get('operator', '')}",
+                        args=(route.get("source", ""),),
+                        raw=route.get(
+                            "route",
+                            bind_routes[index] if index < len(bind_routes) else "",
+                        ),
+                        kind="fold",
+                    )
+                )
+                continue
             if route.get("kind") != "kernel":
                 parsed_routes.append(None)
                 continue
@@ -59,6 +88,7 @@ def optimize_bind_routes(
                     raw=route.get(
                         "route", bind_routes[index] if index < len(bind_routes) else ""
                     ),
+                    kind="kernel",
                 )
             )
         if len(parsed_routes) < len(bind_routes):
@@ -91,7 +121,11 @@ def optimize_bind_routes(
     # is never consumed, unless they explicitly read/accumulate their target.
     active_kernel_indices: set[int] = set()
     for idx, parsed in enumerate(parsed_routes):
-        if parsed is None or parsed.callee not in valid_kernel_names:
+        if (
+            parsed is None
+            or parsed.kind != "kernel"
+            or parsed.callee not in valid_kernel_names
+        ):
             continue
         if (
             parsed.target in live_after_route[idx]
@@ -99,19 +133,25 @@ def optimize_bind_routes(
         ):
             active_kernel_indices.add(idx)
 
-    # Build producer/consumer links between active kernels.
+    # Build producer/consumer links. Kernels are the only fusible producers, but
+    # folds are first-class consumers so accumulator reads keep their producer
+    # kernels alive and prevent fusion from hiding values needed by reductions.
     producer_by_symbol: dict[str, int] = {}
     deps: dict[int, set[int]] = {idx: set() for idx in active_kernel_indices}
     consumers: dict[int, set[int]] = {idx: set() for idx in active_kernel_indices}
     for idx, parsed in enumerate(parsed_routes):
-        if idx not in active_kernel_indices or parsed is None:
+        if parsed is None:
             continue
+        is_active_kernel = idx in active_kernel_indices
         for arg in parsed.args:
             producer = producer_by_symbol.get(arg)
-            if producer is not None:
+            if producer is None:
+                continue
+            if is_active_kernel:
                 deps[idx].add(producer)
-                consumers[producer].add(idx)
-        producer_by_symbol[parsed.target] = idx
+            consumers[producer].add(idx)
+        if is_active_kernel:
+            producer_by_symbol[parsed.target] = idx
 
     fused_groups: list[dict[str, object]] = []
     fused_replacement_at: dict[int, str] = {}
@@ -204,6 +244,7 @@ def optimize_bind_routes(
         parsed = parsed_routes[idx]
         if (
             parsed is not None
+            and parsed.kind == "kernel"
             and parsed.callee in valid_kernel_names
             and idx not in active_kernel_indices
         ):
