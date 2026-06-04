@@ -99,6 +99,68 @@ def test_optimize_bind_routes_uses_structured_bind_route_ir_when_available():
     assert result["fused_groups"] == []
 
 
+def test_optimize_bind_routes_treats_structured_fold_as_accumulator_consumer():
+    result = optimize_bind_routes(
+        [
+            "energy = Accumulate(src, energy);",
+            "uniform float total = fold sum(energy);",
+            "energy = Reset(seed, scratch);",
+        ],
+        shader_names={"Accumulate", "Reset"},
+        filter_names=set(),
+        bind_routes_ir=[
+            {
+                "kind": "kernel",
+                "target": "energy",
+                "kernel": "Accumulate",
+                "args": ["src", "energy"],
+                "route": "energy = Accumulate(src, energy);",
+            },
+            {
+                "kind": "fold",
+                "uniform_type": "float",
+                "uniform_name": "total",
+                "operator": "sum",
+                "source": "energy",
+                "route": "uniform float total = fold sum(energy);",
+            },
+            {
+                "kind": "kernel",
+                "target": "energy",
+                "kernel": "Reset",
+                "args": ["seed", "scratch"],
+                "route": "energy = Reset(seed, scratch);",
+            },
+        ],
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "energy = Accumulate(src, energy);",
+        "uniform float total = fold sum(energy);",
+        "energy = Reset(seed, scratch);",
+    ]
+    assert result["fused_groups"] == []
+
+
+def test_optimize_bind_routes_parses_textual_fold_as_accumulator_consumer():
+    result = optimize_bind_routes(
+        [
+            "energy = Accumulate(src, energy);",
+            "uniform float total = fold sum(energy);",
+            "energy = Reset(seed, scratch);",
+        ],
+        shader_names={"Accumulate", "Reset"},
+        filter_names=set(),
+    )
+
+    assert result["optimized_bind_routes"] == [
+        "energy = Accumulate(src, energy);",
+        "uniform float total = fold sum(energy);",
+        "energy = Reset(seed, scratch);",
+    ]
+    assert result["fused_groups"] == []
+
+
 def test_optimize_bind_routes_uses_liveness_not_global_use_count():
     result = optimize_bind_routes(
         [
