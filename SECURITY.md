@@ -37,7 +37,7 @@ The `--emit-ir` flag produces LLVM IR text output via `llvmlite`. This IR is int
 
 **Known risks:**
 
-- **IR correctness affects downstream safety.** If the code generator produces structurally invalid or semantically incorrect IR, the downstream LLVM toolchain may produce binaries with undefined behavior. The `noalias` annotations emitted on all pointer parameters are sound under Lockstep's memory model (no aliasing by construction), but a code generator bug that emits `noalias` on aliased pointers could cause miscompilation in the host binary. This is mitigated by the compiler's test suite but not formally verified.
+- **IR correctness affects downstream safety.** If the code generator produces structurally invalid or semantically incorrect IR, the downstream LLVM toolchain may produce binaries with undefined behavior. The current generated IR uses a single arena pointer and byte-offset-derived accesses rather than blanket `noalias` annotations, so reviewers should focus on structural IR validity, correct offset calculation, and sound lowering of arena loads/stores. This is mitigated by the compiler's test suite but not formally verified.
 
 ### C host header generation
 
@@ -115,5 +115,5 @@ The following improvements are planned for future releases:
 
 - **Input size and complexity limits** for the parser frontend (maximum file size, maximum nesting depth, parse timeout).
 - **Stronger process isolation** for simulator subprocesses (for example, optional namespace/cgroup sandboxing when available).
-- **Formal verification** of the `noalias` correctness invariant, confirming that the memory model guarantees no pointer aliasing across all valid Lockstep programs.
+- **Formal verification** of arena aliasing and offset correctness invariants, confirming that generated accesses are sound across all valid Lockstep programs.
 - **Automated dependency vulnerability scanning** via Dependabot or similar tooling in CI.
