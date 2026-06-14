@@ -844,6 +844,10 @@ class _FunctionLowerer:
         if not self.builder.block.is_terminated:
             if isinstance(return_type, ir.VoidType):
                 self.builder.ret_void()
+            elif isinstance(return_type, ir.IntType) and return_type.width == 1:
+                # Filters default to keeping the row when control reaches the end
+                # without an explicit return, matching simulator semantics.
+                self.builder.ret(ir.Constant(return_type, 1))
             elif isinstance(return_type, ir.FloatType):
                 self.builder.ret(ir.Constant(ir.FloatType(), 0.0))
             else:
@@ -1165,7 +1169,7 @@ def emit_llvm_ir(
         ]
         fn = ir.Function(
             module,
-            ir.FunctionType(ir.VoidType(), params),
+            ir.FunctionType(ir.IntType(1), params),
             name=f"filter_{_sanitize_symbol(flt.name)}",
         )
         for idx, param in enumerate(flt.params):
@@ -1202,9 +1206,9 @@ def emit_llvm_ir(
         lowerer.lower_function(
             fn,
             list(flt.body),
-            ir.VoidType(),
+            ir.IntType(1),
             [_kernel_param_type(param) for param in flt.params],
-            None,
+            "bool",
             [param.modifier in {"out", "accum"} for param in flt.params],
         )
 
@@ -1225,6 +1229,7 @@ def emit_llvm_ir(
         shader.name: (shader, shader.params) for shader in shaders
     }
     kernel_signatures.update({flt.name: (flt, flt.params) for flt in filters})
+    filter_names = {flt.name for flt in filters}
 
     def _infer_accumulator_sizes() -> dict[str, int]:
         inferred_sizes = {accum.name: 1 for accum in accumulators}
@@ -1788,21 +1793,32 @@ def emit_llvm_ir(
         current: ir.Value,
         *,
         local_slots: dict[str, ir.AllocaInstr] | None = None,
-    ) -> None:
+        output_index: ir.Value | None = None,
+    ) -> ir.Value | None:
         callee, params = _kernel_function_and_params(route.kernel)
         if callee is None:
-            return
+            return None
+        store_index = output_index if output_index is not None else current
         call_args = []
         copy_out_slots: list[tuple[str, ir.AllocaInstr, str]] = []
         for index, param in enumerate(callee.args):
             arg_name = route.args[index] if index < len(route.args) else ""
             modifier = params[index].modifier if index < len(params) else None
-            call_arg = _route_arg_value(
-                arg_name=arg_name,
-                param=param,
-                modifier=modifier,
-                current=current,
-                local_slots=local_slots,
+            is_filter_output = (
+                route.kernel in filter_names
+                and modifier == "out"
+                and arg_name in stream_slots
+            )
+            call_arg = (
+                None
+                if is_filter_output
+                else _route_arg_value(
+                    arg_name=arg_name,
+                    param=param,
+                    modifier=modifier,
+                    current=current,
+                    local_slots=local_slots,
+                )
             )
             if call_arg is None and modifier == "out" and arg_name in stream_slots:
                 if not hasattr(param.type, "pointee"):
@@ -1817,7 +1833,7 @@ def emit_llvm_ir(
                     name=f"route_{_sanitize_symbol(arg_name)}_out_slot",
                 )
                 initial_value = _load_tick_param(
-                    "stream", arg_name, param.type.pointee, current
+                    "stream", arg_name, param.type.pointee, store_index
                 )
                 tick_builder.store(initial_value, slot)
                 call_arg = slot
@@ -1827,14 +1843,54 @@ def emit_llvm_ir(
                     f"could not lower argument '{arg_name}' for route '{route.route}'"
                 )
             call_args.append(call_arg)
-        tick_builder.call(callee, call_args)
+        result = tick_builder.call(callee, call_args)
+        if route.kernel in filter_names and copy_out_slots:
+            keep_bool = result
+            if not (
+                isinstance(keep_bool.type, ir.IntType) and keep_bool.type.width == 1
+            ):
+                keep_bool = lowerer._coerce_value_to_type(
+                    keep_bool, ir.IntType(1), "bool"
+                )
+            store_block = tick.append_basic_block(
+                f"filter_{_sanitize_symbol(route.kernel)}_store"
+            )
+            skip_block = tick.append_basic_block(
+                f"filter_{_sanitize_symbol(route.kernel)}_skip"
+            )
+            after_block = tick.append_basic_block(
+                f"filter_{_sanitize_symbol(route.kernel)}_after"
+            )
+            tick_builder.cbranch(keep_bool, store_block, skip_block)
+            tick_builder.position_at_end(store_block)
+            for arg_name, slot, declared_type in copy_out_slots:
+                updated_value = tick_builder.load(
+                    slot, name=f"route_{_sanitize_symbol(arg_name)}_out_value"
+                )
+                _store_value(
+                    "stream",
+                    arg_name,
+                    updated_value,
+                    declared_type,
+                    element_index=store_index,
+                )
+            tick_builder.branch(after_block)
+            tick_builder.position_at_end(skip_block)
+            tick_builder.branch(after_block)
+            tick_builder.position_at_end(after_block)
+            return result
         for arg_name, slot, declared_type in copy_out_slots:
             updated_value = tick_builder.load(
                 slot, name=f"route_{_sanitize_symbol(arg_name)}_out_value"
             )
             _store_value(
-                "stream", arg_name, updated_value, declared_type, element_index=current
+                "stream",
+                arg_name,
+                updated_value,
+                declared_type,
+                element_index=store_index,
             )
+        return result
 
     def _lower_kernel_route(route: AstKernelBindRoute):
         trip_count = _kernel_route_trip_count(route)
@@ -1844,6 +1900,12 @@ def emit_llvm_ir(
             ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx"
         )
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+        write_index_ptr = None
+        if kernel_name in filter_names:
+            write_index_ptr = tick_builder.alloca(
+                ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_write_idx"
+            )
+            tick_builder.store(ir.Constant(ir.IntType(32), 0), write_index_ptr)
 
         loop_cond = tick.append_basic_block(
             f"route_{_sanitize_symbol(kernel_name)}_cond"
@@ -1864,7 +1926,27 @@ def emit_llvm_ir(
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
-        _emit_kernel_call(route, current)
+        output_index = current
+        if write_index_ptr is not None:
+            output_index = tick_builder.load(write_index_ptr, name="filter_write_idx")
+        keep_value = _emit_kernel_call(route, current, output_index=output_index)
+        if write_index_ptr is not None:
+            keep_bool = keep_value
+            if keep_bool is None:
+                keep_bool = ir.Constant(ir.IntType(1), 1)
+            if not (
+                isinstance(keep_bool.type, ir.IntType) and keep_bool.type.width == 1
+            ):
+                keep_bool = lowerer._coerce_value_to_type(
+                    keep_bool, ir.IntType(1), "bool"
+                )
+            write_next = tick_builder.add(
+                output_index, ir.Constant(ir.IntType(32), 1), name="filter_write_next"
+            )
+            selected_write = tick_builder.select(
+                keep_bool, write_next, output_index, name="filter_write_select"
+            )
+            tick_builder.store(selected_write, write_index_ptr)
         next_index = tick_builder.add(
             current, ir.Constant(ir.IntType(32), 1), name="idx_next"
         )
@@ -2780,6 +2862,10 @@ def emit_llvm_ir(
         eliminated_targets = {route.target for route in routes[:-1]}
         if not eliminated_targets:
             _lower_kernel_route(routes[0])
+            return
+        if any(route.kernel in filter_names for route in routes):
+            for route in routes:
+                _lower_kernel_route(route)
             return
         if not _can_vectorize_fused_group(routes):
             for route in routes:
