@@ -116,7 +116,10 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
     assert result.entities["fused_bind_groups"] == []
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
-    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in result.llvm_ir
+    assert (
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
+        in result.llvm_ir
+    )
 
 
 def test_codegen_logical_and_short_circuits_rhs_division():
@@ -126,9 +129,7 @@ def test_codegen_logical_and_short_circuits_rhs_division():
                 name="guarded",
                 return_type=AstType("bool"),
                 params=(
-                    AstKernelParam(
-                        modifier="", declared_type=AstType("int"), name="x"
-                    ),
+                    AstKernelParam(modifier="", declared_type=AstType("int"), name="x"),
                 ),
                 body=(
                     AstReturnStmt(
@@ -158,9 +159,9 @@ def test_codegen_logical_and_short_circuits_rhs_division():
     ir_text = emit_llvm_ir(program)
 
     assert 'br i1 %".4", label %"logic_and_rhs", label %"logic_and_merge"' in ir_text
-    assert 'logic_and_rhs:' in ir_text
-    assert 'sdiv i32 100' in ir_text
-    assert 'logic_and_merge:' in ir_text
+    assert "logic_and_rhs:" in ir_text
+    assert "sdiv i32 100" in ir_text
+    assert "logic_and_merge:" in ir_text
     assert '[0, %"entry"], [%".7", %"logic_and_rhs"]' in ir_text
 
 
@@ -195,11 +196,14 @@ def test_codegen_logical_or_short_circuits_rhs_call():
 
     ir_text = emit_llvm_ir(program)
 
-    assert 'br i1 %"ready_val", label %"logic_or_merge", label %"logic_or_rhs"' in ir_text
-    assert 'logic_or_rhs:' in ir_text
+    assert (
+        'br i1 %"ready_val", label %"logic_or_merge", label %"logic_or_rhs"' in ir_text
+    )
+    assert "logic_or_rhs:" in ir_text
     assert 'call i1 @"pure_expensive"()' in ir_text
-    assert 'logic_or_merge:' in ir_text
+    assert "logic_or_merge:" in ir_text
     assert '[1, %"entry"], [%"call_expensive", %"logic_or_rhs"]' in ir_text
+
 
 def test_compile_lockstep_surfaces_typed_ast_type_error_without_legacy_fallback(
     monkeypatch,
@@ -430,11 +434,8 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert '%"struct.Vec3" = type {float, float, float}' in llvm_ir
     assert 'define float @"pure_demo"()' in llvm_ir
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
-    assert 'define void @"filter_Cull"()' in llvm_ir
-    assert (
-        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
-        in llvm_ir
-    )
+    assert 'define i1 @"filter_Cull"()' in llvm_ir
+    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in llvm_ir
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
     assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir
@@ -839,14 +840,29 @@ def test_emit_llvm_ir_accepts_ast_program_input():
 
     assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 2' in llvm_ir
-    assert '%"stream_inp_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*' in llvm_ir
-    assert '%"stream_inp_value_byte_ptr" = getelementptr i8, i8* %"stream_inp_arena_bytes", i32 %"stream_inp_byte_offset"' in llvm_ir
+    assert (
+        '%"stream_inp_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*'
+        in llvm_ir
+    )
+    assert (
+        '%"stream_inp_value_byte_ptr" = getelementptr i8, i8* %"stream_inp_arena_bytes", i32 %"stream_inp_byte_offset"'
+        in llvm_ir
+    )
     assert 'bitcast i8* %"stream_inp_value_byte_ptr" to float*' in llvm_ir
     assert '%"stream_out_byte_offset" = add i32 8, %"stream_out_byte_index"' in llvm_ir
-    assert '%"stream_out_value_byte_ptr" = getelementptr i8, i8* %"stream_out_arena_bytes", i32 %"stream_out_byte_offset"' in llvm_ir
+    assert (
+        '%"stream_out_value_byte_ptr" = getelementptr i8, i8* %"stream_out_arena_bytes", i32 %"stream_out_byte_offset"'
+        in llvm_ir
+    )
     assert 'bitcast i8* %"stream_out_value_byte_ptr" to float*' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0' not in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1' not in llvm_ir
+    assert (
+        'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0'
+        not in llvm_ir
+    )
+    assert (
+        'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1'
+        not in llvm_ir
+    )
 
 
 def test_emit_llvm_ir_uses_array_field_for_single_capacity_streams():
@@ -998,9 +1014,17 @@ def test_emit_llvm_ir_lowers_kernel_bind_routes_into_counted_loops():
     assert "route_ApplyGravity_cond" in llvm_ir
     assert 'icmp slt i32 %"idx", 4' in llvm_ir
     assert 'call void @"shader_ApplyGravity"(float' in llvm_ir
-    assert '%"struct.Lockstep_Arena" = type {[4 x float], [4 x float], float}' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 %"route_i32_lane0.1"' in llvm_ir
-    assert 'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1, i32 %"route_i32_lane0.3"' in llvm_ir
+    assert (
+        '%"struct.Lockstep_Arena" = type {[4 x float], [4 x float], float}' in llvm_ir
+    )
+    assert (
+        'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 0, i32 %"route_i32_lane0.1"'
+        in llvm_ir
+    )
+    assert (
+        'getelementptr %"struct.Lockstep_Arena", %"struct.Lockstep_Arena"* %"arena", i32 0, i32 1, i32 %"route_i32_lane0.3"'
+        in llvm_ir
+    )
 
 
 def test_emit_llvm_ir_keeps_integer_arithmetic_in_integer_domain():
@@ -1123,9 +1147,7 @@ def test_emit_llvm_ir_promotes_mixed_numeric_operands_in_fused_vectors():
                         {"modifier": "out", "type": "double", "name": "out"},
                     ],
                     "body_ast": [
-                        AstAssignStmt(
-                            target=("out",), value=AstExprVar(path=("inp",))
-                        )
+                        AstAssignStmt(target=("out",), value=AstExprVar(path=("inp",)))
                     ],
                 },
             ],
@@ -1170,6 +1192,7 @@ def test_emit_llvm_ir_promotes_mixed_numeric_operands_in_fused_vectors():
     assert "uitofp <8 x i32>" in llvm_ir
     assert "fmul <8 x double>" in llvm_ir
     assert "fadd <8 x double>" in llvm_ir
+
 
 def test_emit_llvm_ir_lowers_select_builtin_for_integers():
     llvm_ir = emit_llvm_ir(
@@ -1254,7 +1277,12 @@ def test_emit_llvm_ir_lowers_select_builtin_for_structs():
         }
     )
 
-    assert 'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"' in llvm_ir
+    assert (
+        'i1 %"condition_val", %"struct.Pair" %"a_val", %"struct.Pair" %"b_val"'
+        in llvm_ir
+    )
+
+
 def test_emit_llvm_ir_defaults_target_triple_and_simd_width_for_fold_reduce():
     llvm_ir = emit_llvm_ir(
         {
@@ -1338,8 +1366,11 @@ def test_emit_llvm_ir_lowers_fold_routes_to_vector_reduce_intrinsics():
 
     assert 'call fast float @"llvm.vector.reduce.fadd.v8f32"' in llvm_ir
     assert '%"struct.Lockstep_Arena" = type {float, float}' in llvm_ir
-    assert '%"uniform_total_value_byte_ptr" = getelementptr i8, i8* %"uniform_total_arena_bytes", i32 4' in llvm_ir
-    assert 'i32 0, i32 0, i32 4' not in llvm_ir
+    assert (
+        '%"uniform_total_value_byte_ptr" = getelementptr i8, i8* %"uniform_total_arena_bytes", i32 4'
+        in llvm_ir
+    )
+    assert "i32 0, i32 0, i32 4" not in llvm_ir
 
 
 def test_emit_llvm_ir_strip_mines_fold_larger_than_target_width():
@@ -1407,8 +1438,7 @@ def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width(
     assert (
         '%"fold_chunk_ptr" = phi  <8 x float>* '
         '[%"fold_energy_chunk_ptr", %"entry"], '
-        '[%"fold_chunk_ptr_next", %"fold_energy_strip_body"]'
-        in llvm_ir
+        '[%"fold_chunk_ptr_next", %"fold_energy_strip_body"]' in llvm_ir
     )
     assert (
         '%"fold_energy_chunk" = load <8 x float>, <8 x float>* %"fold_chunk_ptr"'
@@ -1416,8 +1446,7 @@ def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width(
     )
     assert (
         '%"fold_chunk_ptr_next" = getelementptr <8 x float>, '
-        '<8 x float>* %"fold_chunk_ptr", i32 1'
-        in llvm_ir
+        '<8 x float>* %"fold_chunk_ptr", i32 1' in llvm_ir
     )
     assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' not in llvm_ir
     assert '%"fold_elem_7" = add i32 %"fold_index", 7' not in llvm_ir
@@ -1450,26 +1479,19 @@ def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
         in result.llvm_ir
     )
     assert 'br label %"fold_energy_strip_cond"' in result.llvm_ir
-    assert (
-        '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 16'
-        in result.llvm_ir
-    )
+    assert '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 16' in result.llvm_ir
     assert '%"fold_index_next" = add i32 %"fold_index", 8' in result.llvm_ir
     assert 'mul i32 %"idx", 4' in result.llvm_ir
-    assert 'mul i32 16, 4' in result.llvm_ir
+    assert "mul i32 16, 4" in result.llvm_ir
     assert (
         '%"fold_chunk_ptr_next" = getelementptr <8 x float>, '
-        '<8 x float>* %"fold_chunk_ptr", i32 1'
-        in result.llvm_ir
+        '<8 x float>* %"fold_chunk_ptr", i32 1' in result.llvm_ir
     )
+    assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' not in result.llvm_ir
     assert (
-        '%"accum_energy_byte_index" = mul i32 %"fold_index", 4'
-        not in result.llvm_ir
+        '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in result.llvm_ir
     )
-    assert (
-        '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000'
-        in result.llvm_ir
-    )
+
 
 def test_emit_llvm_ir_honors_explicit_target_width_override():
     llvm_ir = emit_llvm_ir(
@@ -1754,7 +1776,9 @@ def test_emit_c_header_generates_structs_offsets_and_tick_signature():
 
 
 def test_emit_c_header_honors_target_width_override_macro():
-    header = emit_c_header({"streams": [], "accumulators": [], "uniforms": []}, target_width=16)
+    header = emit_c_header(
+        {"streams": [], "accumulators": [], "uniforms": []}, target_width=16
+    )
     assert "#define LOCKSTEP_SIMD_WIDTH 16" in header
 
 
@@ -2083,7 +2107,9 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
         lambda: (StubLexer, StubParser, StubVisitor),
     )
     monotonic_values = iter([0.0, 0.002])
-    monkeypatch.setattr(compiler_module.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        compiler_module.time, "monotonic", lambda: next(monotonic_values)
+    )
 
     with pytest.raises(lockstep_compiler.LockstepCompileError) as exc_info:
         lockstep_compiler.compile_lockstep(
@@ -2093,6 +2119,7 @@ def test_compile_lockstep_enforces_parse_timeout(monkeypatch):
 
     assert exc_info.value.phase == "parse"
     assert exc_info.value.errors[0].code == "LCK004"
+
 
 def test_codegen_uses_unsigned_ops_for_uint_math():
     source = """
@@ -2188,3 +2215,60 @@ def test_codegen_uses_unsigned_ops_for_uint_struct_fields():
     assert "udiv i32" in llvm_ir
     assert "urem i32" in llvm_ir
     assert "icmp ult i32" in llvm_ir
+
+
+def test_emit_llvm_ir_compacts_filter_outputs_with_return_predicate():
+    from lockstep_compiler.ast import (
+        AstKernelBindRoute,
+        AstKernelDecl,
+        AstKernelParam,
+        AstPipelineDecl,
+        AstStreamDecl,
+    )
+
+    program = AstProgram(
+        filters=(
+            AstKernelDecl(
+                name="KeepPositive",
+                params=(
+                    AstKernelParam(modifier="in", declared_type="float", name="src"),
+                    AstKernelParam(modifier="out", declared_type="float", name="dst"),
+                ),
+                body=(
+                    AstAssignStmt(target=("dst",), value=AstExprVar(path=("src",))),
+                    AstReturnStmt(
+                        value=AstExprBinary(
+                            op=">",
+                            left=AstExprVar(path=("src",)),
+                            right=AstExprLiteral(kind="float", value="0.0"),
+                        )
+                    ),
+                ),
+            ),
+        ),
+        pipelines=(
+            AstPipelineDecl(
+                name="Main",
+                streams=(
+                    AstStreamDecl(name="inp", declared_type="float", capacity="4"),
+                    AstStreamDecl(name="out", declared_type="float", capacity="4"),
+                ),
+                bind_routes=(
+                    AstKernelBindRoute(
+                        target="out",
+                        kernel="KeepPositive",
+                        args=("inp", "out"),
+                        route="out = KeepPositive(inp, out);",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    llvm_ir = emit_llvm_ir(program)
+
+    assert 'define i1 @"filter_KeepPositive"' in llvm_ir
+    assert '"KeepPositive_write_idx"' in llvm_ir
+    assert '"filter_write_select"' in llvm_ir
+    assert '"filter_KeepPositive_store"' in llvm_ir
+    assert '"filter_KeepPositive_skip"' in llvm_ir
