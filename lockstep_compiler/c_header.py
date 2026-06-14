@@ -4,7 +4,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from .ast import AstProgram, ast_to_entities
-from .arena_layout import build_arena_layout
+from .arena_layout import (
+    _parse_type_name,
+    _structural_type_name,
+    build_arena_layout,
+    field_size,
+)
 from .errors import LockstepCompileError
 from .models import LockstepDiagnostic
 from .utils import sanitize_symbol as _sanitize_symbol
@@ -17,6 +22,14 @@ _PRIMITIVE_C_TYPE = {
     "double": "double",
 }
 
+_C_TYPE_SIZE = {
+    "uint8_t": 1,
+    "int32_t": 4,
+    "uint32_t": 4,
+    "float": 4,
+    "double": 8,
+}
+
 _MAX_U64 = (1 << 64) - 1
 
 
@@ -26,6 +39,25 @@ def _c_type(type_name: str, known_structs: set[str]) -> str:
     if type_name in known_structs:
         return f"struct Lockstep_{_sanitize_symbol(type_name)}"
     return "void*"
+
+
+def _structural_c_type(type_name: str, known_structs: set[str]) -> str:
+    parsed = _parse_type_name(type_name)
+    if parsed is None:
+        return _c_type(type_name, known_structs)
+    return _c_type(_structural_type_name(parsed), known_structs)
+
+
+def _sized_field_declaration(
+    c_type_name: str, field_name: str, total_size: int
+) -> str:
+    c_type_size = _C_TYPE_SIZE.get(c_type_name)
+    if c_type_size is None or total_size <= 0 or total_size % c_type_size != 0:
+        return f"uint8_t {field_name}[{max(total_size, 1)}]"
+    item_count = total_size // c_type_size
+    if item_count == 1:
+        return f"{c_type_name} {field_name}"
+    return f"{c_type_name} {field_name}[{item_count}]"
 
 
 def emit_c_header(
@@ -73,9 +105,13 @@ def emit_c_header(
 
         lines.append(f"LOCKSTEP_PACKED_STRUCT(struct {c_struct_name} {{")
         for field in struct_decl.fields:
-            field_type = _c_type(field.type_name, known_structs)
+            field_type = _structural_c_type(field.type_name, known_structs)
             field_name = _sanitize_symbol(field.name)
-            lines.append(f"    {field_type} {field_name};")
+            field_total_size = field_size(field.type_name, layout.struct_sizes)
+            declaration = _sized_field_declaration(
+                field_type, field_name, field_total_size
+            )
+            lines.append(f"    {declaration};")
         lines.append("});")
         lines.append("")
 
@@ -106,17 +142,17 @@ def emit_c_header(
                 source_file=diagnostic.source_file,
             )
         cumulative_layout_total += leaf_allocation_size
-        c_type_name = _c_type(leaf.type_name, known_structs)
+        c_type_name = _structural_c_type(leaf.type_name, known_structs)
         path_suffix = (
             "_".join(_sanitize_symbol(part) for part in leaf.path)
             if leaf.path
             else "value"
         )
         field_name = f"{leaf.kind}_{_sanitize_symbol(leaf.binding_name)}_{path_suffix}"
-        if leaf.element_count > 1:
-            lines.append(f"    {c_type_name} {field_name}[{leaf.element_count}];")
-        else:
-            lines.append(f"    {c_type_name} {field_name};")
+        declaration = _sized_field_declaration(
+            c_type_name, field_name, leaf_allocation_size
+        )
+        lines.append(f"    {declaration};")
     lines.append("});")
     lines.append("")
 
@@ -128,6 +164,11 @@ def emit_c_header(
             'static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
             "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)",
             '_Static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");',
+            "#endif",
+            "#if defined(__cplusplus) && (__cplusplus >= 201103L)",
+            'static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_Arena size must match LOCKSTEP_ARENA_BYTES");',
+            "#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)",
+            '_Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_Arena size must match LOCKSTEP_ARENA_BYTES");',
             "#endif",
         ]
     )

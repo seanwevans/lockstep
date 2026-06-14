@@ -1816,6 +1816,37 @@ def test_emit_c_header_uses_parallel_soa_blocks_for_stream_capacity():
     assert "#define LOCKSTEP_ARENA_BYTES 32" in header
 
 
+def test_emit_c_header_sizes_folded_array_and_vector_leaves_by_layout_bytes():
+    header = emit_c_header(
+        {
+            "structs": [
+                {
+                    "name": "Vec",
+                    "fields": [
+                        {"type": "float[4]", "name": "xs"},
+                        {"type": "vector<float,4>", "name": "ys"},
+                    ],
+                }
+            ],
+            "streams": [{"name": "values", "type": "Vec", "capacity": "8"}],
+            "accumulators": [],
+            "uniforms": [],
+        }
+    )
+
+    assert "float xs[4];" in header
+    assert "float ys[4];" in header
+    assert "float stream_values_xs[32];" in header
+    assert "float stream_values_ys[32];" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_VALUES_XS 0" in header
+    assert "#define LOCKSTEP_OFFSET_STREAM_VALUES_YS 128" in header
+    assert "#define LOCKSTEP_ARENA_BYTES 256" in header
+    assert (
+        "_Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES"
+        in header
+    )
+
+
 def test_emit_c_header_includes_optional_saturated_write_debug_helpers():
     header = emit_c_header(
         {
