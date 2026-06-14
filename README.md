@@ -83,28 +83,31 @@ Lockstep's semantic validator enforces a strict type system with **no implicit c
 The currently supported primitive declared types are:
 
 * `int`
+* `uint`
 * `float`
+* `double`
 * `bool`
 * `string`
 
-> `uint` and `double` are **not currently supported as declared types** in source-level type annotations (for locals, params, uniforms, struct fields, etc.). Using unknown declared types produces `LCK310`.
+`uint` uses unsigned integer semantics in code generation; `double` maps to 64-bit floating point. Unknown declared types still produce `LCK310`.
 
 #### Composite/struct type composition
 
 Struct members may use:
 
 * primitives,
-* previously declared struct names,
-* array suffixes (`T[4]`), and
-* generic wrappers (`Ctor<T>` / `Ctor<T,4>`), including nested forms.
+* previously declared struct names, and
+* array suffixes (`T[4]`).
 
-Examples:
+The parser and semantic validator also accept generic-wrapper spelling (`Ctor<T>` / `Ctor<T,4>`, including nested forms) so declarations such as `vector<float,4>` can participate in type checking and arena/header layout. In generated LLVM IR, however, generic-wrapper values are currently lowered as opaque pointers rather than first-class aggregate/vector values. Treat generic wrappers as ABI/layout placeholders, not as kernel-value types for arithmetic, field access, or SIMD computation.
+
+Examples that are supported as declared/layout types:
 
 * `Particle[4]`
 * `vector<float,4>`
 * `matrix<vector<Particle,4>,4>`
 
-Type identity is name-based and exact. Field access chains (`a.b.c`) are valid only when each link resolves to a struct type and an existing field.
+Type identity is name-based and exact. Field access chains (`a.b.c`) are valid only when each link resolves to a concrete struct type and an existing field.
 
 #### Type matching and coercion policy
 
@@ -123,8 +126,9 @@ When conversion is desired, use an explicit cast.
 
 Lockstep targets **LLVM IR** directly to leverage industrial-grade optimization passes.
 
-* **`noalias` Guarantee:** Because Lockstep forbids arbitrary pointers, the compiler decorates all IR pointers with `noalias`, enabling aggressive auto-vectorization.
-* **SSA Purity:** Local variables are mapped directly to SSA registers. Struct member access (`ent.pos.x`) is lowered to LLVM `extractvalue` and `insertvalue` instructions, allowing for total Scalar Replacement of Aggregates (SROA).
+* **Single-arena ABI:** Generated kernels receive a `struct Lockstep_Arena*` and compute byte offsets into that arena. The backend does not currently emit blanket `noalias` decorations for arena-derived pointers, so alias-disambiguation-sensitive optimizations should not be assumed from the arena representation alone.
+* **SSA locals for concrete values:** Local scalar and concrete-struct values are lowered through SSA-friendly LLVM values where possible; arena loads and stores still use byte-addressed offsets for ABI stability.
+* **Manual SIMD lowering:** Stream fusion is vectorized by the backend's fused-vector lowering pass, which strip-mines contiguous stream elements and emits vector loads, stores, arithmetic, and reductions directly. This is separate from relying on LLVM to auto-vectorize scalar loops over the arena.
 * **Fast-Math Reductions:** Reduction loops are emitted with `fast` math flags, permitting LLVM to reassociate floating-point operations into horizontal SIMD shuffles.
 
 ---
@@ -133,10 +137,9 @@ Lockstep targets **LLVM IR** directly to leverage industrial-grade optimization 
 
 The compiler generates a C-compatible header for the Host application (C/C++, Rust, or Zig).
 
-1. **Allocate:** Host allocates a contiguous block of size `LOCKSTEP_ARENA_BYTES`.
-2. **Bind:** Host calls `Lockstep_BindMemory(ptr)`.
-3. **Prime:** Host writes initial data into the SoA offsets provided by the header.
-4. **Tick:** Host calls `Lockstep_Tick()` to execute the pipeline.
+1. **Allocate:** Host allocates a `struct Lockstep_Arena` object or a suitably aligned contiguous block of at least `LOCKSTEP_ARENA_BYTES` bytes.
+2. **Prime:** Host writes initial data into the SoA fields and byte offsets provided by the header.
+3. **Tick:** Host calls `Lockstep_Tick(arena)` with a pointer to that arena. There is no separate `Lockstep_BindMemory` entry point.
 
 See [`examples/`](examples/) for a minimal end-to-end host app in C (`examples/minimal_host.c`) that includes a generated header, allocates arena memory, primes initial data, and calls `Lockstep_Tick`.
 
