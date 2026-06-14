@@ -367,6 +367,10 @@ def test_compile_lockstep_rejects_negative_frontend_limits(limit_name, value):
     assert limit_name in exc_info.value.errors[0].message
 
 
+def test_frontend_limits_default_dependency_file_limit_is_bounded():
+    assert FrontendLimits().max_dependency_files == 128
+
+
 def test_compile_lockstep_zero_disables_source_size_limit():
     compile_lockstep(
         _LIMIT_SOURCE,

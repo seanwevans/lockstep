@@ -34,6 +34,7 @@ DEFAULT_SOURCE_FILE = "<stdin>"
 DEFAULT_MAX_SOURCE_BYTES = 1_048_576
 DEFAULT_PARSE_TIMEOUT_MS = 2_000
 DEFAULT_MAX_EXPRESSION_NESTING = 128
+DEFAULT_MAX_DEPENDENCY_FILES = 128
 DEFAULT_INVALID_FRONTEND_LIMIT_CODE = "LCK006"
 DEFAULT_DEPENDENCY_ROOT_VIOLATION_CODE = "LCK007"
 _DEPENDENCY_DECL_PATTERN = re.compile(
@@ -47,7 +48,7 @@ class FrontendLimits:
     max_source_bytes: int | None = DEFAULT_MAX_SOURCE_BYTES
     parse_timeout_ms: int | None = DEFAULT_PARSE_TIMEOUT_MS
     max_expression_nesting: int | None = DEFAULT_MAX_EXPRESSION_NESTING
-    max_dependency_files: int | None = DEFAULT_MAX_SOURCE_BYTES
+    max_dependency_files: int | None = DEFAULT_MAX_DEPENDENCY_FILES
     max_dependency_total_bytes: int | None = DEFAULT_MAX_SOURCE_BYTES
     max_dependency_depth: int | None = DEFAULT_MAX_EXPRESSION_NESTING
 
