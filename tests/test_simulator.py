@@ -515,7 +515,7 @@ def test_simulate_pipeline_entities_executes_filter_return_predicate_and_struct_
 
 
 def test_run_cli_simulate_prints_json_for_compiler_result():
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {
             "streams": [{"name": "s", "type": "int", "capacity": "4"}],
             "accumulators": [],
@@ -542,7 +542,7 @@ def test_run_cli_simulate_reads_input_file(tmp_path):
     input_file = tmp_path / "sim-input.json"
     input_file.write_text('{"streams": {"s": [1, 2, 3]}}', encoding="utf-8")
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {
             "streams": [{"name": "s", "type": "int", "capacity": "4"}],
             "accumulators": [],
@@ -575,7 +575,7 @@ def test_run_cli_rejects_simulate_input_without_simulate(tmp_path):
         stdin=io.StringIO("pipeline P { }"),
         stdout=io.StringIO(),
         stderr=stderr,
-        compiler=lambda _source: {},
+        compiler=lambda _source, **_kwargs: {},
     )
 
     assert exit_code == 2
@@ -586,7 +586,7 @@ def test_run_cli_report_accepts_simulate_input_file(tmp_path):
     input_file = tmp_path / "sim-input.json"
     input_file.write_text('{"streams": {"s": [10, 20]}}', encoding="utf-8")
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {
             "streams": [{"name": "s", "type": "int", "capacity": "4"}],
             "accumulators": [],
@@ -610,7 +610,7 @@ def test_run_cli_report_accepts_simulate_input_file(tmp_path):
 
 
 def test_run_cli_report_prints_single_json_payload_with_entities_and_simulation():
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {
             "streams": [{"name": "s", "type": "int", "capacity": "4"}],
             "accumulators": [],
@@ -644,7 +644,7 @@ def test_run_cli_rejects_combined_dump_and_simulate_modes():
             stdin=io.StringIO("pipeline P { }"),
             stdout=io.StringIO(),
             stderr=io.StringIO(),
-            compiler=lambda source: source,
+            compiler=lambda source, **_kwargs: source,
         )
     except SystemExit as err:
         assert err.code == 2
@@ -725,7 +725,7 @@ def test_run_cli_simulate_reports_invalid_simulation_shape(tmp_path):
     input_file = tmp_path / "sim-input.json"
     input_file.write_text('{"streams": {"s": 1}}', encoding="utf-8")
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {
             "streams": [{"name": "s", "type": "int", "capacity": "4"}],
             "accumulators": [],
