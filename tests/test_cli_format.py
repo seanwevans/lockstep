@@ -6,7 +6,7 @@ from lockstep_compiler.cli import run_cli
 def test_run_cli_format_outputs_formatted_source_without_compiling():
     called = {"compiler": False}
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         called["compiler"] = True
 
     stdout = io.StringIO()

@@ -470,7 +470,7 @@ def test_module_main_error_path_exits_with_stderr(monkeypatch, capsys):
 def test_run_cli_reads_source_from_stdin_when_path_omitted():
     captured = {}
 
-    def fake_compiler(source):
+    def fake_compiler(source, **_kwargs):
         captured["source"] = source
 
     exit_code = run_cli(
@@ -488,7 +488,7 @@ def test_run_cli_reads_source_from_path(tmp_path):
     source_file.write_text("pipeline FromFile { }", encoding="utf-8")
     captured = {}
 
-    def fake_compiler(source):
+    def fake_compiler(source, **_kwargs):
         captured["source"] = source
 
     exit_code = run_cli(
@@ -500,7 +500,7 @@ def test_run_cli_reads_source_from_path(tmp_path):
 
 
 def test_run_cli_dump_prints_compiled_entities():
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return LockstepCompileResult(
             parse_tree=None,
             entities={
@@ -535,7 +535,7 @@ def test_run_cli_dump_prints_compiled_entities():
 
 
 def test_run_cli_dump_falls_back_to_compiler_result():
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         return {"nodes": ["a", "b"]}
 
     stdout = io.StringIO()
@@ -558,7 +558,7 @@ def test_run_cli_dump_falls_back_to_compiler_result():
 
 
 def test_run_cli_returns_non_zero_and_writes_errors():
-    def failing_compiler(_source):
+    def failing_compiler(_source, **_kwargs):
         raise LockstepCompileError(
             [
                 LockstepDiagnostic(
@@ -588,7 +588,7 @@ def test_run_cli_returns_non_zero_and_writes_errors():
 
 
 def test_run_cli_internal_error_default_mode_keeps_generic_message():
-    def failing_compiler(_source):
+    def failing_compiler(_source, **_kwargs):
         raise RuntimeError("kaboom")
 
     stderr = io.StringIO()
@@ -606,7 +606,7 @@ def test_run_cli_internal_error_default_mode_keeps_generic_message():
 
 
 def test_run_cli_debug_mode_emits_exception_details_and_traceback():
-    def failing_compiler(_source):
+    def failing_compiler(_source, **_kwargs):
         raise LockstepCompileError(
             [
                 LockstepDiagnostic(
@@ -653,7 +653,7 @@ def test_run_cli_returns_non_zero_for_missing_path(tmp_path):
     stderr = io.StringIO()
     called = {"compiler": False}
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         called["compiler"] = True
 
     exit_code = run_cli(
@@ -671,7 +671,7 @@ def test_run_cli_returns_non_zero_for_unreadable_path(monkeypatch):
     stderr = io.StringIO()
     called = {"compiler": False}
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         called["compiler"] = True
 
     def raise_permission_error(_self, encoding):
@@ -696,7 +696,7 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(tmp_path):
     stderr = io.StringIO()
     called = {"compiler": False}
 
-    def fake_compiler(_source):
+    def fake_compiler(_source, **_kwargs):
         called["compiler"] = True
 
     exit_code = run_cli(
@@ -713,7 +713,7 @@ def test_run_cli_returns_non_zero_for_invalid_utf8(tmp_path):
 def test_run_cli_uses_default_compiler_when_compiler_missing(monkeypatch):
     captured = {}
 
-    def fake_compiler(source, *, verbose=True):
+    def fake_compiler(source, *, verbose=True, **_kwargs):
         captured["source"] = source
         captured["verbose"] = verbose
 
@@ -734,11 +734,14 @@ def test_run_cli_uses_default_compiler_when_compiler_missing(monkeypatch):
     }
 
 
-def test_run_cli_preserves_injected_compiler_without_verbose_parameter():
+def test_run_cli_passes_standard_options_to_injected_compiler():
     captured = {}
 
-    def fake_compiler(source):
+    def fake_compiler(source, **kwargs):
         captured["source"] = source
+        captured["verbose"] = kwargs["verbose"]
+        captured["source_file"] = kwargs["source_file"]
+        captured["target_width"] = kwargs["target_width"]
 
     exit_code = run_cli(
         [],
@@ -747,13 +750,18 @@ def test_run_cli_preserves_injected_compiler_without_verbose_parameter():
     )
 
     assert exit_code == 0
-    assert captured == {"source": "pipeline CustomCompiler { }"}
+    assert captured == {
+        "source": "pipeline CustomCompiler { }",
+        "verbose": False,
+        "source_file": "<stdin>",
+        "target_width": 8,
+    }
 
 
 def test_run_cli_default_execution_suppresses_verbose_visitor_logs(monkeypatch):
     stderr = io.StringIO()
 
-    def fake_compiler(_source, *, verbose=True):
+    def fake_compiler(_source, *, verbose=True, **_kwargs):
         if verbose:
             print("Visiting node: pipeline", file=stderr)
 

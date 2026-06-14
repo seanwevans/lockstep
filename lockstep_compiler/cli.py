@@ -1,5 +1,4 @@
 import argparse
-import inspect
 import json
 import sys
 import traceback
@@ -260,98 +259,31 @@ def run_cli(
         )
         return 1
 
-    supports_verbose = False
-    supports_library_sources = False
-    supports_source_file = False
-    supports_library_source_files = False
-    supports_frontend_limits = False
-    supports_target_width = False
-    supports_dependency_root = False
-    supports_unsafe_allow_external_dependencies = False
-    try:
-        signature = inspect.signature(compiler)
-    except (TypeError, ValueError):
-        signature = None
+    from .compiler import FrontendLimits
 
-    if signature is not None:
-        supports_verbose = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "verbose"
-            for parameter in signature.parameters.values()
-        )
-        supports_library_sources = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "library_sources"
-            for parameter in signature.parameters.values()
-        )
-        supports_source_file = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "source_file"
-            for parameter in signature.parameters.values()
-        )
-        supports_library_source_files = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "library_source_files"
-            for parameter in signature.parameters.values()
-        )
-        supports_frontend_limits = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "frontend_limits"
-            for parameter in signature.parameters.values()
-        )
-        supports_target_width = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "target_width"
-            for parameter in signature.parameters.values()
-        )
-        supports_dependency_root = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "dependency_root"
-            for parameter in signature.parameters.values()
-        )
-        supports_unsafe_allow_external_dependencies = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            or parameter.name == "unsafe_allow_external_dependencies"
-            for parameter in signature.parameters.values()
-        )
-
-    compile_kwargs: dict[str, Any] = {}
-    if supports_verbose:
-        compile_kwargs["verbose"] = False
-    if supports_library_sources:
-        compile_kwargs["library_sources"] = library_sources
-    if supports_source_file:
-        compile_kwargs["source_file"] = str(source_path) if args.path else "<stdin>"
-    if supports_library_source_files:
-        compile_kwargs["library_source_files"] = library_source_files
-    if supports_frontend_limits:
-        from .compiler import FrontendLimits
-
-        compile_kwargs["frontend_limits"] = FrontendLimits(
-            max_source_bytes=args.max_source_bytes,
-            parse_timeout_ms=args.parse_timeout_ms,
-            max_expression_nesting=args.max_expr_nesting,
-            max_dependency_files=args.max_dependency_files,
-            max_dependency_total_bytes=args.max_dependency_total_bytes,
-            max_dependency_depth=args.max_dependency_depth,
-        )
-    if supports_target_width:
-        compile_kwargs["target_width"] = args.target_width
-    if supports_dependency_root:
-        dependency_root: Path | None = None
-        if args.path and not args.unsafe_allow_external_dependencies:
-            dependency_root = source_path.resolve().parent
-        compile_kwargs["dependency_root"] = dependency_root
-    if supports_unsafe_allow_external_dependencies:
-        compile_kwargs["unsafe_allow_external_dependencies"] = (
-            args.unsafe_allow_external_dependencies
-        )
+    dependency_root: Path | None = None
+    if args.path and not args.unsafe_allow_external_dependencies:
+        dependency_root = source_path.resolve().parent
 
     try:
-        if compile_kwargs:
-            result = compiler(source, **compile_kwargs)
-        else:
-            result = compiler(source)
+        result = compiler(
+            source,
+            verbose=False,
+            library_sources=library_sources,
+            source_file=str(source_path) if args.path else "<stdin>",
+            library_source_files=library_source_files,
+            frontend_limits=FrontendLimits(
+                max_source_bytes=args.max_source_bytes,
+                parse_timeout_ms=args.parse_timeout_ms,
+                max_expression_nesting=args.max_expr_nesting,
+                max_dependency_files=args.max_dependency_files,
+                max_dependency_total_bytes=args.max_dependency_total_bytes,
+                max_dependency_depth=args.max_dependency_depth,
+            ),
+            target_width=args.target_width,
+            dependency_root=dependency_root,
+            unsafe_allow_external_dependencies=args.unsafe_allow_external_dependencies,
+        )
     except LockstepCompileError as err:
         count = len(err.errors)
         suffix = "" if count == 1 else "s"
