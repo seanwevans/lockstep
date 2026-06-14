@@ -286,8 +286,8 @@ Each diagnostic includes:
   * `LCK418` (`error`) is emitted when a pure `return` expression type does not match the declared return type.
 * **Type-check mismatches** each have distinct diagnostic codes:
   * `LCK412` (`error`) is emitted for pure-function argument type mismatches.
-  * `LCK416` (`error`) is emitted for variable initializer type mismatches in `visitVarDecl`.
-  * `LCK417` (`error`) is emitted for assignment type mismatches in `visitAssignStmt`.
+  * `LCK416` (`error`) is emitted for variable initializer type mismatches during AST semantic validation.
+  * `LCK417` (`error`) is emitted for assignment type mismatches during AST semantic validation.
   * `LCK424` (`error`) is emitted when arithmetic mixes `int` and `float` operands without an explicit cast.
 * **Fatal parse errors** still raise `LockstepCompileError`.
   * `LockstepCompileError.errors` contains parse diagnostics.
