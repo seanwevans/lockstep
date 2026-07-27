@@ -145,6 +145,15 @@ class _FormattingVisitor(LockstepVisitor):
         return self.visitChildren(ctx)
 
     def visitDependencyDecl(self, ctx: LockstepParser.DependencyDeclContext):
+        return self.visitChildren(ctx)
+
+    def visitImportDecl(self, ctx: LockstepParser.ImportDeclContext):
+        self._append_dependency(ctx)
+
+    def visitIncludeDecl(self, ctx: LockstepParser.IncludeDeclContext):
+        self._append_dependency(ctx)
+
+    def _append_dependency(self, ctx):
         keyword = ctx.getChild(0).getText()
         path = ctx.STRING().getText()
         self._append(f"{keyword} {path};")
