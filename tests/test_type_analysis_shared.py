@@ -1,6 +1,21 @@
 from lockstep_compiler import compile_lockstep
 from lockstep_compiler.lsp import build_analysis_context, provide_hover_info
-from lockstep_compiler.type_analysis import parse_type_name, validate_type_name
+from lockstep_compiler.models import SemanticStructField
+from lockstep_compiler.type_analysis import (
+    build_struct_field_type_index,
+    parse_type_name,
+    validate_type_name,
+)
+
+
+def test_build_struct_field_type_index_accepts_strings_and_field_objects():
+    from_strings = build_struct_field_type_index({"Vec": {"x": "float"}})
+    from_fields = build_struct_field_type_index(
+        {"Vec": {"x": SemanticStructField(name="x", declared_type="float")}}
+    )
+
+    assert from_strings == {"Vec": {"x": "float"}}
+    assert from_fields == {"Vec": {"x": "float"}}
 
 
 def test_parse_and_validate_type_name_shared_helpers():
