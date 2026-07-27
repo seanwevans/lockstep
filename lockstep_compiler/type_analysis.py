@@ -117,11 +117,22 @@ def validate_type_name(
 
 
 def build_struct_field_type_index(
-    structs: dict[str, dict[str, SemanticStructField]],
+    structs: dict[str, dict[str, SemanticStructField | str]],
 ) -> dict[str, dict[str, str]]:
+    """Normalize per-struct field maps to plain ``field_name -> type`` strings.
+
+    Callers pass either :class:`SemanticStructField` values (from the semantic
+    validator) or already-resolved type strings (from LSP entity extraction), so
+    both shapes are accepted and reduced to type-name strings.
+    """
     return {
         struct_name: {
-            field_name: field.declared_type for field_name, field in fields.items()
+            field_name: (
+                field.declared_type
+                if isinstance(field, SemanticStructField)
+                else field
+            )
+            for field_name, field in fields.items()
         }
         for struct_name, fields in structs.items()
     }
