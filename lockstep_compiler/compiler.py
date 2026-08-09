@@ -28,6 +28,7 @@ from .models import (
 )
 from .optimizer import optimize_bind_routes
 from .prelude import load_intrinsics
+from .utils import decode_escape_sequences
 from .visitors import validate_semantics as _validate_semantics
 
 DEFAULT_SOURCE_FILE = "<stdin>"
@@ -349,15 +350,7 @@ def _build_combined_source(
 
 
 def _decode_dependency_path(path_literal: str) -> str:
-    try:
-        return bytes(path_literal, "utf-8").decode("unicode_escape")
-    except UnicodeDecodeError:
-        # Path literals that contain raw backslashes (for example, absolute
-        # Windows paths such as ``C:\\Users\\...``) are not valid
-        # ``unicode_escape`` sequences. Fall back to the literal text so the
-        # dependency resolver can still validate and reject it instead of the
-        # compiler crashing with an uncaught decode error.
-        return path_literal
+    return decode_escape_sequences(path_literal)
 
 
 def _dependency_parse_error(

@@ -33,6 +33,7 @@ from .ast import (
 )
 from .arena_layout import build_ast_arena_layout
 from .optimizer import _parse_bind_route, optimize_bind_routes
+from .utils import decode_escape_sequences
 from .utils import sanitize_symbol as _sanitize_symbol
 
 _PRIMITIVE_TYPE_MAP: dict[str, ir.Type] = {
@@ -409,7 +410,7 @@ class _FunctionLowerer:
     def _decode_string_literal(token_text: str) -> str:
         if len(token_text) >= 2 and token_text[0] == '"' and token_text[-1] == '"':
             token_text = token_text[1:-1]
-        return bytes(token_text, "utf-8").decode("unicode_escape")
+        return decode_escape_sequences(token_text)
 
     def _lower_string_literal(self, token_text: str) -> ir.Value:
         decoded = self._decode_string_literal(token_text)
