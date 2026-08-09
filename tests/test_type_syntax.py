@@ -231,6 +231,18 @@ def test_dependency_root_rejects_absolute_include_outside_root(tmp_path):
     assert exc_info.value.errors[0].line == 1
 
 
+def test_decode_dependency_path_tolerates_raw_backslashes():
+    from lockstep_compiler.compiler import _decode_dependency_path
+
+    # Absolute Windows paths contain raw backslashes (e.g. ``\\Users``) that are
+    # not valid ``unicode_escape`` sequences. Decoding must not raise so the
+    # dependency resolver can validate and reject the path with a diagnostic.
+    windows_path = r"C:\Users\runner\AppData\outside.lock"
+    assert _decode_dependency_path(windows_path) == windows_path
+    # Well-formed escapes are still decoded.
+    assert _decode_dependency_path(r"dir\\file.lock") == "dir\\file.lock"
+
+
 def test_circular_imports_raise_compile_error(tmp_path):
     file_a = tmp_path / "a.lock"
     file_b = tmp_path / "b.lock"
