@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .ast import (
     AstAssignStmt,
@@ -273,7 +273,8 @@ def _infer_variable_types_from_entities(entities: dict[str, Any]) -> dict[str, s
         if expr is None:
             return None
         if isinstance(expr, AstExprLiteral):
-            return expr.kind
+            kind = expr.kind
+            return kind if isinstance(kind, str) else None
         expr_type_name = type(expr).__name__
         if expr_type_name == "AstExprInt":
             return "int"
@@ -381,7 +382,9 @@ def _build_struct_field_type_index_from_entities(
         for struct in entities.get("structs", [])
         if struct.get("name")
     }
-    return build_struct_field_type_index(structs)
+    return cast(
+        "dict[str, dict[str, str]]", build_struct_field_type_index(structs)
+    )
 
 
 def build_struct_member_index(source: str) -> dict[str, dict[str, MemberDefinition]]:
@@ -686,7 +689,7 @@ def provide_bind_completion_items(
             ]
 
         for route in bind_route_labels:
-            if route in seen_labels:
+            if not isinstance(route, str) or route in seen_labels:
                 continue
             completion_entries.append(
                 {

@@ -12,7 +12,7 @@ from .optimizer import optimize_bind_routes
 from .simulator import parse_simulation_inputs, simulate_pipeline_entities
 
 
-def _non_negative_limit_value(flag_name: str):
+def _non_negative_limit_value(flag_name: str) -> Callable[[str], int]:
     def _parse(value: str) -> int:
         try:
             parsed = int(value)
@@ -29,7 +29,7 @@ def _non_negative_limit_value(flag_name: str):
     return _parse
 
 
-def _positive_int_value(flag_name: str):
+def _positive_int_value(flag_name: str) -> Callable[[str], int]:
     def _parse(value: str) -> int:
         try:
             parsed = int(value)
@@ -44,7 +44,7 @@ def _positive_int_value(flag_name: str):
     return _parse
 
 
-def _read_source_file(path: Path, *, stderr) -> str | None:
+def _read_source_file(path: Path, *, stderr: TextIO) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
