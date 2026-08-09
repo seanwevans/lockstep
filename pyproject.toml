@@ -1,6 +1,7 @@
 [project]
 name = "Lockstep"
 version = "0.1.0"
+requires-python = ">=3.10"
 dependencies = [
     "antlr4-python3-runtime>=4.13,<4.14",
     "llvmlite>=0.43,<0.44",
@@ -13,15 +14,6 @@ test = [
     "pytest-benchmark",
     "mypy",
     "hypothesis",
-    # The lockfiles are generated on a single interpreter/platform, but the
-    # test matrix spans Windows and Python 3.10-3.12. Declare the environment
-    # specific transitive dependencies explicitly so they are always pinned
-    # (with hashes) in the lockfile and ``pip install --require-hashes``
-    # succeeds on every matrix entry. pytest pulls colorama in on Windows and
-    # tomli/exceptiongroup in on Python < 3.11.
-    "colorama; sys_platform == 'win32'",
-    "tomli; python_version < '3.11'",
-    "exceptiongroup; python_version < '3.11'",
 ]
 lsp = [
     "pygls",

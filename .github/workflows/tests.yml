@@ -30,14 +30,14 @@ jobs:
             with:
               python-version: "3.12"
 
-          - name: Install pip-tools
+          - name: Install uv
             run: |
-              # pip 26.2 removed pip._internal.utils.compat.stdlib_pkgs, which
-              # pip-tools still imports, so pin pip below that. Pin pip-tools to
-              # the version the committed lockfiles were generated with so the
-              # regenerated output matches byte-for-byte.
-              python -m pip install "pip==26.1"
-              python -m pip install "pip-tools==7.6.0"
+              # Pin uv to the version the committed lockfiles were generated
+              # with so `make check-lock-deps` regenerates byte-for-byte
+              # identical output. Unlike pip-tools, uv is self-contained and
+              # does not import pip internals, so it is not coupled to the pip
+              # release on the runner. Bumping uv means regenerating the locks.
+              python -m pip install "uv==0.12.3"
 
           - name: Check dependency lockfiles
             run: |
