@@ -5,7 +5,7 @@ from functools import lru_cache
 import shutil
 import subprocess
 import tempfile
-from typing import Any
+from typing import Any, cast
 
 from llvmlite import ir
 
@@ -71,7 +71,7 @@ def _normalize_simulation_entities(entities_or_result: Any) -> dict[str, Any]:
         return _overlay_typed_ast_bodies(
             entities, getattr(entities_or_result, "ast", None)
         )
-    return entities_or_result
+    return cast(dict[str, Any], entities_or_result)
 
 
 @dataclass
@@ -411,7 +411,7 @@ def _resolve_sim_path(env: dict[str, Any], path: tuple[str, ...]) -> Any:
             full_path=path,
             available_scope=env,
         )
-    resolved_path = (root,)
+    resolved_path: tuple[str, ...] = (root,)
     for part in path[1:]:
         if not isinstance(value, dict):
             raise SimulatorRuntimeError(
@@ -457,7 +457,7 @@ def _assign_sim_path(env: dict[str, Any], path: tuple[str, ...], value: Any) -> 
             f"'{_format_sim_path(path)}'."
         )
 
-    resolved_path = (root,)
+    resolved_path: tuple[str, ...] = (root,)
     for part in path[1:-1]:
         child = current.get(part, _MISSING_SIM_VALUE)
         if child is _MISSING_SIM_VALUE:

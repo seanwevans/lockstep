@@ -656,7 +656,7 @@ def _bind_route_ir(route: AstKernelBindRoute | AstFoldBindRoute) -> dict[str, ob
 def _build_bind_optimization(program: AstProgram) -> dict[str, object]:
     optimized_bind_routes: list[str] = []
     fused_bind_groups: list[object] = []
-    pipeline_optimizations: list[dict[str, list]] = []
+    pipeline_optimizations: list[dict[str, list[Any]]] = []
     shader_names = {shader.name for shader in program.shaders}
     filter_names = {flt.name for flt in program.filters}
 
@@ -770,7 +770,7 @@ def _compile_lockstep_with_dependencies(
     validator: Callable[..., Any]
     if semantic_validator is None:
 
-        def validator(parse_tree, *, typed_ast):
+        def validator(parse_tree: Any, *, typed_ast: Any) -> Any:
             return validate_semantics(parse_tree, visitor_cls, typed_ast=typed_ast)
 
     else:

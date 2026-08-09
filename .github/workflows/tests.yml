@@ -78,6 +78,29 @@ jobs:
             run: |
               python -m compileall debug_compiler.py lockstep_compiler tests
 
+    typecheck:
+        name: Type checks (mypy)
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v4
+
+          - name: Setup Python
+            uses: actions/setup-python@v5
+            with:
+              python-version: "3.12"
+              cache: "pip"
+
+          - name: Install dependencies
+            run: |
+              python -m pip install --upgrade pip
+              python -m pip install --require-hashes -r requirements-test.lock
+
+          - name: Run mypy
+            run: |
+              make mypy
+
     test:
         name: Tests (${{ matrix.os }} / py${{ matrix.python-version }})
         runs-on: ${{ matrix.os }}
