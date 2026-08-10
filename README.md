@@ -239,6 +239,8 @@ python benchmarks/native/run_native.py --workload particle_energy --iterations 5
 
 Reported metrics are per-tick latency (`per_tick_us`), stream throughput (`mrows_per_sec`), arena bandwidth (`arena_gib_per_sec`), and a deterministic output `checksum`. This requires an LLVM/clang toolchain on `PATH`; the harness exits with a clear message if `clang` is unavailable. See [`benchmarks/native/README.md`](benchmarks/native/README.md) for details. Absolute numbers are host-dependent, so treat them as relative/regression signals.
 
+To quantify *why* Lockstep uses a Struct-of-Arrays memory layout, `make bench-soa` (or `python benchmarks/native/soa_vs_aos.py`) runs the same branchless particle kernel over identical data in SoA and Array-of-Structs layouts across a range of sizes and reports the throughput ratio. Both layouts compute identical results, so the difference is purely layout: SoA wins on vectorization (contiguous SIMD loads) and, for kernels that read a subset of fields, on bandwidth.
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python

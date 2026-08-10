@@ -67,3 +67,29 @@ python benchmarks/native/run_native.py --output native-results.json --keep-artif
 
 Absolute numbers depend on the host CPU, so treat them as relative/regression
 signals rather than portable constants.
+
+## SoA-vs-AoS layout micro-benchmark
+
+`soa_vs_aos.py` isolates and quantifies *why* Lockstep decomposes structs into
+parallel primitive arrays (Struct-of-Arrays) instead of an Array-of-Structs. It
+runs the same branchless particle kernel over the same data in both layouts,
+across a sweep of working-set sizes, and reports the throughput ratio. The two
+layouts compute identical results (checked), so the only variable is memory
+layout. Built with `clang -O3 -march=native -ffast-math` (the `-ffast-math`
+mirrors the `fast` flags Lockstep emits on reduction loops).
+
+```bash
+python benchmarks/native/soa_vs_aos.py
+python benchmarks/native/soa_vs_aos.py --sizes 16000 1000000 --json
+```
+
+Two kernels model the two ways layout matters:
+
+* **integrate** touches every field (a full physics step). SoA wins on
+  *vectorization*: its contiguous columns feed packed SIMD loads/stores, while
+  AoS's interleaved stride forces gathers or scalar code.
+* **energy** reads only velocity + mass (a subset). SoA additionally wins on
+  *bandwidth*: AoS drags the unused position fields through cache on every pass.
+
+Expect the SoA speedup to be largest when the data is cache-resident and to
+narrow (but stay well above 1×) once the sweep goes memory-bound at large sizes.
