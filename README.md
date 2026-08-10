@@ -226,6 +226,19 @@ make bench
 
 `make bench` executes `pytest tests/benchmarks -q --benchmark-only` and prints a benchmark summary table with per-test timing statistics (for example `min`, `max`, `mean`, and iteration counts). The benchmark suite uses fixed seeds and deterministic row counts (`1k`, `10k`, `100k`) so historical comparisons remain stable across runs.
 
+### Native execution benchmarks (compiled code throughput)
+
+The harnesses above all time the Python frontend (parse + in-Python simulate). To measure the code Lockstep actually ships, `benchmarks/native/` compiles each workload's generated LLVM IR with `clang -O3 -march=native`, links a generated host driver that calls `Lockstep_Tick` in a timed loop over a full arena, and reports real execution throughput:
+
+```bash
+make bench-native
+# or, directly:
+python benchmarks/native/run_native.py
+python benchmarks/native/run_native.py --workload particle_energy --iterations 5000 --json
+```
+
+Reported metrics are per-tick latency (`per_tick_us`), stream throughput (`mrows_per_sec`), arena bandwidth (`arena_gib_per_sec`), and a deterministic output `checksum`. This requires an LLVM/clang toolchain on `PATH`; the harness exits with a clear message if `clang` is unavailable. See [`benchmarks/native/README.md`](benchmarks/native/README.md) for details. Absolute numbers are host-dependent, so treat them as relative/regression signals.
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python

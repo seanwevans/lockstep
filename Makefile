@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native
 
 verify: test mypy
 
@@ -50,3 +50,9 @@ bench:
 bench-check:
 	PYTHONPATH=. python scripts/check_benchmark_regression.py --baseline benchmarks/baselines/default.json --current benchmark-results.json --threshold 0.10
 	pytest tests/benchmarks -q --benchmark-only
+
+# Native execution benchmarks: compile each workload's generated code with
+# clang -O3 -march=native and time Lockstep_Tick over a full arena. Requires an
+# LLVM/clang toolchain on PATH.
+bench-native:
+	python benchmarks/native/run_native.py --output native-results.json
