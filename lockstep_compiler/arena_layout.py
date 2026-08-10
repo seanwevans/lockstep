@@ -382,17 +382,70 @@ def _build_layout_from_bindings(
     )
 
 
+def infer_accumulator_sizes(entities: dict[str, Any]) -> dict[str, int]:
+    """Infer per-accumulator element counts from the pipeline's bind routes.
+
+    A fold accumulator is lowered as one slot per stream row processed by the
+    kernel that writes it (the "parallel reduction tree" the reduction pass then
+    folds), so its arena footprint is the trip count of that kernel route -- not
+    a single scalar. This mirrors the inference the LLVM backend performs so the
+    C header, IR arena type, and generated kernel all agree on the ABI.
+    """
+
+    accumulator_names = {
+        accumulator["name"] for accumulator in entities.get("accumulators", [])
+    }
+    inferred: dict[str, int] = {name: 1 for name in accumulator_names}
+    if not inferred:
+        return inferred
+
+    stream_capacities = {
+        stream["name"]: max(int(stream.get("capacity", 1) or 1), 1)
+        for stream in entities.get("streams", [])
+    }
+    kernel_params: dict[str, list[dict[str, Any]]] = {}
+    for kernel in list(entities.get("shaders", [])) + list(entities.get("filters", [])):
+        kernel_params[kernel["name"]] = list(kernel.get("params", []))
+
+    for route in entities.get("bind_routes_ir", []):
+        if route.get("kind") not in {"kernel", "shader", "filter"}:
+            continue
+        params = kernel_params.get(route.get("kernel"))
+        if params is None:
+            continue
+        args = route.get("args", [])
+        trip_count = 0
+        for index, arg_name in enumerate(args):
+            if index >= len(params):
+                break
+            if params[index].get("modifier") == "in" and arg_name in stream_capacities:
+                trip_count = max(trip_count, stream_capacities[arg_name])
+        target = route.get("target")
+        if target in stream_capacities:
+            trip_count = max(trip_count, stream_capacities[target])
+        trip_count = max(trip_count, 1)
+        for index, arg_name in enumerate(args):
+            if index >= len(params):
+                break
+            if params[index].get("modifier") == "accum" and arg_name in inferred:
+                inferred[arg_name] = max(inferred[arg_name], trip_count)
+    return inferred
+
+
 def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
     normalized_structs = normalize_structs(entities.get("structs", []))
+    inferred_accumulator_sizes = infer_accumulator_sizes(entities)
     bindings: list[tuple[str, str, str, int]] = []
     for stream in entities.get("streams", []):
         capacity = int(stream.get("capacity", 1))
         bindings.append(("stream", stream["name"], stream["type"], max(capacity, 1)))
     for accumulator in entities.get("accumulators", []):
-        element_count = (
-            int(accumulator.get("size", 1))
-            if accumulator.get("size") is not None
-            else 1
+        explicit_size = (
+            int(accumulator["size"]) if accumulator.get("size") is not None else 1
+        )
+        element_count = max(
+            explicit_size,
+            inferred_accumulator_sizes.get(accumulator["name"], 1),
         )
         bindings.append(
             ("accum", accumulator["name"], accumulator["type"], max(element_count, 1))
