@@ -46,3 +46,4 @@ htmlcov/
 .DS_Store
 # Benchmarks
 benchmark-results.json
+native-results.json
