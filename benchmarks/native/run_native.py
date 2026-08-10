@@ -265,7 +265,35 @@ def _render_driver(plan: WorkloadPlan, iterations: int, warmup: int) -> str:
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Portability shim: the MSVC/UCRT toolchain used by clang on Windows lacks
+   POSIX clock_gettime and C11 aligned_alloc, so provide equivalents. */
+#if defined(_WIN32)
+#include <windows.h>
+#include <malloc.h>
+static void* bench_aligned_alloc(size_t align, size_t size) {{
+    return _aligned_malloc(size, align);
+}}
+static void bench_aligned_free(void* p) {{ _aligned_free(p); }}
+static double bench_now_ns(void) {{
+    LARGE_INTEGER freq, ctr;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&ctr);
+    return (double)ctr.QuadPart * 1e9 / (double)freq.QuadPart;
+}}
+#else
 #include <time.h>
+static void* bench_aligned_alloc(size_t align, size_t size) {{
+    size_t rounded = (size + align - 1) & ~(align - 1);  /* C11 requires a multiple */
+    return aligned_alloc(align, rounded);
+}}
+static void bench_aligned_free(void* p) {{ free(p); }}
+static double bench_now_ns(void) {{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1e9 + (double)t.tv_nsec;
+}}
+#endif
 
 #define ARENA_BYTES ((size_t){plan.arena_bytes})
 #define CAP ((size_t){plan.capacity})
@@ -279,28 +307,25 @@ static void prime(uint8_t* base) {{
 }}
 
 int main(void) {{
-    uint8_t* base = (uint8_t*)aligned_alloc(64, (ARENA_BYTES + 4095) & ~((size_t)4095));
+    uint8_t* base = (uint8_t*)bench_aligned_alloc(64, ARENA_BYTES);
     if (base == NULL) {{ fprintf(stderr, "alloc failed\\n"); return 2; }}
     memset(base, 0, ARENA_BYTES);
     prime(base);
 
     for (int w = 0; w < WARMUP; ++w) Lockstep_Tick(base);
 
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    double t0 = bench_now_ns();
     for (int it = 0; it < ITERS; ++it) Lockstep_Tick(base);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double t1 = bench_now_ns();
 
     double checksum = 0.0;
 {checksum_read}
 
-    double ns = (double)(t1.tv_sec - t0.tv_sec) * 1e9
-              + (double)(t1.tv_nsec - t0.tv_nsec);
-    double per_tick_ns = ns / (double)ITERS;
+    double per_tick_ns = (t1 - t0) / (double)ITERS;
 
     printf("{{\\"per_tick_ns\\": %.3f, \\"checksum\\": %.6f}}\\n",
            per_tick_ns, checksum);
-    free(base);
+    bench_aligned_free(base);
     return 0;
 }}
 """

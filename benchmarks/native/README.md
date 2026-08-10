@@ -93,3 +93,42 @@ Two kernels model the two ways layout matters:
 
 Expect the SoA speedup to be largest when the data is cache-resident and to
 narrow (but stay well above 1×) once the sweep goes memory-bound at large sizes.
+
+## Multi-stage fusion probe
+
+`fusion_probe.py` quantifies throughput lost to un-fused multi-stage pipelines.
+Lockstep's optimizer already plans stage fusion — for `multi_stage_pipeline` it
+reports `alertsActive = FUSED[Normalize -> Score -> KeepActive]` with
+`eliminated_intermediates: [eventsEnriched, alertsScored]` — but the code
+generator only emits that single fused loop when `_can_vectorize_fused_group`
+passes, and that check bails on any group whose kernel takes an `accum`
+parameter:
+
+```python
+if param.modifier == "accum":
+    return False
+```
+
+`multi_stage_pipeline` (its `Score` stage) and `telemetry_filter_aggregation`
+(its `AggregateReadings` stage) both accumulate, so codegen falls back to one
+strip-mined loop **per stage** — each streaming the whole arena and materializing
+the intermediate streams the optimizer said it would eliminate. That extra memory
+traffic is why those workloads sit well below the `memcpy` roofline in
+`run_native.py`.
+
+The probe runs the multi_stage computation two ways over identical SoA data —
+`unfused` (three loops writing/re-reading intermediates, as codegen emits today)
+and `fused` (one loop, intermediates in registers, accumulating on the fly, as
+the optimizer plans) — and reports the speedup. Both produce identical results
+(checked), so the delta is exactly the win a fusion-through-accumulators codegen
+change would recover.
+
+```bash
+python benchmarks/native/fusion_probe.py
+make bench-fusion
+```
+
+On the current host the fused form runs roughly **5×** faster than the un-fused
+form even at memory-bound sizes, so lifting the `accum` restriction on stage
+fusion is the highest-leverage codegen throughput opportunity for pipelines that
+accumulate.

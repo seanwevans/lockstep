@@ -241,6 +241,8 @@ Reported metrics are per-tick latency (`per_tick_us`), stream throughput (`mrows
 
 To quantify *why* Lockstep uses a Struct-of-Arrays memory layout, `make bench-soa` (or `python benchmarks/native/soa_vs_aos.py`) runs the same branchless particle kernel over identical data in SoA and Array-of-Structs layouts across a range of sizes and reports the throughput ratio. Both layouts compute identical results, so the difference is purely layout: SoA wins on vectorization (contiguous SIMD loads) and, for kernels that read a subset of fields, on bandwidth.
 
+To measure the throughput lost when accumulator pipelines are not stage-fused, `make bench-fusion` (or `python benchmarks/native/fusion_probe.py`) compares the per-stage loops codegen currently emits for such pipelines against a single fused loop over the same computation. The optimizer already plans this fusion, but codegen skips it whenever a stage uses an `accum` parameter — see [`benchmarks/native/README.md`](benchmarks/native/README.md).
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python
