@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-fusion
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-soa bench-fusion
 
 verify: test mypy
 
@@ -56,6 +56,11 @@ bench-check:
 # LLVM/clang toolchain on PATH.
 bench-native:
 	python benchmarks/native/run_native.py --output native-results.json
+
+# SoA-vs-AoS layout micro-benchmark: quantifies the Struct-of-Arrays throughput
+# win over Array-of-Structs for the same kernel. Requires clang on PATH.
+bench-soa:
+	python benchmarks/native/soa_vs_aos.py --output soa-vs-aos-results.json
 
 # Multi-stage fusion probe: measures the throughput gap between the per-stage
 # loops codegen emits for accumulator pipelines and a single fused loop. Requires
