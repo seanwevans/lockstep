@@ -239,6 +239,8 @@ python benchmarks/native/run_native.py --workload particle_energy --iterations 5
 
 Reported metrics are per-tick latency (`per_tick_us`), stream throughput (`mrows_per_sec`), arena bandwidth (`arena_gib_per_sec`), and a deterministic output `checksum`. This requires an LLVM/clang toolchain on `PATH`; the harness exits with a clear message if `clang` is unavailable. See [`benchmarks/native/README.md`](benchmarks/native/README.md) for details. Absolute numbers are host-dependent, so treat them as relative/regression signals.
 
+To measure the throughput lost when accumulator pipelines are not stage-fused, `make bench-fusion` (or `python benchmarks/native/fusion_probe.py`) compares the per-stage loops codegen currently emits for such pipelines against a single fused loop over the same computation. The optimizer already plans this fusion, but codegen skips it whenever a stage uses an `accum` parameter — see [`benchmarks/native/README.md`](benchmarks/native/README.md).
+
 Programmatic frontend usage is available from `lockstep_compiler`:
 
 ```python

@@ -47,3 +47,4 @@ htmlcov/
 # Benchmarks
 benchmark-results.json
 native-results.json
+fusion-probe-results.json

@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-fusion
 
 verify: test mypy
 
@@ -56,3 +56,9 @@ bench-check:
 # LLVM/clang toolchain on PATH.
 bench-native:
 	python benchmarks/native/run_native.py --output native-results.json
+
+# Multi-stage fusion probe: measures the throughput gap between the per-stage
+# loops codegen emits for accumulator pipelines and a single fused loop. Requires
+# clang on PATH.
+bench-fusion:
+	python benchmarks/native/fusion_probe.py --output fusion-probe-results.json
