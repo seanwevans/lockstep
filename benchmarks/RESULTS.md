@@ -9,7 +9,11 @@ version), so treat these as a concrete reference point and a relative/regression
 signal, not a portable constant. What is portable is the *shape* of the results:
 SIMD-friendly SoA layout beats AoS by an order of magnitude, and stage fusion
 recovers a multiple-x throughput win over the per-stage loops codegen emits
-today.
+today. The flip side is also measured and reported honestly: against an
+idiomatic single-pass **hand-written C** baseline (table 4), Lockstep's shipped
+code loses on every workload today — by ~20% on a single fused kernel and by
+~4–6× on the multi-stage filter pipelines — which quantifies exactly what the
+codegen work in [`../ROADMAP.md`](../ROADMAP.md) is worth.
 
 ## Host environment
 
@@ -112,7 +116,50 @@ leverage remaining codegen throughput opportunity for these pipelines.
 
 ---
 
-## 4. Frontend workloads (`python benchmarks/run_workloads.py`)
+## 4. Lockstep vs hand-written C (`make bench-vs-c`)
+
+The three tables above compare Lockstep against *itself* and it always wins. This
+one is the honest external comparison: the real shipped `Lockstep_Tick` (compiled
+from each workload's LLVM IR) versus an idiomatic **single-pass C kernel** a
+competent human would write for the same transform, over the same SoA arena
+(identical byte offsets from the generated header). Both paths run on identically
+primed arenas and must agree on an output checksum before a result is reported —
+and those checksums match table 1's, cross-validating the C references. Built
+with `clang -O3 -march=native -ffast-math`.
+
+```bash
+python benchmarks/native/lockstep_vs_c.py --iterations 5000
+```
+
+| workload | rows/tick | Lockstep Mrows/s | C Mrows/s | **ratio (C time / Lockstep time)** |
+| --- | ---: | ---: | ---: | ---: |
+| particle_energy | 32,768 | 620.7 | 768.4 | **0.81×** |
+| telemetry_filter_aggregation | 65,536 | 574.8 | 3402.5 | **0.17×** |
+| multi_stage_pipeline | 131,072 | 392.1 | 1793.1 | **0.22×** |
+
+`ratio >= 1.0` would mean Lockstep matches or beats hand-written C. On this host
+**hand-written C wins every workload** — this is the "something that beats us on
+raw numbers," and the shape of the gap is the point:
+
+* **`particle_energy`** is a single fused kernel — the case Lockstep is meant to
+  nail — yet it trails C by ~20% (ratio ~0.81, and stable across `--target-width`,
+  so it isn't SIMD width). Lockstep loads/stores the arena through byte-addressed
+  pointers while the C reference walks typed contiguous columns and contracts its
+  multiplies into FMAs under `-ffast-math`. Emitting typed column pointers and
+  `contract`/`fast` flags on *kernel* arithmetic (not just reductions) is the
+  improvement this points at.
+* **`telemetry_filter_aggregation` (~5.9×)** and **`multi_stage_pipeline` (~4.6×)**
+  are multi-stage pipelines ending in a filter. Codegen emits one strip-mined loop
+  **per stage** and materializes the intermediate streams, so the single-pass C
+  reference makes one trip through memory instead of two or three. This is the
+  same gap `fusion_probe.py` measures internally, now against a real external
+  baseline: it is what fusing-through-filters would recover.
+
+Absolute Mrows/s are host-dependent; the **ratio** is the portable signal.
+
+---
+
+## 5. Frontend workloads (`python benchmarks/run_workloads.py`)
 
 Times the Python frontend: `compile_lockstep` + in-Python `simulate_pipeline_entities`
 over realistic fixtures. This is the toolchain/authoring path, not shipped code.
@@ -127,7 +174,7 @@ python benchmarks/run_workloads.py --json
 | telemetry_filter_aggregation | 12.82 | 738.56 | 30,000 | 40,620 | 40,622 |
 | multi_stage_pipeline | 25.49 | 1008.41 | 36,000 | 35,700 | 23,804 |
 
-## 5. Frontend microbenchmark (`make bench`)
+## 6. Frontend microbenchmark (`make bench`)
 
 Median of 5 iterations over `examples/minimal.lock`, the CI regression KPI.
 
@@ -152,8 +199,9 @@ pip install -e .
 make bench-native      # native compiled-code throughput   (table 1)
 make bench-soa         # SoA vs AoS layout                  (table 2)
 make bench-fusion      # multi-stage fusion probe           (table 3)
-python benchmarks/run_workloads.py   # frontend workloads   (table 4)
-make bench             # frontend microbenchmark KPI        (table 5)
+make bench-vs-c        # Lockstep vs hand-written C         (table 4)
+python benchmarks/run_workloads.py   # frontend workloads   (table 5)
+make bench             # frontend microbenchmark KPI        (table 6)
 ```
 
 The native harnesses require an LLVM/clang toolchain on `PATH`; each exits with

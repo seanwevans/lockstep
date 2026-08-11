@@ -258,6 +258,7 @@ host-dependent — treat them as regression signals.
 | `make bench-native` | Real throughput of `clang -O3` compiled code calling `Lockstep_Tick` |
 | `make bench-soa` | SoA vs. AoS throughput for the same kernel |
 | `make bench-fusion` | Fused vs. per-stage loop throughput |
+| `make bench-vs-c` | Shipped `Lockstep_Tick` vs. an idiomatic single-pass hand-written C baseline |
 
 On pull requests, CI gates the **deterministic** native invariants (arena ABI +
 output `checksum`) against `benchmarks/baselines/native.json` — a drift is a real
