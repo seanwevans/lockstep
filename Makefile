@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-soa bench-fusion
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion
 
 verify: test mypy
 
@@ -56,6 +56,15 @@ bench-check:
 # LLVM/clang toolchain on PATH.
 bench-native:
 	python benchmarks/native/run_native.py --output native-results.json
+
+# Gate the deterministic native invariants (arena ABI + output checksums) against
+# the checked-in baseline. Throughput is intentionally not gated -- it is
+# hardware-dependent and too noisy on shared CI runners. Regenerate the baseline
+# after an intentional codegen change with:
+#   python scripts/check_native_benchmark.py --current native-results.json --update
+bench-native-check: bench-native
+	python scripts/check_native_benchmark.py \
+		--baseline benchmarks/baselines/native.json --current native-results.json
 
 # SoA-vs-AoS layout micro-benchmark: quantifies the Struct-of-Arrays throughput
 # win over Array-of-Structs for the same kernel. Requires clang on PATH.

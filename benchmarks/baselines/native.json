@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "native_execution_invariants",
+  "description": "Deterministic, hardware-independent invariants of the native execution benchmarks (ABI + output checksums). Throughput is not gated. Regenerate with scripts/check_native_benchmark.py --update.",
+  "workloads": {
+    "multi_stage_pipeline": {
+      "rows_per_tick": 131072,
+      "arena_bytes": 5767168,
+      "checksum": 13105.6002
+    },
+    "particle_energy": {
+      "rows_per_tick": 32768,
+      "arena_bytes": 1703936,
+      "checksum": 65528.0
+    },
+    "telemetry_filter_aggregation": {
+      "rows_per_tick": 65536,
+      "arena_bytes": 2293760,
+      "checksum": 65528.0
+    }
+  }
+}

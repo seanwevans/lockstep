@@ -183,3 +183,48 @@ jobs:
             if: steps.benchmark_regression.outcome == 'failure'
             run: |
               echo "::warning::Benchmark regression threshold exceeded (advisory mode)."
+
+    native-benchmark:
+        name: Native benchmarks (compiled code)
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v5
+
+          - name: Setup Python
+            uses: actions/setup-python@v6
+            with:
+              python-version: "3.12"
+              cache: "pip"
+
+          - name: Install dependencies
+            run: |
+              python -m pip install --upgrade pip
+              python -m pip install --require-hashes -r requirements-test.lock
+
+          - name: Show clang version
+            run: clang --version
+
+          - name: Run native execution benchmarks
+            run: |
+              python benchmarks/native/run_native.py --output native-results.json
+
+          - name: Upload native benchmark JSON
+            if: always()
+            uses: actions/upload-artifact@v6
+            with:
+                name: native-results-pr-${{ github.run_id }}
+                path: native-results.json
+                if-no-files-found: error
+
+          # Deterministic gate: arena ABI + output checksums are hardware-
+          # independent, so a drift here is a real codegen regression and fails
+          # the job. Throughput is not gated -- it is host-dependent and noisy on
+          # shared runners; the JSON artifact above carries it for trend tracking.
+          - name: Check native benchmark invariants
+            run: |
+              python scripts/check_native_benchmark.py \
+                --baseline benchmarks/baselines/native.json \
+                --current native-results.json
