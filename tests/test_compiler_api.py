@@ -1455,7 +1455,16 @@ def test_emit_llvm_ir_strip_mines_large_fold_without_truncating_to_target_width(
     assert '%"fold_elem_7" = add i32 %"fold_index", 7' not in llvm_ir
 
 
-def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
+def test_compile_lockstep_fuses_single_fold_accumulator_route():
+    """A standalone accumulator route consumed by exactly one fold reduces in a
+    loop-carried register instead of materializing the per-row buffer.
+
+    This is fold-into-kernel fusion: the writing route folds each row's partial
+    into a register accumulator (``fadd fast`` for a sum/avg) and the fold reads
+    that scalar, so the O(rows) accumulator buffer is never written or re-read --
+    matching hand-written C.  The arena still *reserves* the accumulator slots,
+    so the ABI (and ``LOCKSTEP_ARENA_BYTES``) is unchanged.
+    """
     source = """
     shader Capture(in float src, accum float energy) { energy = src; }
 
@@ -1477,23 +1486,65 @@ def test_compile_lockstep_strip_mines_fold_across_accumulator_route_width():
         target_width=8,
     )
 
+    # ABI unchanged: the arena still reserves capacity slots for the accumulator.
     assert (
         '%"struct.Lockstep_Arena" = type {[17 x float], [17 x float], float}'
         in result.llvm_ir
     )
+    # The reduction is carried in a register across the route loop ...
+    assert '%"reduce_energy_acc" = alloca float' in result.llvm_ir
+    assert 'fadd fast float %"reduce_energy_cur"' in result.llvm_ir
+    # ... and the fold's avg divides that register scalar by the row count.
+    assert (
+        '%"reduce_energy_avg" = fdiv float %"reduce_energy_final", 0x4031000000000000'
+        in result.llvm_ir
+    )
+    # No strip-mined fold over a materialized buffer, and no per-row accum store.
+    assert 'fold_energy_strip_cond' not in result.llvm_ir
+    assert '%"fold_reduce"' not in result.llvm_ir
+
+
+def test_compile_lockstep_strip_mines_multi_fold_accumulator_route_width():
+    """An accumulator consumed by *more than one* fold is not reduction-fusible,
+    so its writing route still materializes the per-row buffer and each fold
+    strip-mines it -- exercised here at a width-17 accumulator (a full 8-wide
+    chunk plus a 1-element tail)."""
+    source = """
+    shader Capture(in float src, accum float energy) { energy = src; }
+
+    pipeline P {
+        stream<float, 17> input;
+        accumulator<float> energy;
+        uniform float total;
+        uniform float peak;
+
+        bind {
+            energy = Capture(input, energy);
+            uniform float total = fold avg(energy);
+            uniform float peak = fold max(energy);
+        }
+    }
+    """
+
+    result = lockstep_compiler.compile_lockstep(
+        source,
+        semantic_validator=lambda _tree, **_kwargs: [],
+        target_width=8,
+    )
+
+    # Two folds over one accumulator: the per-row buffer must persist to feed
+    # both, so the writing route materializes it and the folds strip-mine it.
     assert 'br label %"fold_energy_strip_cond"' in result.llvm_ir
     assert '%"fold_has_full_chunk" = icmp ult i32 %"fold_index", 16' in result.llvm_ir
     assert '%"fold_index_next" = add i32 %"fold_index", 8' in result.llvm_ir
-    assert 'mul i32 %"idx", 4' in result.llvm_ir
     assert "mul i32 16, 4" in result.llvm_ir
     assert (
         '%"fold_chunk_ptr_next" = getelementptr <8 x float>, '
         '<8 x float>* %"fold_chunk_ptr", i32 1' in result.llvm_ir
     )
-    assert '%"accum_energy_byte_index" = mul i32 %"fold_index", 4' not in result.llvm_ir
-    assert (
-        '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in result.llvm_ir
-    )
+    assert '%"fold_avg" = fdiv float %"fold_reduce", 0x4031000000000000' in result.llvm_ir
+    # Not reduction-fused: no register accumulator.
+    assert 'reduce_energy_acc' not in result.llvm_ir
 
 
 def test_emit_llvm_ir_honors_explicit_target_width_override():

@@ -369,6 +369,13 @@ def emit_llvm_ir(
         else _simd_width_for_target_triple(module.triple)
     )
 
+    # Populated per pipeline (see the dispatch loop): accumulators consumed by
+    # exactly one fold and written by exactly one earlier kernel route, which the
+    # writing route reduces in-register instead of materializing.
+    _reducible_accums: dict[str, tuple[str, str]] = {}
+    _reducible_writer: dict[str, int] = {}
+    _fused_reductions: dict[str, tuple[ir.Value, str]] = {}
+
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
@@ -806,6 +813,7 @@ def emit_llvm_ir(
         modifier: str | None,
         current: ir.Value,
         local_slots: dict[str, ir.AllocaInstr] | None = None,
+        accum_overrides: dict[str, ir.Value] | None = None,
     ) -> ir.Value:
         local_slots = local_slots or {}
         if modifier == "in" and arg_name in local_slots:
@@ -821,6 +829,11 @@ def emit_llvm_ir(
                     "stream", arg_name, param.type.pointee, clamped_index
                 )
             return _load_tick_param("stream", arg_name, param.type, clamped_index)
+        if modifier == "accum" and accum_overrides and arg_name in accum_overrides:
+            # Fold-into-kernel fusion: point the accumulator at a per-row scratch
+            # slot instead of the O(rows) arena buffer.  The caller reads the
+            # scratch back and folds it into a register accumulator.
+            return accum_overrides[arg_name]
         if modifier == "accum" and arg_name in accum_slots:
             return _load_tick_param_ptr("accum", arg_name, param.type.pointee, current)
         if modifier == "uniform" and arg_name in uniform_slots:
@@ -833,6 +846,7 @@ def emit_llvm_ir(
         *,
         local_slots: dict[str, ir.AllocaInstr] | None = None,
         output_index: ir.Value | None = None,
+        accum_overrides: dict[str, ir.Value] | None = None,
     ) -> ir.Value | None:
         callee, params = _kernel_function_and_params(route.kernel)
         if callee is None:
@@ -857,6 +871,7 @@ def emit_llvm_ir(
                     modifier=modifier,
                     current=current,
                     local_slots=local_slots,
+                    accum_overrides=accum_overrides,
                 )
             )
             if call_arg is None and modifier == "out" and arg_name in stream_slots:
@@ -931,7 +946,16 @@ def emit_llvm_ir(
             )
         return result
 
-    def _lower_kernel_route(route: AstKernelBindRoute):
+    def _lower_kernel_route(
+        route: AstKernelBindRoute, *, allow_reduction_fusion: bool = False
+    ):
+        # Reduction fusion only applies to a standalone kernel route (dispatched
+        # on its own), never to a route lowered as part of a fused group's
+        # per-stage fallback -- there the per-row accumulator buffer is still the
+        # interface between stages and the differential fusion tests rely on it.
+        if allow_reduction_fusion and _route_reduction_fusible(route):
+            _lower_reduction_route(route)
+            return
         trip_count = _kernel_route_trip_count(route)
         kernel_name = route.kernel
 
@@ -2040,12 +2064,251 @@ def emit_llvm_ir(
         uniform_name = route.uniform_name
         if source_name not in accum_slots or uniform_name not in uniform_slots:
             return
+        # If the writing kernel route already reduced this accumulator in-register
+        # (fold-into-kernel fusion), consume that value instead of re-reducing the
+        # per-row buffer -- which the fused route never materialized.
+        fused = _fused_reductions.get(source_name)
+        if fused is not None:
+            reduced_value, fused_type_name = fused
+            _store_value("uniform", uniform_name, reduced_value, fused_type_name)
+            return
         uniform_type_name = _type_name(route.uniform_type)
         uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
         reduced = _reduce_fold(route.operator, source_name, uniform_type)
         _store_value("uniform", uniform_name, reduced, uniform_type_name)
 
+    # --- Fold-into-kernel fusion -------------------------------------------
+    #
+    # A per-row ``accum`` buffer that is consumed by exactly one ``fold`` is a
+    # pure reduction intermediate: the kernel writes each row's partial and the
+    # fold strip-mines the buffer back down to a scalar.  Materializing the whole
+    # buffer every tick just to re-read it is the throughput gap against
+    # hand-written C (which keeps the reduction in a register).  When an
+    # accumulator qualifies, the writing route keeps the same scalar per-row loop
+    # (which clang auto-vectorizes into contiguous vector loads/stores) but folds
+    # each row's partial into a loop-carried *local* register accumulator --
+    # ``fadd fast`` for sum/avg so LLVM reassociates it into a vector reduction,
+    # ``fcmp``+``select`` for min/max -- and never touches the O(rows) buffer.  The
+    # per-row partial comes from a scratch slot seeded to zero (the arena's
+    # zero-init value), so the fused scalar equals a reduction over the same
+    # per-tick contributions the buffer path folds -- the linear "consumed by a
+    # fold" contract; ``tests/test_fold_reduction_fusion.py`` checks it against
+    # both the strip-mine path and an independent host sum.  The arena still
+    # reserves the buffer (ABI unchanged); it is simply left untouched.  Only
+    # standalone kernel routes take this path; fused multi-stage groups still
+    # materialize the buffer.
+    def _reduction_identity(uniform_type: ir.Type, operator: str) -> ir.Constant:
+        is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
+        if is_float:
+            if operator == "min":
+                return ir.Constant(uniform_type, float("inf"))
+            if operator == "max":
+                return ir.Constant(uniform_type, float("-inf"))
+            return ir.Constant(uniform_type, 0.0)
+        if isinstance(uniform_type, ir.IntType):
+            if operator == "min":
+                return ir.Constant(uniform_type, (1 << (uniform_type.width - 1)) - 1)
+            if operator == "max":
+                return ir.Constant(uniform_type, -(1 << (uniform_type.width - 1)))
+            return ir.Constant(uniform_type, 0)
+        return ir.Constant(uniform_type, None)
+
+    def _reduction_combine(
+        operator: str, lhs: ir.Value, rhs: ir.Value, uniform_type: ir.Type, name: str
+    ) -> ir.Value:
+        # Scalar fold step run once per row into the loop-carried accumulator.
+        # For float sum/avg the add carries ``fast`` so LLVM's loop vectorizer is
+        # free to reassociate it into a vector reduction -- exactly what lets the
+        # whole loop stay vectorized without the per-row arena buffer.
+        is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
+        if operator in {"sum", "avg"}:
+            if is_float:
+                return tick_builder.fadd(lhs, rhs, name=name, flags=["fast"])
+            return tick_builder.add(lhs, rhs, name=name)
+        if operator in {"min", "max"}:
+            cmp_op = "<" if operator == "min" else ">"
+            if is_float:
+                predicate = tick_builder.fcmp_ordered(
+                    cmp_op, rhs, lhs, name=f"{name}_cmp"
+                )
+            else:
+                predicate = tick_builder.icmp_signed(
+                    cmp_op, rhs, lhs, name=f"{name}_cmp"
+                )
+            return tick_builder.select(predicate, rhs, lhs, name=name)
+        return lhs
+
+    def _route_reduction_fusible(route: AstKernelBindRoute) -> bool:
+        if not isinstance(route, AstKernelBindRoute):
+            return False
+        if route.kernel in filter_names:
+            return False
+        signature = kernel_signatures.get(route.kernel)
+        if signature is None:
+            return False
+        _, params = signature
+        accum_args = [
+            (index, param)
+            for index, param in enumerate(params)
+            if param.modifier == "accum"
+        ]
+        if not accum_args:
+            return False
+        for index, _param in accum_args:
+            arg_name = route.args[index] if index < len(route.args) else ""
+            if arg_name not in _reducible_accums:
+                return False
+            if _reducible_writer.get(arg_name) != id(route):
+                return False
+        return True
+
+    def _lower_reduction_route(route: AstKernelBindRoute) -> None:
+        # Same scalar per-row loop as ``_lower_kernel_route`` (which clang
+        # auto-vectorizes into contiguous vector loads/stores), but the
+        # accumulator is redirected from the O(rows) arena buffer to a per-row
+        # scratch slot that is folded into a loop-carried register accumulator.
+        # LLVM promotes both allocas out of memory, so the buffer traffic
+        # disappears and the fold reduces in-register -- matching hand-written C.
+        _, params = kernel_signatures[route.kernel]
+        trip_count = _kernel_route_trip_count(route)
+        kernel_symbol = _sanitize_symbol(route.kernel)
+
+        # accum_name -> (acc_slot, operator, uniform_type, uniform_type_name)
+        reductions: dict[str, tuple[ir.AllocaInstr, str, ir.Type, str]] = {}
+        for index, param in enumerate(params):
+            if param.modifier != "accum":
+                continue
+            accum_name = route.args[index] if index < len(route.args) else ""
+            info = _reducible_accums.get(accum_name)
+            if info is None:
+                continue
+            operator, uniform_type_name = info
+            uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+            acc_slot = tick_builder.alloca(
+                uniform_type, name=f"reduce_{_sanitize_symbol(accum_name)}_acc"
+            )
+            tick_builder.store(_reduction_identity(uniform_type, operator), acc_slot)
+            reductions[accum_name] = (acc_slot, operator, uniform_type, uniform_type_name)
+
+        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"reduce_{kernel_symbol}_idx")
+        tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+        loop_cond = tick.append_basic_block(f"reduce_{kernel_symbol}_cond")
+        loop_body = tick.append_basic_block(f"reduce_{kernel_symbol}_body")
+        loop_exit = tick.append_basic_block(f"reduce_{kernel_symbol}_exit")
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_cond)
+        current = tick_builder.load(index_ptr, name="reduce_idx")
+        cond = tick_builder.icmp_signed(
+            "<", current, ir.Constant(ir.IntType(32), trip_count), name="reduce_active"
+        )
+        tick_builder.cbranch(cond, loop_body, loop_exit)
+
+        tick_builder.position_at_end(loop_body)
+        # A fresh per-row scratch slot per accumulator, seeded to zero (the
+        # arena's zero-init value) so the kernel body yields this row's partial.
+        scratch: dict[str, ir.Value] = {}
+        for accum_name, (_slot, _op, uniform_type, _utn) in reductions.items():
+            row_slot = tick_builder.alloca(
+                uniform_type, name=f"reduce_{_sanitize_symbol(accum_name)}_row"
+            )
+            tick_builder.store(ir.Constant(uniform_type, None), row_slot)
+            scratch[accum_name] = row_slot
+        _emit_kernel_call(route, current, accum_overrides=scratch)
+        for accum_name, (acc_slot, operator, uniform_type, _utn) in reductions.items():
+            delta = tick_builder.load(
+                scratch[accum_name], name=f"reduce_{_sanitize_symbol(accum_name)}_row_val"
+            )
+            current_acc = tick_builder.load(
+                acc_slot, name=f"reduce_{_sanitize_symbol(accum_name)}_cur"
+            )
+            combined = _reduction_combine(
+                operator,
+                current_acc,
+                delta,
+                uniform_type,
+                f"reduce_{_sanitize_symbol(accum_name)}_next",
+            )
+            tick_builder.store(combined, acc_slot)
+        next_index = tick_builder.add(
+            current, ir.Constant(ir.IntType(32), 1), name="reduce_idx_next"
+        )
+        tick_builder.store(next_index, index_ptr)
+        tick_builder.branch(loop_cond)
+
+        tick_builder.position_at_end(loop_exit)
+        for accum_name, (acc_slot, operator, uniform_type, uniform_type_name) in reductions.items():
+            reduced: ir.Value = tick_builder.load(
+                acc_slot, name=f"reduce_{_sanitize_symbol(accum_name)}_final"
+            )
+            if operator == "avg":
+                lane_count = max(int(accum_sizes.get(accum_name, 1)), 1)
+                if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
+                    reduced = tick_builder.fdiv(
+                        reduced,
+                        ir.Constant(uniform_type, float(lane_count)),
+                        name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
+                    )
+                else:
+                    reduced = tick_builder.sdiv(
+                        reduced,
+                        ir.Constant(uniform_type, lane_count),
+                        name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
+                    )
+            _fused_reductions[accum_name] = (reduced, uniform_type_name)
+
     for pipeline_index, pipeline in enumerate(program.pipelines):
+        # Determine which accumulators can be folded in-register for this
+        # pipeline: consumed by exactly one fold (with a reducible operator/type)
+        # and written by exactly one kernel route that precedes that fold.
+        _reducible_accums.clear()
+        _reducible_writer.clear()
+        _fused_reductions.clear()
+        _accum_writers: dict[str, list[tuple[int, int]]] = {}
+        _fold_consumers: dict[str, list[tuple[int, AstFoldBindRoute]]] = {}
+        for position, bind_route in enumerate(pipeline.bind_routes):
+            if isinstance(bind_route, AstKernelBindRoute):
+                _, route_params = kernel_signatures.get(bind_route.kernel, (None, ()))
+                for param_index, param in enumerate(route_params):
+                    if param.modifier != "accum":
+                        continue
+                    accum_arg = (
+                        bind_route.args[param_index]
+                        if param_index < len(bind_route.args)
+                        else ""
+                    )
+                    _accum_writers.setdefault(accum_arg, []).append(
+                        (position, id(bind_route))
+                    )
+            elif isinstance(bind_route, AstFoldBindRoute):
+                _fold_consumers.setdefault(bind_route.source, []).append(
+                    (position, bind_route)
+                )
+        for accum_name, consumers in _fold_consumers.items():
+            if len(consumers) != 1:
+                continue
+            writers = _accum_writers.get(accum_name, [])
+            if len(writers) != 1:
+                continue
+            writer_position, writer_id = writers[0]
+            fold_position, fold_route = consumers[0]
+            if writer_position >= fold_position:
+                continue
+            uniform_type_name = _type_name(fold_route.uniform_type)
+            uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+            is_reducible_type = isinstance(
+                uniform_type, (ir.FloatType, ir.DoubleType, ir.IntType)
+            )
+            if not is_reducible_type or fold_route.operator not in {
+                "sum",
+                "avg",
+                "min",
+                "max",
+            }:
+                continue
+            _reducible_accums[accum_name] = (fold_route.operator, uniform_type_name)
+            _reducible_writer[accum_name] = writer_id
+
         route_texts = [route.route for route in pipeline.bind_routes]
         route_ir = []
         for route in pipeline.bind_routes:
@@ -2135,7 +2398,7 @@ def emit_llvm_ir(
                 continue
             optimized_route_counts[route.route] = remaining_optimized_routes - 1
             if isinstance(route, AstKernelBindRoute):
-                _lower_kernel_route(route)
+                _lower_kernel_route(route, allow_reduction_fusion=True)
                 continue
             _lower_fold_route(route)
 

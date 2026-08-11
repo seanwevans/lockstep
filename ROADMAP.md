@@ -20,6 +20,7 @@ Each links to the code that provides it.
 | Single-arena-pointer `Lockstep_Tick` ABI | `codegen.py`, `examples/minimal_host.c` |
 | Parameterized SIMD width (`--target-width`, `LOCKSTEP_SIMD_WIDTH`) | `codegen.py`, `c_header.py`, `tests/test_target_width_execution.py` |
 | Fused-vector lowering, incl. accumulator-stage fusion | `codegen.py`, `benchmarks/native/fusion_probe.py` |
+| Fold-into-kernel fusion (single-fold accumulator reduced in-register, no per-row buffer; reaches hand-written-C parity on `particle_energy`) | `codegen.py` (`_lower_reduction_route`), `benchmarks/native/lockstep_vs_c.py`, `tests/test_fold_reduction_fusion.py` |
 | Arena size-overflow checking + C `static_assert` (`LCK502`) | `arena_layout.py`, `c_header.py` |
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |

@@ -9,11 +9,13 @@ version), so treat these as a concrete reference point and a relative/regression
 signal, not a portable constant. What is portable is the *shape* of the results:
 SIMD-friendly SoA layout beats AoS by an order of magnitude, and stage fusion
 recovers a multiple-x throughput win over the per-stage loops codegen emits
-today. The flip side is also measured and reported honestly: against an
-idiomatic single-pass **hand-written C** baseline (table 4), Lockstep's shipped
-code loses on every workload today — by ~20% on a single fused kernel and by
-~4–6× on the multi-stage filter pipelines — which quantifies exactly what the
-codegen work in [`../ROADMAP.md`](../ROADMAP.md) is worth.
+today. The flip side is measured and reported honestly too: against an idiomatic
+single-pass **hand-written C** baseline (table 4), the single fused-kernel
+workload (`particle_energy`) now runs **at parity** — after codegen learned to
+fuse a fold's reduction into the writing kernel loop instead of materializing a
+per-row accumulator buffer — while the multi-stage filter pipelines still trail
+by ~4–6×, which quantifies exactly what the remaining codegen work in
+[`../ROADMAP.md`](../ROADMAP.md) (fusing through filters) is worth.
 
 ## Host environment
 
@@ -133,27 +135,33 @@ python benchmarks/native/lockstep_vs_c.py --iterations 5000
 
 | workload | rows/tick | Lockstep Mrows/s | C Mrows/s | **ratio (C time / Lockstep time)** |
 | --- | ---: | ---: | ---: | ---: |
-| particle_energy | 32,768 | 620.7 | 768.4 | **0.81×** |
-| telemetry_filter_aggregation | 65,536 | 574.8 | 3402.5 | **0.17×** |
-| multi_stage_pipeline | 131,072 | 392.1 | 1793.1 | **0.22×** |
+| particle_energy | 32,768 | 689.3 | 697.6 | **0.99×** |
+| telemetry_filter_aggregation | 65,536 | 581.0 | 3137.3 | **0.19×** |
+| multi_stage_pipeline | 131,072 | 373.1 | 1766.7 | **0.21×** |
 
-`ratio >= 1.0` would mean Lockstep matches or beats hand-written C. On this host
-**hand-written C wins every workload** — this is the "something that beats us on
-raw numbers," and the shape of the gap is the point:
+`ratio >= 1.0` means Lockstep matches or beats hand-written C.
 
-* **`particle_energy`** is a single fused kernel — the case Lockstep is meant to
-  nail — yet it trails C by ~20% (ratio ~0.81, and stable across `--target-width`,
-  so it isn't SIMD width). Lockstep loads/stores the arena through byte-addressed
-  pointers while the C reference walks typed contiguous columns and contracts its
-  multiplies into FMAs under `-ffast-math`. Emitting typed column pointers and
-  `contract`/`fast` flags on *kernel* arithmetic (not just reductions) is the
-  improvement this points at.
-* **`telemetry_filter_aggregation` (~5.9×)** and **`multi_stage_pipeline` (~4.6×)**
+* **`particle_energy` — now at parity (~0.99×, and it beats C outright on some
+  runs; the ratio spans ~0.86–1.00 across repeats on this noisy host).** It used
+  to trail C by ~20%, and the whole gap was one thing: the `accum` was lowered as
+  a per-row `[rows × f32]` arena buffer that the tick **read-modify-wrote every
+  row**, then a separate `fold` strip-mined it back to a scalar — while C keeps
+  the sum in a register. Codegen now performs **fold-into-kernel fusion**: when an
+  accumulator is written by a single standalone route and consumed by exactly one
+  `fold`, the reduction is carried in a loop-carried register across the route
+  loop and the O(rows) buffer is never touched (the arena still *reserves* it, so
+  the ABI is unchanged). The folded scalar is bit-identical to the strip-mine path
+  (verified in `tests/test_fold_reduction_fusion.py`). See
+  [`native/README.md`](native/README.md#fold-into-kernel-fusion).
+* **`telemetry_filter_aggregation` (~5.4×)** and **`multi_stage_pipeline` (~4.7×)**
   are multi-stage pipelines ending in a filter. Codegen emits one strip-mined loop
   **per stage** and materializes the intermediate streams, so the single-pass C
   reference makes one trip through memory instead of two or three. This is the
   same gap `fusion_probe.py` measures internally, now against a real external
-  baseline: it is what fusing-through-filters would recover.
+  baseline: it is what fusing-through-filters would recover. (Their accumulator
+  stages sit inside the filter group, so they keep the per-row buffer rather than
+  fusing the fold — the dominant cost there is the intermediate streams, not the
+  accumulator.)
 
 Absolute Mrows/s are host-dependent; the **ratio** is the portable signal.
 
