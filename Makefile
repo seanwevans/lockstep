@@ -1,6 +1,14 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion
 
-verify: test mypy
+verify: lint test mypy
+
+# Minimum overall statement+branch coverage for the shipped package. Kept a few
+# points below the current level so ordinary variation never fails CI; ratchet
+# it upward as coverage improves.
+COV_FAIL_UNDER = 70
+
+lint:
+	ruff check lockstep_compiler
 
 verify-parser-toolchain:
 	python scripts/generate_parser.py --verify-toolchain
@@ -39,7 +47,8 @@ test:
 	pytest
 
 test-cov:
-	pytest --cov=. --cov-branch --cov-report=term-missing --cov-report=xml:coverage.xml
+	pytest --cov=lockstep_compiler --cov-branch --cov-report=term-missing \
+		--cov-report=xml:coverage.xml --cov-fail-under=$(COV_FAIL_UNDER)
 
 mypy:
 	python -m mypy

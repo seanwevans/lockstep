@@ -34,6 +34,19 @@ target-version = ["py311"]
 include = "\\.pyi?$"
 extend-exclude = "generated/"
 
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+# Generated parser code is not hand-maintained; never lint it.
+extend-exclude = ["generated"]
+
+[tool.ruff.lint]
+# pycodestyle errors (E) + pyflakes (F) + pycodestyle warnings (W). E501
+# (line-too-long) is intentionally disabled: Black owns line length, and
+# enabling it here would only produce noise that fights the formatter.
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
 [tool.coverage.run]
 branch = true
 source = ["."]
