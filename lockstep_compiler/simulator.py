@@ -1,11 +1,15 @@
 import json
 import os
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 import shutil
 import subprocess
 import tempfile
-from typing import Any, cast
+from typing import Any, Callable, cast
+
+if sys.platform != "win32":
+    import resource
 
 from llvmlite import ir
 
@@ -186,6 +190,50 @@ def _simulator_runtime_command() -> tuple[str, ...] | None:
     return None
 
 
+# Resource ceilings applied to the subprocess that executes generated native
+# code (the fold-reduction program, or `lli` interpreting the generated IR).
+# They are generous enough never to trip on a real reduction but bound a
+# pathological or malicious generated program: a CPU spin, an allocation blow-up,
+# or an attempt to fill the disk. This is defense in depth on top of the
+# wall-clock timeout, which alone does not cap memory or output size. POSIX only;
+# where rlimits are unavailable (Windows) the subprocess falls back to the
+# wall-clock timeout.
+_SUBPROCESS_CPU_SECONDS = 10
+_SUBPROCESS_ADDRESS_SPACE_BYTES = 512 * 1024 * 1024
+_SUBPROCESS_FILE_SIZE_BYTES = 64 * 1024 * 1024
+
+
+def _clamp_rlimit(which: int, soft: int) -> None:  # pragma: no cover - child
+    """Lower the soft limit of a resource, never raising above the inherited
+    hard limit and never failing the launch if the platform rejects it."""
+    try:
+        _, hard = resource.getrlimit(which)
+    except (ValueError, OSError):
+        return
+    limit = soft
+    if hard != resource.RLIM_INFINITY:
+        limit = min(soft, hard)
+    try:
+        resource.setrlimit(which, (limit, hard))
+    except (ValueError, OSError):
+        pass
+
+
+def _subprocess_resource_limits() -> Callable[[], None] | None:
+    """Return a ``preexec_fn`` that clamps CPU time, address space, output file
+    size, and core dumps for a child process, or ``None`` where unsupported."""
+    if sys.platform == "win32":
+        return None
+
+    def _apply() -> None:  # pragma: no cover - executed in the forked child
+        _clamp_rlimit(resource.RLIMIT_CPU, _SUBPROCESS_CPU_SECONDS)
+        _clamp_rlimit(resource.RLIMIT_AS, _SUBPROCESS_ADDRESS_SPACE_BYTES)
+        _clamp_rlimit(resource.RLIMIT_FSIZE, _SUBPROCESS_FILE_SIZE_BYTES)
+        _clamp_rlimit(resource.RLIMIT_CORE, 0)
+
+    return _apply
+
+
 def _run_reduce_subprocess(values: list[float]) -> float:
     command = _simulator_runtime_command()
     if command is None:
@@ -215,6 +263,7 @@ def _run_reduce_subprocess(values: list[float]) -> float:
             capture_output=True,
             text=True,
             timeout=5,
+            preexec_fn=_subprocess_resource_limits(),
         )
 
     return float(completed.stdout.strip())
