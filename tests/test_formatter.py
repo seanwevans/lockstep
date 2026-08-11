@@ -51,7 +51,58 @@ def test_lexer_preserves_line_comments_in_token_stream():
     assert comments == ["// keep me"]
 
 
-def test_format_lockstep_source_preserves_comments_by_skipping_reformat():
+def test_format_lockstep_source_preserves_trailing_and_own_line_comments():
+    source = (
+        "// header note\n"
+        "struct Particle{\n"
+        "float pos; // position\n"
+        "float vel;\n"
+        "};\n"
+    )
+
+    assert format_lockstep_source(source) == (
+        "// header note\n"
+        "struct Particle {\n"
+        "    float pos;  // position\n"
+        "    float vel;\n"
+        "};\n"
+    )
+
+
+def test_format_lockstep_source_indents_comment_before_closing_brace():
+    source = "pipeline Main{stream<float,4> s;bind{\n// nothing yet\n}}\n"
+
+    assert format_lockstep_source(source) == (
+        "pipeline Main {\n"
+        "    stream<float,4> s;\n"
+        "    bind {\n"
+        "        // nothing yet\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def test_format_lockstep_source_is_idempotent_with_comments():
+    source = (
+        "// header note\n"
+        "struct P{\n"
+        "float pos; // position\n"
+        "};\n"
+    )
+
+    once = format_lockstep_source(source)
+    assert format_lockstep_source(once) == once
+
+
+def test_format_lockstep_source_preserves_comment_only_file():
+    source = "// just a comment\n// another\n"
+
+    assert format_lockstep_source(source) == source
+
+
+def test_format_lockstep_source_leaves_invalid_source_with_comments_untouched():
+    # Missing bind block -> parse error; comments can't be safely re-placed, so
+    # the source is returned verbatim rather than dropping the comment.
     source = "pipeline Main{ // keep me\nstream<float,4> s;\n}\n"
 
     assert format_lockstep_source(source) == source
