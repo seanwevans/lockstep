@@ -1,0 +1,34 @@
+struct Event {
+    int deviceId;
+    float value;
+};
+
+struct Alert {
+    int deviceId;
+    float score;
+};
+
+shader Normalize(in Event src, out Event dst) {
+    dst.deviceId = src.deviceId;
+    dst.value = src.value * 0.1;
+}
+
+shader Score(in Event src, out Alert dst, accum float scoreSum) {
+    float score = src.value * 1.6;
+    scoreSum = scoreSum + score;
+    dst.deviceId = src.deviceId;
+    dst.score = score;
+}
+
+pipeline Scoring {
+    stream<Event, 4096> eventsRaw;
+    stream<Event, 4096> eventsEnriched;
+    stream<Alert, 4096> alertsScored;
+    accumulator<float> scoreSum;
+
+    bind {
+        eventsEnriched = Normalize(eventsRaw, eventsEnriched);
+        alertsScored = Score(eventsEnriched, alertsScored, scoreSum);
+        uniform float totalScore = fold sum(scoreSum);
+    }
+}

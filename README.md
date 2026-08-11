@@ -189,6 +189,16 @@ make lock-deps
 
 CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hashes` during installation so builds fail if hashes do not match.
 
+### Codegen snapshot tests
+
+`tests/test_golden_ir.py` pins the exact LLVM IR and generated C header for a curated corpus (`tests/golden/programs/*.lock`) that exercises the main lowering paths — plain shaders, accumulators with `fold`, filters, and fused accumulator pipelines. Any codegen change that alters the output fails the test with a unified diff, so ABI or lowering changes are reviewed deliberately. The snapshots are deterministic and target-pinned, so they are stable across the CI matrix. When a change is intentional, regenerate and review the diff:
+
+```bash
+LOCKSTEP_UPDATE_GOLDEN=1 pytest tests/test_golden_ir.py
+# or:
+python tests/golden/regenerate.py
+```
+
 ### Benchmarking and regression checks
 
 Real measured results from every harness below — captured on a documented host — are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).

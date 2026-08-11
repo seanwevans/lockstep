@@ -1,0 +1,31 @@
+struct Reading {
+    int sensorId;
+    float value;
+    bool valid;
+};
+
+filter DropInvalid(in Reading src, out Reading dst) {
+    dst.sensorId = src.sensorId;
+    dst.value = src.value;
+    dst.valid = src.valid;
+}
+
+shader Aggregate(in Reading src, out Reading dst, accum float total) {
+    total = total + src.value;
+    dst.sensorId = src.sensorId;
+    dst.value = src.value;
+    dst.valid = src.valid;
+}
+
+pipeline Telemetry {
+    stream<Reading, 4096> readingsRaw;
+    stream<Reading, 4096> readingsValid;
+    stream<Reading, 4096> readingsAggregated;
+    accumulator<float> total;
+
+    bind {
+        readingsValid = DropInvalid(readingsRaw, readingsValid);
+        readingsAggregated = Aggregate(readingsValid, readingsAggregated, total);
+        uniform float grandTotal = fold sum(total);
+    }
+}
