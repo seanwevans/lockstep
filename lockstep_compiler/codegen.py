@@ -1755,8 +1755,14 @@ def emit_llvm_ir(
             trip_count = max(trip_count, stream_capacities[route.target])
         return max(trip_count, 1)
 
-    def _clamped_stream_index(name: str, current: ir.Value) -> ir.Value:
-        raw_capacity = stream_capacities.get(name, 0)
+    def _clamped_stream_index(
+        name: str, current: ir.Value, kind: str = "stream"
+    ) -> ir.Value:
+        raw_capacity = (
+            accum_sizes.get(name, 0)
+            if kind == "accum"
+            else stream_capacities.get(name, 0)
+        )
         safe_capacity = max(int(raw_capacity), 1)
         max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
         return _vector_i32_clamp(current, ir.Constant(ir.IntType(32), 0), max_index)
@@ -2174,8 +2180,12 @@ def emit_llvm_ir(
                 param_type_name = _type_name(param.declared_type)
                 if _vectorizable_leaf_fields(param_type_name) is None:
                     return False
-                if param.modifier == "accum":
-                    return False
+                # ``accum`` parameters are per-row read-modify-write leaves: the
+                # fused loop loads the current accumulator slot vector, runs the
+                # kernel body, and stores the result back (see
+                # _emit_vector_fused_chunk).  The horizontal ``fold`` reduction
+                # over the buffer runs later, unchanged, so fusing an
+                # accumulating stage is value-identical to the per-stage loops.
                 type_env[_sanitize_symbol(param.name)] = param_type_name
             for statement in kernel_decl.body:
                 if not isinstance(statement, supported_statements):
@@ -2611,13 +2621,20 @@ def emit_llvm_ir(
             _splat_to_vector(current, vector_ty), lanes, name="fused_lane_indices"
         )
 
-    def _stream_has_contiguous_vector_chunk(name: str, chunk_trip_count: int) -> bool:
-        return name in stream_capacities and stream_capacities[name] >= chunk_trip_count
+    def _binding_capacity(kind: str, name: str) -> int:
+        if kind == "accum":
+            return int(accum_sizes.get(name, 0))
+        return int(stream_capacities.get(name, 0))
+
+    def _stream_has_contiguous_vector_chunk(
+        name: str, chunk_trip_count: int, kind: str = "stream"
+    ) -> bool:
+        return _binding_capacity(kind, name) >= chunk_trip_count
 
     def _stream_vector_ptr(
-        name: str, scalar_ty: ir.Type, current: ir.Value
+        name: str, scalar_ty: ir.Type, current: ir.Value, kind: str = "stream"
     ) -> ir.Value | None:
-        scalar_ptr = _load_tick_param_ptr("stream", name, scalar_ty, current)
+        scalar_ptr = _load_tick_param_ptr(kind, name, scalar_ty, current)
         if scalar_ptr is None:
             return None
         vector_ty = ir.VectorType(scalar_ty, simd_width)
@@ -2632,10 +2649,11 @@ def emit_llvm_ir(
         scalar_ty: ir.Type,
         current: ir.Value,
         chunk_trip_count: int,
+        kind: str = "stream",
     ) -> ir.Value:
         vector_ty = ir.VectorType(scalar_ty, simd_width)
-        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count):
-            vector_ptr = _stream_vector_ptr(name, scalar_ty, current)
+        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count, kind):
+            vector_ptr = _stream_vector_ptr(name, scalar_ty, current, kind)
             if vector_ptr is not None:
                 vector_load = tick_builder.load(
                     vector_ptr, name=f"fused_{_sanitize_symbol(name)}_vector"
@@ -2651,8 +2669,8 @@ def emit_llvm_ir(
                 ir.Constant(ir.IntType(32), lane),
                 name=f"fused_load_lane_{lane}_idx",
             )
-            clamped = _clamped_stream_index(name, lane_index)
-            lane_value = _load_tick_param("stream", name, scalar_ty, clamped)
+            clamped = _clamped_stream_index(name, lane_index, kind)
+            lane_value = _load_tick_param(kind, name, scalar_ty, clamped)
             result = tick_builder.insert_element(
                 result,
                 lane_value,
@@ -2666,10 +2684,11 @@ def emit_llvm_ir(
         value: ir.Value,
         current: ir.Value,
         chunk_trip_count: int,
+        kind: str = "stream",
     ) -> None:
         scalar_ty = value.type.element
-        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count):
-            vector_ptr = _stream_vector_ptr(name, scalar_ty, current)
+        if _stream_has_contiguous_vector_chunk(name, chunk_trip_count, kind):
+            vector_ptr = _stream_vector_ptr(name, scalar_ty, current, kind)
             if vector_ptr is not None:
                 vector_store = tick_builder.store(value, vector_ptr)
                 vector_store.align = 1
@@ -2682,8 +2701,8 @@ def emit_llvm_ir(
                 ir.Constant(ir.IntType(32), lane),
                 name=f"fused_store_lane_{lane}_idx",
             )
-            clamped = _clamped_stream_index(name, lane_index)
-            ptr = _load_tick_param_ptr("stream", name, scalar_ty, clamped)
+            clamped = _clamped_stream_index(name, lane_index, kind)
+            ptr = _load_tick_param_ptr(kind, name, scalar_ty, clamped)
             if ptr is not None:
                 lane_value = tick_builder.extract_element(
                     value,
@@ -2697,6 +2716,7 @@ def emit_llvm_ir(
         type_name: str,
         current: ir.Value,
         chunk_trip_count: int,
+        kind: str = "stream",
     ) -> dict[tuple[str, ...], ir.Value]:
         leaves = _vectorizable_leaf_fields(type_name)
         if leaves is None:
@@ -2705,7 +2725,7 @@ def emit_llvm_ir(
         for rel_path, (scalar_ty, leaf_type_name) in leaves.items():
             if not rel_path:
                 loaded[rel_path] = _load_stream_vector(
-                    name, scalar_ty, current, chunk_trip_count
+                    name, scalar_ty, current, chunk_trip_count, kind
                 )
                 continue
             vector_ty = ir.VectorType(scalar_ty, simd_width)
@@ -2717,9 +2737,9 @@ def emit_llvm_ir(
                     ir.Constant(ir.IntType(32), lane),
                     name=f"fused_load_lane_{lane}_idx",
                 )
-                clamped = _clamped_stream_index(name, lane_index)
+                clamped = _clamped_stream_index(name, lane_index, kind)
                 lane_value = _load_value(
-                    "stream",
+                    kind,
                     name,
                     scalar_ty,
                     leaf_type_name,
@@ -2744,6 +2764,7 @@ def emit_llvm_ir(
         values: dict[tuple[str, ...], ir.Value],
         current: ir.Value,
         chunk_trip_count: int,
+        kind: str = "stream",
     ) -> None:
         leaves = _vectorizable_leaf_fields(type_name)
         if leaves is None:
@@ -2753,7 +2774,7 @@ def emit_llvm_ir(
             if value is None:
                 continue
             if not rel_path:
-                _store_stream_vector(name, value, current, chunk_trip_count)
+                _store_stream_vector(name, value, current, chunk_trip_count, kind)
                 continue
             lane_indices = _vector_lane_indices(current)
             for lane in range(simd_width):
@@ -2762,7 +2783,7 @@ def emit_llvm_ir(
                     ir.Constant(ir.IntType(32), lane),
                     name=f"fused_store_lane_{lane}_idx",
                 )
-                clamped = _clamped_stream_index(name, lane_index)
+                clamped = _clamped_stream_index(name, lane_index, kind)
                 lane_value = tick_builder.extract_element(
                     value,
                     ir.Constant(ir.IntType(32), lane),
@@ -2772,7 +2793,7 @@ def emit_llvm_ir(
                     ),
                 )
                 _store_value(
-                    "stream",
+                    kind,
                     name,
                     lane_value,
                     leaf_type_name,
@@ -2792,6 +2813,7 @@ def emit_llvm_ir(
             kernel_decl, params = signature
             vector_lowerer = _FusedVectorLowerer()
             out_params: list[tuple[str, str, str]] = []
+            accum_params: list[tuple[str, str, str]] = []
             for index, param in enumerate(params):
                 arg_name = route.args[index] if index < len(route.args) else ""
                 param_type_name = _type_name(param.declared_type)
@@ -2836,6 +2858,21 @@ def emit_llvm_ir(
                         ).items():
                             vector_lowerer.set_slot_leaf(param.name, rel_path, value)
                     out_params.append((arg_name, param.name, param_type_name))
+                elif param.modifier == "accum" and arg_name in accum_slots:
+                    # An accumulator slot is a per-row read-modify-write buffer:
+                    # seed the vector lowerer with the current window so kernel
+                    # bodies that read the accumulator (``acc = acc + delta``)
+                    # observe the same value the scalar path would, then store
+                    # the updated window back below.
+                    for rel_path, value in _load_stream_binding_vectors(
+                        arg_name,
+                        param_type_name,
+                        current,
+                        chunk_trip_count,
+                        "accum",
+                    ).items():
+                        vector_lowerer.set_slot_leaf(param.name, rel_path, value)
+                    accum_params.append((arg_name, param.name, param_type_name))
             for statement in kernel_decl.body:
                 vector_lowerer.lower_statement(statement)
             for arg_name, param_name, param_type_name in out_params:
@@ -2853,6 +2890,23 @@ def emit_llvm_ir(
                     _store_stream_binding_vectors(
                         arg_name, param_type_name, values, current, chunk_trip_count
                     )
+            for arg_name, param_name, param_type_name in accum_params:
+                values = vector_lowerer.slot_leaf_values(param_name)
+                if (
+                    not values
+                    and vector_lowerer._key((param_name,)) in vector_lowerer.values
+                ):
+                    values = {
+                        (): vector_lowerer.values[vector_lowerer._key((param_name,))]
+                    }
+                _store_stream_binding_vectors(
+                    arg_name,
+                    param_type_name,
+                    values,
+                    current,
+                    chunk_trip_count,
+                    "accum",
+                )
 
     def _lower_fused_kernel_group(
         routes: tuple[AstKernelBindRoute, ...], group_index: int

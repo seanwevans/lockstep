@@ -46,8 +46,10 @@ python benchmarks/native/run_native.py --iterations 4000
 
 `particle_energy` (single fused kernel) reaches ~34 GiB/s of arena traffic. The
 two accumulator pipelines sit lower per row because codegen emits one
-strip-mined loop **per stage** and materializes intermediate streams — see the
-fusion probe below for exactly how much that costs.
+strip-mined loop **per stage** and materializes intermediate streams: both end
+in a filter, and codegen still lowers filter-containing groups per stage (the
+`accum` restriction on fusion has since been lifted — see the fusion probe
+below).
 
 ---
 
@@ -84,8 +86,8 @@ stay firmly above 1× — which is the point: SoA is a win across the whole rang
 Runs the `multi_stage_pipeline` computation two ways over identical SoA data:
 `unfused` (three loops writing/re-reading intermediates, as codegen emits today)
 vs `fused` (one loop, intermediates in registers, as the optimizer already
-*plans*). Identical results (checked), so the delta is exactly the win a
-fusion-through-accumulators codegen change would recover.
+*plans*). Identical results (checked), so the delta is the win fusing the whole
+group recovers.
 
 ```bash
 python benchmarks/native/fusion_probe.py
@@ -99,12 +101,14 @@ python benchmarks/native/fusion_probe.py
 | 256,000 | 631.9 | 6229.5 | **9.9×** |
 | 1,000,000 | 650.0 | 3329.7 | **5.1×** |
 
-Even at memory-bound sizes the fused form runs ~5× faster. Codegen skips this
-fusion whenever a stage takes an `accum` parameter (`_can_vectorize_fused_group`
-bails on `param.modifier == "accum"`), so `multi_stage_pipeline` and
-`telemetry_filter_aggregation` both fall back to per-stage loops. Lifting that
-restriction is the highest-leverage codegen throughput opportunity for
-accumulator pipelines.
+Even at memory-bound sizes the fully fused form runs ~5× faster. Codegen used to
+skip this fusion whenever a stage took an `accum` parameter; that restriction has
+been lifted, and a pure accumulator pipeline (no filter) now fuses — measuring
+~1.9× over per-stage loops on this host. `multi_stage_pipeline` and
+`telemetry_filter_aggregation` still fall back to per-stage loops because each
+group ends in a **filter**, whose data-dependent compacting store the vector
+path does not yet lower. Fusing through the trailing filter is the highest-
+leverage remaining codegen throughput opportunity for these pipelines.
 
 ---
 
