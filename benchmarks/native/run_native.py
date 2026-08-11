@@ -161,8 +161,8 @@ def _classify_streams(entities: dict) -> tuple[set[str], list[str]]:
     return inputs, outputs
 
 
-def _build_plan(name: str, source: str) -> WorkloadPlan:
-    result = compile_lockstep(source, verbose=False)
+def _build_plan(name: str, source: str, target_width: int = 8) -> WorkloadPlan:
+    result = compile_lockstep(source, verbose=False, target_width=target_width)
     ir_text = getattr(result, "llvm_ir", "") or ""
     header_text = getattr(result, "c_header", "") or ""
     entities = result.entities if hasattr(result, "entities") else {}
@@ -337,13 +337,14 @@ def _run_workload(
     warmup: int,
     clang: str,
     keep_dir: Path | None,
+    target_width: int = 8,
 ) -> dict[str, object]:
     source_path = WORKLOAD_DIR / f"{name}.lock"
     if not source_path.exists():
         raise BenchmarkError(f"workload source not found: {source_path}")
     source = source_path.read_text(encoding="utf-8")
 
-    plan = _build_plan(name, source)
+    plan = _build_plan(name, source, target_width)
 
     work_dir = keep_dir / name if keep_dir else Path(tempfile.mkdtemp(prefix=f"lsnat_{name}_"))
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +395,7 @@ def _run_workload(
 
     return {
         "workload": name,
+        "target_width": target_width,
         "rows_per_tick": rows,
         "arena_bytes": plan.arena_bytes,
         "per_tick_us": round(per_tick_ns / 1000.0, 4),
@@ -424,6 +426,16 @@ def main() -> int:
         help="Untimed warmup ticks before measurement (default: 20).",
     )
     parser.add_argument("--clang", default="clang", help="C/LLVM compiler to use.")
+    parser.add_argument(
+        "--target-width",
+        type=int,
+        default=8,
+        help=(
+            "SIMD vector width the compiler lowers to (default: 8). Sweep this to "
+            "measure how the emitted vector width affects throughput on the host; "
+            "results are host-dependent and wider is not always faster."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     parser.add_argument(
         "--output",
@@ -439,6 +451,8 @@ def main() -> int:
 
     if args.iterations <= 0:
         raise SystemExit("--iterations must be positive")
+    if args.target_width <= 0:
+        raise SystemExit("--target-width must be positive")
 
     clang = shutil.which(args.clang)
     if clang is None:
@@ -450,13 +464,21 @@ def main() -> int:
     results: list[dict[str, object]] = []
     for name in selected:
         results.append(
-            _run_workload(name, args.iterations, args.warmup, clang, args.keep_artifacts)
+            _run_workload(
+                name,
+                args.iterations,
+                args.warmup,
+                clang,
+                args.keep_artifacts,
+                args.target_width,
+            )
         )
 
     payload = {
         "schema_version": 1,
         "kind": "native_execution",
         "iterations": args.iterations,
+        "target_width": args.target_width,
         "results": results,
     }
 
@@ -468,7 +490,10 @@ def main() -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
-    print(f"Native execution benchmarks ({args.iterations} ticks each, {clang})\n")
+    print(
+        f"Native execution benchmarks ({args.iterations} ticks each, "
+        f"target-width {args.target_width}, {clang})\n"
+    )
     header = (
         "| workload | rows/tick | arena | per_tick_us | Mrows/s | GiB/s |"
     )

@@ -71,6 +71,31 @@ python benchmarks/native/run_native.py --output native-results.json --keep-artif
 Absolute numbers depend on the host CPU, so treat them as relative/regression
 signals rather than portable constants.
 
+### Sweeping the SIMD width
+
+`--target-width` selects the SIMD vector width the compiler lowers to (the same
+knob as `lockstepc --target-width` and the `LOCKSTEP_SIMD_WIDTH` header macro;
+default 8). Sweep it to measure how the emitted vector width affects throughput
+on a given host:
+
+```bash
+for w in 4 8 16; do
+  python benchmarks/native/run_native.py --workload particle_energy --target-width $w
+done
+```
+
+The width is a *performance* knob only — every width computes identical results
+(pinned by `tests/test_target_width_execution.py`). **Wider is not automatically
+faster.** The width flows into the manual fused-vector lowering path (fused
+pipelines and fold reductions); the single-kernel workloads are scalar loops
+that `clang` auto-vectorizes regardless, so their timings barely move with it.
+Where the width does flow through, going past the native register width tends to
+*lose* throughput — on an AVX-512 host, `--target-width 16` runs a fused
+accumulator pipeline slower than the default 8, because the SoA lane
+gather/scatter the fused path emits grows with the width and AVX-512 carries a
+frequency penalty. The default of 8 (256-bit / AVX2-shaped) is a good portable
+choice; treat wider as something to measure per host, not assume.
+
 ## SoA-vs-AoS layout micro-benchmark
 
 `soa_vs_aos.py` isolates and quantifies *why* Lockstep decomposes structs into
