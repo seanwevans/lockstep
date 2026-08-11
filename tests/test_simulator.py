@@ -868,3 +868,47 @@ def test_simulate_pipeline_entities_defaults_to_python_mode_without_runtime_bina
         )["uniforms"]["total"]
         == 5.0
     )
+
+
+def test_build_reduce_program_ir_emits_fast_math_without_raising():
+    # Regression: the reduction IR builder used `instr.fastmath.add(...)`, an
+    # attribute llvmlite instructions do not have, so it raised AttributeError
+    # for every input and left the opt-in LLVM reduction path dead. Fast-math
+    # flags must be passed to the builder call instead.
+    from lockstep_compiler.simulator import _build_reduce_program_ir
+
+    ir_text = _build_reduce_program_ir([1.0, 2.0, 3.0])
+    assert "fadd fast" in ir_text
+
+
+def test_run_reduce_subprocess_sums_values_end_to_end():
+    # Exercises the real out-of-process path (previous tests mocked it, which is
+    # how the AttributeError went unnoticed). Skips when no toolchain is present.
+    import pytest
+
+    from lockstep_compiler.simulator import (
+        _run_reduce_subprocess,
+        _simulator_runtime_command,
+    )
+
+    if _simulator_runtime_command() is None:
+        pytest.skip("no clang/lli runtime toolchain available")
+
+    assert _run_reduce_subprocess([1.0, 2.0, 3.0, 4.0]) == pytest.approx(10.0)
+
+
+def test_jit_numeric_reduce_llvm_runtime_matches_python():
+    import pytest
+
+    from lockstep_compiler.simulator import (
+        _jit_numeric_reduce,
+        _simulator_runtime_command,
+    )
+
+    if _simulator_runtime_command() is None:
+        pytest.skip("no clang/lli runtime toolchain available")
+
+    values = [1.5, 2.5, 3.0]
+    llvm_result = _jit_numeric_reduce("sum", values, use_llvm_runtime=True)
+    python_result = _jit_numeric_reduce("sum", values)
+    assert llvm_result == pytest.approx(python_result)

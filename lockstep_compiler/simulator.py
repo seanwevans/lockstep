@@ -134,8 +134,10 @@ def _build_reduce_program_ir(values: list[float]) -> str:
     builder.position_at_end(loop_body)
     row_ptr = builder.gep(data_arg, [idx_phi], inbounds=True, name="row_ptr")
     row_value = builder.load(row_ptr, name="row")
-    next_acc = builder.fadd(acc_phi, row_value, name="next_acc")
-    next_acc.fastmath.add("fast")
+    # Fast-math flags must be passed to the builder call; llvmlite instructions
+    # have no `.fastmath` attribute (the old form raised AttributeError, which
+    # left the opt-in LLVM reduction path dead for every input).
+    next_acc = builder.fadd(acc_phi, row_value, name="next_acc", flags=["fast"])
     next_idx = builder.add(idx_phi, ir.Constant(int_ty, 1), name="next_idx")
     builder.branch(loop_cond)
 
