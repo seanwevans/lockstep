@@ -40,3 +40,7 @@ python benchmarks/run_workloads.py
 python benchmarks/run_workloads.py --iterations 5
 python benchmarks/run_workloads.py --workload particle_energy --json
 ```
+
+## Published results
+
+Real measured results from all of the harnesses in this directory — captured on a documented host with reproduction commands — are published in [`RESULTS.md`](RESULTS.md).

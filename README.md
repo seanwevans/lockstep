@@ -191,6 +191,8 @@ CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hash
 
 ### Benchmarking and regression checks
 
+Real measured results from every harness below — captured on a documented host — are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
+
 Generate benchmark output locally:
 
 ```bash
