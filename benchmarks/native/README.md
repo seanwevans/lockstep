@@ -188,16 +188,13 @@ python benchmarks/native/lockstep_vs_c.py --workload particle_energy --target-wi
 ```
 
 `ratio = C time / Lockstep time`: `>= 1.0` means Lockstep matches or beats
-hand-written C, `< 1.0` means the C baseline wins. On the current host **C wins
-every workload**, and the shape of the gap is the useful part:
+hand-written C, `< 1.0` means the C baseline wins. The shape of the result is the
+useful part:
 
-* `particle_energy` — a single fused kernel, the case Lockstep is supposed to
-  nail. It still trails hand-written C by ~20–25% (ratio ~0.77–0.80, stable
-  across `--target-width`). The gap isn't SIMD width; it's that Lockstep loads
-  and stores the arena through byte-addressed pointers while the C reference
-  walks typed contiguous columns and contracts its multiplies into FMAs under
-  `-ffast-math`. Emitting typed column pointers (and `contract`/`fast` flags on
-  kernel arithmetic, not just reductions) is the improvement this points at.
+* `particle_energy` — a single fused kernel, and now **at parity** with
+  hand-written C (ratio ~0.99, and above 1.0 on some runs). It used to trail by
+  ~20%; see [Fold-into-kernel fusion](#fold-into-kernel-fusion) below for what
+  closed the gap.
 * `telemetry_filter_aggregation` and `multi_stage_pipeline` — multi-stage
   pipelines ending in a filter. Codegen lowers them to one strip-mined loop per
   stage and materializes the intermediate streams, so the single-pass C
@@ -207,4 +204,39 @@ every workload**, and the shape of the gap is the useful part:
   fusing-through-filters would recover.
 
 This is the harness to reach for when the question is "what beats us on raw
-numbers." Today, hand-written C does — and the ratios say exactly where and why.
+numbers" — and the one that proved the single fused kernel reached C parity.
+
+### Fold-into-kernel fusion
+
+`particle_energy`'s ~20% deficit turned out to be a single cause, isolated with
+this harness: the `accumulator<float>` it folds was lowered as a per-row
+`[rows × f32]` **arena buffer** that `Lockstep_Tick` read-modify-wrote on every
+row, after which a separate `fold` strip-mined the buffer back down to a scalar.
+Hand-written C keeps the running sum in a register. Patching the generated IR to
+drop the buffer traffic recovered almost exactly the missing throughput, pinning
+the buffer — not SIMD width or FMAs — as the whole gap.
+
+Codegen now eliminates it directly. When an accumulator is **written by a single
+standalone kernel route and consumed by exactly one `fold`**, the writing route
+folds each row's partial into a loop-carried register accumulator (`fadd fast`
+for a sum/avg; `fcmp`+`select` for min/max) and the fold reads that scalar — the
+O(rows) buffer is never written or re-read. The arena still *reserves* the
+accumulator slots, so `LOCKSTEP_ARENA_BYTES` and the header/IR ABI are unchanged;
+the buffer is simply left untouched. Because the per-row combination order mirrors
+the strip-mine reduction, the folded scalar is bit-identical to the un-fused path
+(`tests/test_fold_reduction_fusion.py` runs both and an independent host sum and
+asserts they agree).
+
+The fusion is deliberately scoped:
+
+* **Single standalone route only.** Routes lowered as part of a fused multi-stage
+  group's per-stage fallback keep materializing the buffer — there it is the
+  interface between stages, and the differential fusion tests depend on it.
+* **Exactly one fold consumer.** An accumulator read by two folds (e.g. `fold
+  max` *and* `fold sum` over the same buffer) keeps the buffer so both folds can
+  strip-mine it.
+
+That is why `telemetry_filter_aggregation` and `multi_stage_pipeline` above do
+**not** pick it up: their accumulator stages sit inside a filter group. Their
+dominant cost is the materialized intermediate streams anyway — fusing through
+the trailing filter (see the fusion probe) is the lever for those.
