@@ -1,0 +1,20 @@
+struct Pixel {
+    float r;
+    float g;
+    float b;
+};
+
+shader Brighten(in Pixel src, out Pixel dst, uniform float gain) {
+    dst.r = src.r * gain;
+    dst.g = src.g * gain;
+    dst.b = src.b * gain;
+}
+
+pipeline Image {
+    stream<Pixel, 1024> pixelsIn;
+    stream<Pixel, 1024> pixelsOut;
+    uniform float gain = 1.5;
+    bind {
+        pixelsOut = Brighten(pixelsIn, pixelsOut, gain);
+    }
+}

@@ -1,0 +1,35 @@
+struct Particle {
+    int id;
+    float px;
+    float py;
+    float vx;
+    float vy;
+    float mass;
+};
+
+shader IntegrateAndAccumulate(
+    in Particle src,
+    out Particle dst,
+    accum float kineticEnergy
+) {
+    float speed2 = (src.vx * src.vx) + (src.vy * src.vy);
+    kineticEnergy = kineticEnergy + (0.5 * src.mass * speed2);
+
+    dst.id = src.id;
+    dst.px = src.px + src.vx;
+    dst.py = src.py + src.vy;
+    dst.vx = src.vx * 0.995;
+    dst.vy = src.vy * 0.995;
+    dst.mass = src.mass;
+}
+
+pipeline ParticleEnergy {
+    stream<Particle, 2048> particlesIn;
+    stream<Particle, 2048> particlesOut;
+    accumulator<float> kineticEnergy;
+
+    bind {
+        particlesOut = IntegrateAndAccumulate(particlesIn, particlesOut, kineticEnergy);
+        uniform float totalEnergy = fold sum(kineticEnergy);
+    }
+}
