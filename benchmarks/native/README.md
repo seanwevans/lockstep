@@ -3,6 +3,9 @@
 These benchmarks measure the **compiled machine code** Lockstep generates, not
 the Python frontend.
 
+Real measured results from these harnesses, on a documented host, are published
+in [`../RESULTS.md`](../RESULTS.md).
+
 Lockstep's other benchmark harnesses time the toolchain:
 
 | Harness | What it measures |
