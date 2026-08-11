@@ -809,7 +809,7 @@ def _compile_lockstep_with_dependencies(
         if "target_width" in emit_signature.parameters:
             emit_kwargs["target_width"] = target_width
         if "bind_optimization" in emit_signature.parameters:
-            emit_kwargs["bind_optimization"] = bind_optimization        
+            emit_kwargs["bind_optimization"] = bind_optimization
         try:
             llvm_ir = emit_llvm_ir(
                 typed_ast,
