@@ -91,7 +91,7 @@ entry:
   ret i1 1
 }
 
-define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")
+define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* noalias nocapture %"arena")
 {
 entry:
   %"DropInvalid_idx" = alloca i32

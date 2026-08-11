@@ -117,7 +117,7 @@ def test_compile_lockstep_works_without_passing_parser_classes(monkeypatch):
 
     assert result.llvm_ir.startswith('; ModuleID = "lockstep"\n')
     assert (
-        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")'
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* noalias nocapture %"arena")'
         in result.llvm_ir
     )
 
@@ -435,7 +435,10 @@ def test_emit_llvm_ir_generates_expected_declarations():
     assert 'define float @"pure_demo"()' in llvm_ir
     assert 'define void @"shader_ApplyGravity"()' in llvm_ir
     assert 'define i1 @"filter_Cull"()' in llvm_ir
-    assert 'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")' in llvm_ir
+    assert (
+        'define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* noalias nocapture %"arena")'
+        in llvm_ir
+    )
     assert "; bind: out = ApplyGravity(inp, out, energy, dt);" in llvm_ir
     assert 'declare float @"llvm.maxnum.f32"(float %".1", float %".2")' in llvm_ir
     assert 'declare float @"llvm.minnum.f32"(float %".1", float %".2")' in llvm_ir

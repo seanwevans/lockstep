@@ -32,10 +32,13 @@ Each links to the code that provides it.
 
 **Backend**
 
-- **Emit `noalias` on arena pointers.** The static arena, SoA decomposition, and
-  saturated write indices make arena pointer parameters provably non-aliasing.
-  Emitting `noalias` — with a short soundness argument in a `PROOFS.md` — unlocks
-  alias-sensitive LLVM optimizations the backend currently forgoes.
+- **Scoped alias metadata on arena-derived pointers.** `Lockstep_Tick`'s arena
+  parameter is already `noalias nocapture` (provably sound — the sole pointer
+  parameter). What remains is disambiguating the individual stream/accumulator
+  pointers *inside* the tick: emitting `noalias` on kernel pointer parameters
+  (guarded by a whole-program check that no bind route feeds one resource to two
+  pointer params) and/or `!alias.scope` metadata per disjoint arena region,
+  backed by a short soundness argument in a `PROOFS.md`.
 - **Filter-group fusion.** Accumulator stages already fuse; the remaining
   unfused case is a stage group containing a `filter`
   (see `benchmarks/native/README.md`).
