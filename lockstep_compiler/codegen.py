@@ -32,6 +32,7 @@ from .ast import (
     _normalize_type,
 )
 from .arena_layout import build_ast_arena_layout
+from .codegen_intrinsics import lower_intrinsic_call
 from .optimizer import _parse_bind_route, optimize_bind_routes
 from .utils import decode_escape_sequences
 from .utils import sanitize_symbol as _sanitize_symbol
@@ -79,130 +80,12 @@ class _FunctionLowerer:
     def _compiler_error(self, message: str) -> None:
         raise CodegenError(message)
 
-    def _declare_llvm_intrinsic(
-        self, intrinsic_name: str, arg_type: ir.Type
-    ) -> ir.Function:
-        if isinstance(arg_type, ir.FloatType):
-            suffix = "f32"
-        elif isinstance(arg_type, ir.DoubleType):
-            suffix = "f64"
-        else:
-            self._compiler_error(
-                f"intrinsic '{intrinsic_name}' expects float or double arguments"
-            )
-        llvm_name = f"llvm.{intrinsic_name}.{suffix}"
-        intrinsic = self.module.globals.get(llvm_name)
-        if intrinsic is not None:
-            return intrinsic
-        fn_type = ir.FunctionType(arg_type, [arg_type, arg_type])
-        return ir.Function(self.module, fn_type, name=llvm_name)
-
-    def _float_intrinsic_type(self, name: str, args: list[ir.Value]) -> ir.Type:
-        if not args or not all(
-            isinstance(arg.type, (ir.FloatType, ir.DoubleType)) for arg in args
-        ):
-            self._compiler_error(f"intrinsic '{name}' expects float arguments")
-        first_type = args[0].type
-        if not all(arg.type == first_type for arg in args):
-            self._compiler_error(f"intrinsic '{name}' expects matching float arguments")
-        return first_type
-
-    def _declare_unary_llvm_intrinsic(
-        self, intrinsic_name: str, arg_type: ir.Type
-    ) -> ir.Function:
-        if isinstance(arg_type, ir.FloatType):
-            suffix = "f32"
-        elif isinstance(arg_type, ir.DoubleType):
-            suffix = "f64"
-        else:
-            self._compiler_error(
-                f"intrinsic '{intrinsic_name}' expects float or double arguments"
-            )
-        llvm_name = f"llvm.{intrinsic_name}.{suffix}"
-        intrinsic = self.module.globals.get(llvm_name)
-        if intrinsic is not None:
-            return intrinsic
-        fn_type = ir.FunctionType(arg_type, [arg_type])
-        return ir.Function(self.module, fn_type, name=llvm_name)
-
     def _lower_intrinsic_call(self, name: str, args: list[ir.Value]) -> ir.Value | None:
-        if name == "step" and len(args) == 2:
-            arg_type = self._float_intrinsic_type(name, args)
-            edge, x_val = args
-            cmp_result = self.builder.fcmp_ordered(">=", x_val, edge, name="step_cmp")
-            return self.builder.uitofp(cmp_result, arg_type, name="step")
-
-        if name == "mix" and len(args) == 3:
-            arg_type = self._float_intrinsic_type(name, args)
-            a, b, t = args
-            one_minus_t = self.builder.fsub(
-                ir.Constant(arg_type, 1.0), t, name="mix_one_minus_t"
-            )
-            return self.builder.fadd(
-                self.builder.fmul(a, one_minus_t),
-                self.builder.fmul(b, t),
-                name="mix",
-            )
-
-        if name == "max" and len(args) == 2:
-            arg_type = self._float_intrinsic_type(name, args)
-            maxnum = self._declare_llvm_intrinsic("maxnum", arg_type)
-            return self.builder.call(maxnum, args, name="max")
-
-        if name == "min" and len(args) == 2:
-            arg_type = self._float_intrinsic_type(name, args)
-            minnum = self._declare_llvm_intrinsic("minnum", arg_type)
-            return self.builder.call(minnum, args, name="min")
-
-        if name == "clamp" and len(args) == 3:
-            arg_type = self._float_intrinsic_type(name, args)
-            x_val, min_value, max_value = args
-            maxnum = self._declare_llvm_intrinsic("maxnum", arg_type)
-            minnum = self._declare_llvm_intrinsic("minnum", arg_type)
-            clamped_min = self.builder.call(
-                maxnum, [x_val, min_value], name="clamp_min"
-            )
-            return self.builder.call(minnum, [clamped_min, max_value], name="clamp")
-
-        if name == "abs" and len(args) == 1:
-            arg_type = self._float_intrinsic_type(name, args)
-            fabs = self._declare_unary_llvm_intrinsic("fabs", arg_type)
-            return self.builder.call(fabs, args, name="abs")
-
-        if name == "sign" and len(args) == 1:
-            arg_type = self._float_intrinsic_type(name, args)
-            x = args[0]
-            zero = ir.Constant(arg_type, 0.0)
-            pos = self.builder.fcmp_ordered(">", x, zero, name="sign_pos")
-            neg = self.builder.fcmp_ordered("<", x, zero, name="sign_neg")
-            pos_f = self.builder.uitofp(pos, arg_type, name="sign_pos_f")
-            neg_f = self.builder.uitofp(neg, arg_type, name="sign_neg_f")
-            return self.builder.fsub(pos_f, neg_f, name="sign")
-
-        if name == "smoothstep" and len(args) == 3:
-            arg_type = self._float_intrinsic_type(name, args)
-            edge0, edge1, x = args
-            # t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
-            diff = self.builder.fsub(x, edge0, name="ss_diff")
-            range_val = self.builder.fsub(edge1, edge0, name="ss_range")
-            t_raw = self.builder.fdiv(diff, range_val, name="ss_t_raw")
-            maxnum = self._declare_llvm_intrinsic("maxnum", arg_type)
-            minnum = self._declare_llvm_intrinsic("minnum", arg_type)
-            t_clamped = self.builder.call(
-                maxnum, [t_raw, ir.Constant(arg_type, 0.0)], name="ss_clamp_lo"
-            )
-            t = self.builder.call(
-                minnum, [t_clamped, ir.Constant(arg_type, 1.0)], name="ss_t"
-            )
-            # result = t * t * (3 - 2 * t)
-            two_t = self.builder.fmul(ir.Constant(arg_type, 2.0), t, name="ss_2t")
-            three_minus_2t = self.builder.fsub(
-                ir.Constant(arg_type, 3.0), two_t, name="ss_3m2t"
-            )
-            t_sq = self.builder.fmul(t, t, name="ss_tsq")
-            return self.builder.fmul(t_sq, three_minus_2t, name="smoothstep")
-
-        return None
+        # Scalar builtin-intrinsic lowering lives in `codegen_intrinsics`; this
+        # method just supplies the current builder/module and error callback.
+        return lower_intrinsic_call(
+            self.builder, self.module, name, args, self._compiler_error
+        )
 
     def _struct_name_for_type(self, llvm_type: ir.Type) -> str | None:
         for name, known_ty in self.known_structs.items():
