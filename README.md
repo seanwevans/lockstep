@@ -115,9 +115,12 @@ coercions**.
 Lockstep targets **LLVM IR** directly.
 
 * **Single-arena ABI.** Kernels receive a `struct Lockstep_Arena*` and compute
-  byte offsets into it. The backend does not yet emit blanket `noalias` on
-  arena-derived pointers, so do not assume alias-based optimizations from the
-  arena representation alone (see [ROADMAP.md](ROADMAP.md)).
+  byte offsets into it. `Lockstep_Tick`'s arena parameter is marked
+  `noalias nocapture` (it is the sole pointer parameter and every access is
+  derived from it, so it is provably non-aliasing — a `restrict`-like guarantee
+  at the ABI boundary). Scoped alias metadata on the individual arena-derived
+  stream/accumulator pointers inside the tick is not yet emitted, so do not
+  assume full intra-loop alias disambiguation (see [ROADMAP.md](ROADMAP.md)).
 * **SSA locals.** Scalar and concrete-struct locals are lowered through
   SSA-friendly values where possible; arena loads/stores stay byte-addressed for
   ABI stability.

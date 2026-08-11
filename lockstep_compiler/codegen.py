@@ -350,6 +350,16 @@ def emit_llvm_ir(
     )
     arena_ptr = tick.args[0]
     arena_ptr.name = "arena"
+    # The arena is Lockstep_Tick's only pointer parameter, and every memory
+    # access in the tick is derived from it by constant/loop-index GEPs; the only
+    # other memory touched is function-local allocas, which can never alias it.
+    # So the arena provably does not alias anything reachable through a different
+    # pointer -> `noalias`. The tick also never stores the arena pointer itself
+    # anywhere that outlives the call (only values loaded/stored through derived
+    # pointers) -> `nocapture`. Both let LLVM's alias analysis treat the arena
+    # like a C `restrict` pointer at the ABI boundary.
+    arena_ptr.add_attribute("noalias")
+    arena_ptr.add_attribute("nocapture")
 
     tick_entry = tick.append_basic_block("entry")
     tick_builder = ir.IRBuilder(tick_entry)

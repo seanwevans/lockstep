@@ -83,7 +83,7 @@ entry:
   ret void
 }
 
-define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* %"arena")
+define void @"Lockstep_Tick"(%"struct.Lockstep_Arena"* noalias nocapture %"arena")
 {
 entry:
   %"fused_0_idx" = alloca i32
