@@ -102,36 +102,38 @@ narrow (but stay well above 1×) once the sweep goes memory-bound at large sizes
 `fusion_probe.py` quantifies throughput lost to un-fused multi-stage pipelines.
 Lockstep's optimizer already plans stage fusion — for `multi_stage_pipeline` it
 reports `alertsActive = FUSED[Normalize -> Score -> KeepActive]` with
-`eliminated_intermediates: [eventsEnriched, alertsScored]` — but the code
-generator only emits that single fused loop when `_can_vectorize_fused_group`
-passes, and that check bails on any group whose kernel takes an `accum`
-parameter:
+`eliminated_intermediates: [eventsEnriched, alertsScored]` — and the code
+generator emits that single fused loop when `_can_vectorize_fused_group` passes.
 
-```python
-if param.modifier == "accum":
-    return False
-```
+Historically that check bailed on any group whose kernel took an `accum`
+parameter, so accumulator pipelines always fell back to one strip-mined loop per
+stage. **That `accum` restriction has been lifted:** a group of pure shaders
+that accumulates now fuses into a single vector loop that carries each
+accumulator slot in a register across the fused body and writes it back per row
+(the horizontal `fold` reduction runs afterwards, unchanged). A pure two-stage
+accumulator pipeline measures ~1.9× faster fused than as per-stage loops on the
+current host.
 
-`multi_stage_pipeline` (its `Score` stage) and `telemetry_filter_aggregation`
-(its `AggregateReadings` stage) both accumulate, so codegen falls back to one
-strip-mined loop **per stage** — each streaming the whole arena and materializing
-the intermediate streams the optimizer said it would eliminate. That extra memory
-traffic is why those workloads sit well below the `memcpy` roofline in
-`run_native.py`.
+The remaining blocker for the shipped `multi_stage_pipeline` and
+`telemetry_filter_aggregation` workloads is the **trailing filter** in each
+group (`KeepActive` / the telemetry keep stage): `_lower_fused_kernel_group`
+still falls back to per-stage lowering for any group containing a filter, because
+a filter's compacting store has a data-dependent write index that the current
+vector path does not lower. Fusing through filters is the next codegen step; the
+probe below still bounds the win available once it lands.
 
 The probe runs the multi_stage computation two ways over identical SoA data —
-`unfused` (three loops writing/re-reading intermediates, as codegen emits today)
-and `fused` (one loop, intermediates in registers, accumulating on the fly, as
-the optimizer plans) — and reports the speedup. Both produce identical results
-(checked), so the delta is exactly the win a fusion-through-accumulators codegen
-change would recover.
+`unfused` (three loops writing/re-reading intermediates) and `fused` (one loop,
+intermediates in registers, accumulating on the fly) — and reports the speedup.
+Both produce identical results (checked), so the delta is the win fusing the
+whole group recovers.
 
 ```bash
 python benchmarks/native/fusion_probe.py
 make bench-fusion
 ```
 
-On the current host the fused form runs roughly **5×** faster than the un-fused
-form even at memory-bound sizes, so lifting the `accum` restriction on stage
-fusion is the highest-leverage codegen throughput opportunity for pipelines that
-accumulate.
+On the current host the fully fused form runs roughly **5×** faster than the
+un-fused form even at memory-bound sizes, so extending fusion through the
+trailing filter is the highest-leverage remaining codegen throughput opportunity
+for these pipelines.
