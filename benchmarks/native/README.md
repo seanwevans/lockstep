@@ -162,3 +162,49 @@ On the current host the fully fused form runs roughly **5×** faster than the
 un-fused form even at memory-bound sizes, so extending fusion through the
 trailing filter is the highest-leverage remaining codegen throughput opportunity
 for these pipelines.
+
+## Lockstep vs hand-written C
+
+The three harnesses above pit Lockstep against *itself* — SoA vs AoS, fused vs
+per-stage — and Lockstep's model always wins. `lockstep_vs_c.py` asks the honest
+external question instead: for the same computation, does the code Lockstep
+actually **ships** keep up with the obvious single-pass C loop a competent human
+would write by hand?
+
+It links the real `Lockstep_Tick` (compiled from each workload's LLVM IR, exactly
+as `run_native.py` builds it) against a hand-written C reference kernel that
+computes the same end-to-end transform in one fused pass over the same SoA arena
+— identical byte offsets, taken from the generated header. Two identical arenas
+are primed with the same deterministic pattern `run_native.py` uses; both kernels
+are timed in one process; and the harness refuses to report a result unless the
+two paths produce the same output checksum. (Those checksums also match
+`run_native.py`'s for the shared workloads, cross-validating the references.)
+Built with `clang -O3 -march=native -ffast-math`.
+
+```bash
+python benchmarks/native/lockstep_vs_c.py
+make bench-vs-c
+python benchmarks/native/lockstep_vs_c.py --workload particle_energy --target-width 16 --json
+```
+
+`ratio = C time / Lockstep time`: `>= 1.0` means Lockstep matches or beats
+hand-written C, `< 1.0` means the C baseline wins. On the current host **C wins
+every workload**, and the shape of the gap is the useful part:
+
+* `particle_energy` — a single fused kernel, the case Lockstep is supposed to
+  nail. It still trails hand-written C by ~20–25% (ratio ~0.77–0.80, stable
+  across `--target-width`). The gap isn't SIMD width; it's that Lockstep loads
+  and stores the arena through byte-addressed pointers while the C reference
+  walks typed contiguous columns and contracts its multiplies into FMAs under
+  `-ffast-math`. Emitting typed column pointers (and `contract`/`fast` flags on
+  kernel arithmetic, not just reductions) is the improvement this points at.
+* `telemetry_filter_aggregation` and `multi_stage_pipeline` — multi-stage
+  pipelines ending in a filter. Codegen lowers them to one strip-mined loop per
+  stage and materializes the intermediate streams, so the single-pass C
+  reference (one trip through memory instead of two or three) wins by **~5×** and
+  **~4×** respectively. This is the same gap `fusion_probe.py` measures
+  internally, now shown against a real external baseline: it is what
+  fusing-through-filters would recover.
+
+This is the harness to reach for when the question is "what beats us on raw
+numbers." Today, hand-written C does — and the ratios say exactly where and why.

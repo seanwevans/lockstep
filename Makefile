@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion bench-vs-c
 
 verify: lint test mypy
 
@@ -85,3 +85,10 @@ bench-soa:
 # clang on PATH.
 bench-fusion:
 	python benchmarks/native/fusion_probe.py --output fusion-probe-results.json
+
+# Lockstep vs hand-written C: pits the shipped Lockstep_Tick machine code against
+# an idiomatic single-pass C kernel computing the same transform over the same
+# arena. The honest external comparison -- shows where hand-written C still wins.
+# Requires clang on PATH.
+bench-vs-c:
+	python benchmarks/native/lockstep_vs_c.py --output lockstep-vs-c-results.json

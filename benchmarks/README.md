@@ -41,6 +41,19 @@ python benchmarks/run_workloads.py --iterations 5
 python benchmarks/run_workloads.py --workload particle_energy --json
 ```
 
+## Native execution harnesses
+
+The workloads above are also compiled to machine code and measured directly. See
+[`native/README.md`](native/README.md) for the native harnesses:
+
+* `run_native.py` (`make bench-native`) — real `Lockstep_Tick` throughput.
+* `soa_vs_aos.py` (`make bench-soa`) — SoA vs AoS layout win.
+* `fusion_probe.py` (`make bench-fusion`) — fused vs per-stage-loop throughput.
+* `lockstep_vs_c.py` (`make bench-vs-c`) — the shipped `Lockstep_Tick` against an
+  idiomatic single-pass **hand-written C** baseline. The honest external
+  comparison: today hand-written C beats Lockstep on every workload, and the
+  ratios show exactly where and why.
+
 ## Published results
 
 Real measured results from all of the harnesses in this directory — captured on a documented host with reproduction commands — are published in [`RESULTS.md`](RESULTS.md).
