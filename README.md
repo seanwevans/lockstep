@@ -1,64 +1,80 @@
 # Lockstep (Shader-C)
 ![logo.png](logo.png)
 
-**Lockstep** is a data-oriented systems programming language designed for high-throughput, deterministic compute pipelines. It bridges the gap between the productivity of C and the brutal execution efficiency of GPU compute shaders.
+**Lockstep** is a data-oriented systems programming language for high-throughput,
+deterministic compute pipelines — bridging the productivity of C and the
+execution model of GPU compute shaders.
 
-By enforcing a strict **Straight-Line SIMD** execution model and **Static Memory Topology**, Lockstep allows the compiler to generate machine code that is mathematically guaranteed to saturate CPU vector units without the overhead of branch misprediction or cache contention.
+By enforcing **Straight-Line SIMD** execution and a **Static Memory Topology**,
+Lockstep lets the compiler generate machine code built to saturate CPU vector
+units without branch misprediction or cache contention.
 
 ## 1. Core Philosophy
 
-* **Data-Oriented by Design:** Logic is secondary to data flow. Programs are modeled as physical circuits (pipelines) rather than sequences of instructions.
-* **Zero Branching:** Standard control flow (`if`, `for`, `while`) is banned inside compute kernels. Branching is replaced by hardware-native masking and stream-splitting.
-* **Predictable Performance:** No `malloc`, no hidden threads, and no garbage collection. Memory is a static arena provided by the Host.
-* **Deterministic Parallelism:** Race conditions are impossible by construction. State updates are strictly isolated to `out` streams or linear `accumulator` types.
+* **Data-oriented by design.** Programs are modeled as physical circuits
+  (pipelines), not sequences of instructions.
+* **Zero branching.** `if`/`for`/`while` are banned inside kernels; branching is
+  replaced by hardware-native masking and stream-splitting.
+* **Predictable performance.** No `malloc`, no hidden threads, no GC. Memory is a
+  static arena provided by the host.
+* **Deterministic parallelism.** Race conditions are impossible by construction:
+  state updates are isolated to `out` streams or linear `accumulator` types.
 
 ---
 
 ## 2. Language Architecture
 
-### The Pipeline Topology
+### Pipeline topology
 
-A Lockstep program is a Directed Acyclic Graph (DAG) of compute nodes.
+A Lockstep program is a Directed Acyclic Graph (DAG) of compute nodes:
 
-* **`shader`**: A 1-to-1 mapping. Processes one input element and produces one output element.
-* **`filter`**: A 1-to-0/1 mapping. Conditionally passes data to downstream nodes.
-* **`pure`**: A side-effect-free mathematical transform. Strictly inlined.
-* **`pipeline`**: The "circuit board" that binds streams and uniforms to kernels.
+* **`shader`** — 1-to-1: one input element produces one output element.
+* **`filter`** — 1-to-0/1: conditionally passes data downstream.
+* **`pure`** — a side-effect-free transform, strictly inlined.
+* **`pipeline`** — the "circuit board" binding streams and uniforms to kernels.
 
-### The Memory Model
+### Memory model
 
-Lockstep uses a **Host-Owned Static Arena**. The compiler calculates the exact byte-offset for every Struct-of-Arrays (SoA) member at compile-time.
+Lockstep uses a **host-owned static arena**; the compiler computes every
+member's byte offset at compile time.
 
-* **SoA by Default:** Structs are automatically decomposed into parallel primitive arrays to maximize cache line utilization and SIMD width.
-* **Saturated Writes:** To eliminate boundary checks, stream indices use saturation arithmetic. If a stream capacity is exceeded, the final element acts as a "trash can," absorbing further writes without memory corruption or branching.
+* **SoA by default.** Structs are decomposed into parallel primitive arrays (one
+  contiguous array per field) to maximize cache-line and SIMD utilization.
+* **Saturated writes.** Stream indices use saturation arithmetic instead of
+  bounds checks: past capacity, the final element acts as a "trash can" that
+  absorbs writes without corruption or branching.
 
 ---
 
 ## 3. Syntax Guide
 
-### Straight-Line Shaders
+### Straight-line shaders
 
-Since `if/else` is banned, conditional logic is performed using branchless intrinsics like `step`, `mix`, `clamp`, `min`, `max`, `abs`, `sign`, and `smoothstep`.
+With `if`/`else` banned, conditionals use branchless intrinsics —
+`step`, `mix`, `select`, `clamp`, `min`, `max`, `abs`, `sign`, `smoothstep`:
 
 ```c
 shader ApplyPhysics(in Entity ent, out Entity updated, uniform float dt) {
-    // Standard math
     float fall_vy = ent.vy - (9.81 * dt);
     float bounce_vy = -ent.vy * 0.8;
-    
-    // Branchless Branching: step returns 1.0 if ent.y <= 0.0, else 0.0
+
+    // step returns 1.0 if ent.y <= 0.0, else 0.0
     float is_grounded = step(0.0, -ent.y);
-    
+
     // mix(a, b, t) acts as a hardware-level selector
     updated.vy = mix(fall_vy, bounce_vy, is_grounded);
     updated.y = max(ent.y + (updated.vy * dt), 0.0);
 }
-
 ```
 
-### Linear Accumulators
+`select(cond, a, b)` is a branchless typed mux (a `bool` condition and matching
+branch types), complementing the float-interpolating `mix`.
 
-Global reductions (e.g., Total Energy, Max Bounds) are handled via **Linear Types**. Accumulators must be "consumed" by a fold operation, which the compiler lowers into a lock-free parallel reduction tree.
+### Linear accumulators
+
+Global reductions (total energy, bounds, …) use **linear types**. An accumulator
+must be consumed by a `fold`, which the compiler lowers into a parallel reduction
+tree:
 
 ```c
 pipeline Simulation {
@@ -67,297 +83,206 @@ pipeline Simulation {
 
     bind {
         particles = Calculate(particles, energy_sum);
-        // fold sum consumes the linear type and produces a global scalar
+        // fold consumes the linear type and produces a global scalar
         uniform float total_e = fold sum(energy_sum);
     }
 }
-
 ```
 
-### Type System (User-Facing Rules)
+### Type system
 
-Lockstep's semantic validator enforces a strict type system with **no implicit coercions**.
+The semantic validator enforces a **strict type system with no implicit
+coercions**.
 
-#### Primitive types
-
-The currently supported primitive declared types are:
-
-* `int`
-* `uint`
-* `float`
-* `double`
-* `bool`
-* `string`
-
-`uint` uses unsigned integer semantics in code generation; `double` maps to 64-bit floating point. Unknown declared types still produce `LCK310`.
-
-#### Composite/struct type composition
-
-Struct members may use:
-
-* primitives,
-* previously declared struct names, and
-* array suffixes (`T[4]`).
-
-The parser and semantic validator also accept generic-wrapper spelling (`Ctor<T>` / `Ctor<T,4>`, including nested forms) so declarations such as `vector<float,4>` can participate in type checking and arena/header layout. In generated LLVM IR, however, generic-wrapper values are currently lowered as opaque pointers rather than first-class aggregate/vector values. Treat generic wrappers as ABI/layout placeholders, not as kernel-value types for arithmetic, field access, or SIMD computation.
-
-Examples that are supported as declared/layout types:
-
-* `Particle[4]`
-* `vector<float,4>`
-* `matrix<vector<Particle,4>,4>`
-
-Type identity is name-based and exact. Field access chains (`a.b.c`) are valid only when each link resolves to a concrete struct type and an existing field.
-
-#### Type matching and coercion policy
-
-Type checking is strict and explicit:
-
-* No implicit widening or narrowing.
-* No implicit `int`⇄`float` promotion.
-* Assignment, variable initialization, pure-function arguments, pure-function returns, and bind argument/target checks all require exact type equality.
-* Mixed numeric operators (`int` with `float`) without an explicit cast are rejected with `LCK424` (`implicit_numeric_widening`).
-
-When conversion is desired, use an explicit cast.
+* **Primitives:** `int`, `uint`, `float`, `double`, `bool`, `string`. `uint` has
+  unsigned semantics; `double` is 64-bit float. Unknown types produce `LCK310`.
+* **Composites:** struct members may be primitives, previously declared structs,
+  or array suffixes (`T[4]`). Generic-wrapper spellings (`vector<float,4>`,
+  nested `matrix<vector<Particle,4>,4>`) are accepted for type checking and
+  arena/header layout, but are lowered as **opaque pointers** in IR — treat them
+  as ABI/layout placeholders, not as kernel value types for arithmetic, field
+  access, or SIMD. Type identity is name-based and exact; field chains (`a.b.c`)
+  resolve only through concrete struct types.
+* **Coercion:** none implicit — no widening/narrowing, no `int`⇄`float`
+  promotion. Assignments, initializers, `pure` arguments/returns, and bind
+  arguments require exact type equality. Mixed `int`/`float` arithmetic without a
+  cast is rejected with `LCK424`. Use an explicit cast when conversion is wanted.
 
 ---
 
 ## 4. Compiler & Backend
 
-Lockstep targets **LLVM IR** directly to leverage industrial-grade optimization passes.
+Lockstep targets **LLVM IR** directly.
 
-* **Single-arena ABI:** Generated kernels receive a `struct Lockstep_Arena*` and compute byte offsets into that arena. The backend does not currently emit blanket `noalias` decorations for arena-derived pointers, so alias-disambiguation-sensitive optimizations should not be assumed from the arena representation alone.
-* **SSA locals for concrete values:** Local scalar and concrete-struct values are lowered through SSA-friendly LLVM values where possible; arena loads and stores still use byte-addressed offsets for ABI stability.
-* **Manual SIMD lowering:** Stream fusion is vectorized by the backend's fused-vector lowering pass, which strip-mines contiguous stream elements and emits vector loads, stores, arithmetic, and reductions directly. This is separate from relying on LLVM to auto-vectorize scalar loops over the arena.
-* **Fast-Math Reductions:** Reduction loops are emitted with `fast` math flags, permitting LLVM to reassociate floating-point operations into horizontal SIMD shuffles.
+* **Single-arena ABI.** Kernels receive a `struct Lockstep_Arena*` and compute
+  byte offsets into it. The backend does not yet emit blanket `noalias` on
+  arena-derived pointers, so do not assume alias-based optimizations from the
+  arena representation alone (see [ROADMAP.md](ROADMAP.md)).
+* **SSA locals.** Scalar and concrete-struct locals are lowered through
+  SSA-friendly values where possible; arena loads/stores stay byte-addressed for
+  ABI stability.
+* **Manual SIMD lowering.** The fused-vector pass strip-mines contiguous stream
+  elements and emits vector loads, stores, arithmetic, and reductions directly,
+  rather than relying on LLVM auto-vectorization.
+* **Fast-math reductions.** Reduction loops carry `fast` flags so LLVM can
+  reassociate into horizontal SIMD shuffles.
 
 ---
 
 ## 5. Host Integration
 
-The compiler generates a C-compatible header for the Host application (C/C++, Rust, or Zig).
+The compiler emits a C-compatible header for the host (C/C++, Rust, Zig):
 
-1. **Allocate:** Host allocates a `struct Lockstep_Arena` object or a suitably aligned contiguous block of at least `LOCKSTEP_ARENA_BYTES` bytes.
-2. **Prime:** Host writes initial data into the SoA fields and byte offsets provided by the header.
-3. **Tick:** Host calls `Lockstep_Tick(arena)` with a pointer to that arena. There is no separate `Lockstep_BindMemory` entry point.
+1. **Allocate** a `struct Lockstep_Arena` (or an aligned block of at least
+   `LOCKSTEP_ARENA_BYTES`).
+2. **Prime** initial data into the SoA fields at the header's byte offsets.
+3. **Tick** by calling `Lockstep_Tick(arena)`. There is no separate
+   `Lockstep_BindMemory` entry point.
 
-See [`examples/`](examples/) for a minimal end-to-end host app in C (`examples/minimal_host.c`) that includes a generated header, allocates arena memory, primes initial data, and calls `Lockstep_Tick`.
+See [`examples/minimal_host.c`](examples/) for a complete end-to-end host app.
 
 ---
 
-## 6. Compiler Frontend Usage
+## 6. CLI Usage
 
-Install in editable mode to enable the packaged CLI entrypoint:
+Install in editable mode to get the `lockstepc` entry point:
 
 ```bash
 pip install -e .
-lockstepc path/to/program.lock
-# or read source from stdin
-cat path/to/program.lock | lockstepc --dump
-# canonical straight-line formatting
-lockstepc path/to/program.lock --format
-# emit LLVM IR
-lockstepc path/to/program.lock --emit-ir
-# emit C host header
-lockstepc path/to/program.lock --emit-header
-# print compiler version
+
+lockstepc program.lock                 # compile
+cat program.lock | lockstepc --dump    # read stdin, dump entities as JSON
+lockstepc program.lock --format        # canonical straight-line formatting
+lockstepc program.lock --emit-ir       # emit LLVM IR
+lockstepc program.lock --emit-header   # emit C host header
+lockstepc program.lock --simulate      # validate wiring/cardinality
 lockstepc --version
 ```
 
-### Reproducible dependency installs (locked + hashed)
+### Pipeline simulation
 
-Lockstep now tracks pinned lockfiles generated from `pyproject.toml` using `pip-tools`:
+`--simulate` validates pipeline wiring and cardinality before backend
+generation. Provide inputs with `--simulate-input path.json`:
 
-* `requirements.lock` (runtime dependencies)
-* `requirements-test.lock` (runtime + `test` optional group)
-* `requirements-lsp.lock` (runtime + `lsp` optional group)
-
-Install using hash verification:
-
-```bash
-python -m pip install --require-hashes -r requirements.lock
-python -m pip install --require-hashes -r requirements-test.lock
-python -m pip install --require-hashes -r requirements-lsp.lock
+```json
+{
+  "streams": { "raw_positions": [{"id": 1}, {"id": 2, "_keep": false}] },
+  "accumulators": { "energy": [0.5, 1.5] }
+}
 ```
 
-Refresh lockfiles after dependency changes:
+Output includes per-route `input_count`/`output_count`, updated stream
+snapshots, accumulator contents, and folded uniforms. Folds (`sum`/`avg`) run in
+deterministic pure-Python mode by default (including mixed `int`/`float`/`bool`
+accumulators). An opt-in LLVM-backed reduction runs when `LOCKSTEP_SIM_USE_LLVM=1`
+(or `use_llvm_runtime=True`); it executes out of process under POSIX resource
+limits and reports an explicit error if `clang`/`lli` is missing rather than
+silently falling back.
 
-```bash
-python -m pip install --upgrade pip pip-tools
-make lock-deps
-```
-
-CI enforces lockfile freshness (`make check-lock-deps`) and uses `--require-hashes` during installation so builds fail if hashes do not match.
-
-### Codegen snapshot tests
-
-`tests/test_golden_ir.py` pins the exact LLVM IR and generated C header for a curated corpus (`tests/golden/programs/*.lock`) that exercises the main lowering paths — plain shaders, accumulators with `fold`, filters, and fused accumulator pipelines. Any codegen change that alters the output fails the test with a unified diff, so ABI or lowering changes are reviewed deliberately. The snapshots are deterministic and target-pinned, so they are stable across the CI matrix. When a change is intentional, regenerate and review the diff:
-
-```bash
-LOCKSTEP_UPDATE_GOLDEN=1 pytest tests/test_golden_ir.py
-# or:
-python tests/golden/regenerate.py
-```
-
-### Benchmarking and regression checks
-
-Real measured results from every harness below — captured on a documented host — are published in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
-
-Generate benchmark output locally:
-
-```bash
-make bench
-```
-
-This writes `benchmark-results.json` in the repository root. The CI workflow uploads this file as an artifact for every pull-request benchmark run.
-
-Compare current results against the checked-in baseline with a 10% slowdown threshold:
-
-```bash
-make bench-check
-```
-
-Baseline files live under `benchmarks/baselines/`. The default CI gate uses `benchmarks/baselines/default.json` and tracks KPI metrics listed in that file's `kpis` array.
-
-To update the baseline:
-
-1. Run `make bench` on a representative machine/state.
-2. Review `benchmark-results.json` for outliers.
-3. Copy accepted values into `benchmarks/baselines/default.json`.
-4. Re-run `make bench-check` and commit both the baseline update and rationale in your PR.
-
-The regression check currently runs in **advisory mode** on pull requests (warning-only via `continue-on-error`). Once enough benchmark history is collected, switch it to required by removing `continue-on-error: true` in `.github/workflows/tests.yml` and enabling branch protection for the benchmark job.
-### Benchmarking compiler and simulation latency
-
-Install test dependencies (includes `pytest-benchmark`) and run:
-
-```bash
-python -m pip install --require-hashes -r requirements-test.lock
-make bench
-```
-
-`make bench` executes `pytest tests/benchmarks -q --benchmark-only` and prints a benchmark summary table with per-test timing statistics (for example `min`, `max`, `mean`, and iteration counts). The benchmark suite uses fixed seeds and deterministic row counts (`1k`, `10k`, `100k`) so historical comparisons remain stable across runs.
-
-### Native execution benchmarks (compiled code throughput)
-
-The harnesses above all time the Python frontend (parse + in-Python simulate). To measure the code Lockstep actually ships, `benchmarks/native/` compiles each workload's generated LLVM IR with `clang -O3 -march=native`, links a generated host driver that calls `Lockstep_Tick` in a timed loop over a full arena, and reports real execution throughput:
-
-```bash
-make bench-native
-# or, directly:
-python benchmarks/native/run_native.py
-python benchmarks/native/run_native.py --workload particle_energy --iterations 5000 --json
-```
-
-Reported metrics are per-tick latency (`per_tick_us`), stream throughput (`mrows_per_sec`), arena bandwidth (`arena_gib_per_sec`), and a deterministic output `checksum`. This requires an LLVM/clang toolchain on `PATH`; the harness exits with a clear message if `clang` is unavailable. See [`benchmarks/native/README.md`](benchmarks/native/README.md) for details. Absolute numbers are host-dependent, so treat them as relative/regression signals.
-
-On pull requests, the `native-benchmark` CI job runs the harness and then gates its **deterministic** invariants — arena ABI (`arena_bytes`, `rows_per_tick`) and output `checksum` — against the checked-in baseline `benchmarks/baselines/native.json` via `make bench-native-check`. These are hardware-independent, so a drift is a real codegen ABI/correctness regression and fails the job (unlike the frontend throughput gate, which is advisory). Throughput is *not* gated — it is host-dependent and too noisy on shared runners — but the full JSON report is uploaded as a CI artifact for trend tracking. When a codegen change intentionally moves the invariants, regenerate the baseline and review the diff:
-
-```bash
-python benchmarks/native/run_native.py --output native-results.json
-python scripts/check_native_benchmark.py --current native-results.json --update
-```
-
-To quantify *why* Lockstep uses a Struct-of-Arrays memory layout, `make bench-soa` (or `python benchmarks/native/soa_vs_aos.py`) runs the same branchless particle kernel over identical data in SoA and Array-of-Structs layouts across a range of sizes and reports the throughput ratio. Both layouts compute identical results, so the difference is purely layout: SoA wins on vectorization (contiguous SIMD loads) and, for kernels that read a subset of fields, on bandwidth.
-
-To measure the throughput lost when a multi-stage pipeline is not fused, `make bench-fusion` (or `python benchmarks/native/fusion_probe.py`) compares the per-stage loops against a single fused loop over the same computation. Codegen now fuses accumulator stages (the `accum` restriction on fusion has been lifted); the remaining case codegen still lowers per stage is a group containing a **filter** — see [`benchmarks/native/README.md`](benchmarks/native/README.md).
-
-Programmatic frontend usage is available from `lockstep_compiler`:
+### Programmatic API
 
 ```python
 from lockstep_compiler import LockstepCompileResult, compile_lockstep
 
 result: LockstepCompileResult = compile_lockstep(source_code, verbose=True)
+# result.parse_tree, result.entities, result.diagnostics
 ```
-
-`compile_lockstep(...)` returns a `LockstepCompileResult` containing:
-
-* `parse_tree`: ANTLR parse tree for the source.
-* `entities`: extracted frontend entities (`structs`, `shaders`, `streams`, `accumulators`).
-* `diagnostics`: first-class compiler diagnostics (`LockstepDiagnostic`) for non-fatal observations.
-
-### Pipeline Simulation (small datasets)
-
-Use the CLI simulator to validate pipeline wiring/cardinality before LLVM backend generation:
-
-```bash
-lockstepc path/to/program.lock --simulate
-lockstepc path/to/program.lock --simulate --simulate-input path/to/input.json
-```
-
-`--simulate-input` expects JSON with optional `streams` and `accumulators` maps, for example:
-
-```json
-{
-  "streams": {
-    "raw_positions": [{"id": 1}, {"id": 2, "_keep": false}]
-  },
-  "accumulators": {
-    "energy": [0.5, 1.5]
-  }
-}
-```
-
-Simulation output includes per-route `input_count`/`output_count`, updated stream snapshots, accumulator contents, and folded uniform values.
-
-By default, fold reductions (`sum` / `avg`) run in deterministic pure-Python mode, including mixed numeric accumulators (`int`, `float`, `bool`) with stable coercion behavior. Optional LLVM-backed reduction remains available as an opt-in for experimentation/perf checks by setting `LOCKSTEP_SIM_USE_LLVM=1` (or passing `use_llvm_runtime=True` in API calls). If opt-in LLVM execution fails (for example missing `clang`/`lli`), simulation reports an explicit runtime error instead of silently falling back.
-
-Generated C headers include `Lockstep_SaturatedWriteIndex(...)` plus per-stream `LOCKSTEP_CAPACITY_STREAM_<NAME>` macros. Define `LOCKSTEP_DEBUG_SATURATED_WRITES` before including the header to log whenever a saturated write falls back to the final index. Override `LOCKSTEP_SATURATED_WRITE_LOG(...)` to integrate with custom telemetry.
-
-### Diagnostic Shape
-
-Each diagnostic includes:
-
-* `severity` (`"info"`, `"warning"`, or `"error"`)
-* `code` (stable diagnostic identifier such as `LCK101`, `LCK201`)
-* `message`
-* `line`
-* `column`
-* optional `hint`
-
-### Behavior
-
-* **Non-fatal observations** (for example empty `bind` blocks, duplicate declarations, or unreachable statements after a pure-function return) are returned in `LockstepCompileResult.diagnostics` and compilation still succeeds.
-* **Pure function return enforcement** is semantic and strict:
-  * `LCK413` (`error`) is emitted when a `pure` function body has no `return` statement.
-  * `LCK414` (`warning`) is emitted when a `pure` function body contains multiple `return` statements.
-  * `LCK415` (`warning`) is emitted for statements that appear after the first `return` in a `pure` function body.
-  * `LCK418` (`error`) is emitted when a pure `return` expression type does not match the declared return type.
-* **Type-check mismatches** each have distinct diagnostic codes:
-  * `LCK412` (`error`) is emitted for pure-function argument type mismatches.
-  * `LCK416` (`error`) is emitted for variable initializer type mismatches during AST semantic validation.
-  * `LCK417` (`error`) is emitted for assignment type mismatches during AST semantic validation.
-  * `LCK424` (`error`) is emitted when arithmetic mixes `int` and `float` operands without an explicit cast.
-* **Fatal parse errors** still raise `LockstepCompileError`.
-  * `LockstepCompileError.errors` contains parse diagnostics.
-  * `LockstepCompileError.diagnostics` mirrors available pre-failure diagnostic context when parse fails.
 
 ---
 
-## 7. Regenerating parser
+## 7. Diagnostics
 
-Run the project-native generator target:
+Each diagnostic carries `severity` (`info`/`warning`/`error`), a stable `code`
+(e.g. `LCK101`), a `message`, `line`, `column`, and an optional `hint`.
+
+* **Non-fatal observations** (empty `bind` blocks, duplicate declarations,
+  unreachable statements after a `return`) are returned in
+  `LockstepCompileResult.diagnostics`; compilation still succeeds.
+* **`pure` return rules:** `LCK413` (no `return`), `LCK414` (multiple returns),
+  `LCK415` (statements after the first return), `LCK418` (return type mismatch).
+* **Type mismatches:** `LCK412` (pure-arg), `LCK416` (initializer), `LCK417`
+  (assignment), `LCK424` (mixed `int`/`float` without a cast).
+* **Fatal parse errors** raise `LockstepCompileError` (`.errors` holds parse
+  diagnostics; `.diagnostics` mirrors pre-failure context).
+
+Generated headers expose `Lockstep_SaturatedWriteIndex(...)` and per-stream
+`LOCKSTEP_CAPACITY_STREAM_<NAME>` macros. Define
+`LOCKSTEP_DEBUG_SATURATED_WRITES` to log saturated writes, and override
+`LOCKSTEP_SATURATED_WRITE_LOG(...)` to route them to custom telemetry.
+
+---
+
+## 8. Development
+
+### Dependencies (locked + hashed)
+
+Pinned lockfiles are generated from `pyproject.toml` with
+[`uv`](https://github.com/astral-sh/uv): `requirements.lock` (runtime),
+`requirements-test.lock` (+ `test`), `requirements-lsp.lock` (+ `lsp`). Install
+and refresh with:
 
 ```bash
-make generate-parser
+python -m pip install --require-hashes -r requirements-test.lock
+make lock-deps        # regenerate after changing dependencies
 ```
 
-Generated Python parser files are emitted to `generated/parser/` and committed to source control. CI enforces freshness via `make check-generated-parser`, which regenerates and fails when tracked generated files are stale.
+CI enforces freshness (`make check-lock-deps`) and installs with
+`--require-hashes`.
 
-## 8. Language Server Protocol (LSP)
+### Tests, types, and lint
 
-Lockstep now ships an opt-in LSP server so editors can surface compiler diagnostics in real time and provide semantic assistance while authoring pipelines.
+```bash
+make verify           # lint + tests + mypy
+make test-cov         # tests with a coverage floor
+```
+
+`tests/test_golden_ir.py` pins the exact LLVM IR and C header for a curated
+corpus (`tests/golden/programs/*.lock`) covering shaders, folds, filters, and
+fused pipelines; any codegen change surfaces as a reviewable diff. Regenerate
+intentional changes with `LOCKSTEP_UPDATE_GOLDEN=1 pytest tests/test_golden_ir.py`
+(or `python tests/golden/regenerate.py`).
+
+### Benchmarking
+
+Measured results for every harness are published in
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md). Absolute numbers are
+host-dependent — treat them as regression signals.
+
+| Target | Measures |
+| --- | --- |
+| `make bench` | Frontend (parse + Python simulate) latency; writes `benchmark-results.json` |
+| `make bench-check` | Frontend results vs. `benchmarks/baselines/default.json` (10% threshold, advisory) |
+| `make bench-native` | Real throughput of `clang -O3` compiled code calling `Lockstep_Tick` |
+| `make bench-soa` | SoA vs. AoS throughput for the same kernel |
+| `make bench-fusion` | Fused vs. per-stage loop throughput |
+
+On pull requests, CI gates the **deterministic** native invariants (arena ABI +
+output `checksum`) against `benchmarks/baselines/native.json` — a drift is a real
+codegen regression. Throughput is host-dependent and reported as an artifact, not
+gated. See [`benchmarks/native/README.md`](benchmarks/native/README.md) for
+details and baseline-update steps.
+
+### Regenerating the parser
+
+```bash
+make generate-parser        # emits generated/parser/, committed to the repo
+```
+
+CI enforces freshness via `make check-generated-parser`.
+
+---
+
+## 9. Language Server (LSP)
+
+An opt-in LSP server surfaces compiler diagnostics live and provides semantic
+assistance:
 
 ```bash
 pip install -e .[lsp]
 lockstep-lsp
 ```
 
-Current capabilities:
-
-* **Live diagnostics:** Mirrors compiler parse/semantic diagnostics via `textDocument/publishDiagnostics`.
-* **Go to Definition for struct members:** Resolves `foo.bar` member access back to the `struct` field declaration when the variable type can be inferred.
-* **Hover type info:** Shows inferred type annotations on variables, struct fields, shader names, and pure function names.
-* **Bind-route autocompletion:** Suggests existing `bind` routes and callable shader/pure symbols from the current file.
-
-The server communicates over stdio and is compatible with standard editor LSP client configuration.
+Capabilities: live diagnostics (`textDocument/publishDiagnostics`), go-to-
+definition for struct members, hover type info (variables, fields, shader/pure
+names), and bind-route / symbol autocompletion. The server speaks stdio and
+works with standard editor LSP clients.
