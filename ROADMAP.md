@@ -6,6 +6,40 @@ The scope of each milestone is deliberately conservative. Lockstep is a single-m
 
 ---
 
+## Delivery status
+
+Development has outpaced the milestone prose below: a number of features
+originally planned for v0.3.0–v0.6.0 already ship in the current tree. This
+section reconciles the plan with reality so contributors don't re-implement
+delivered work. Each item links to the code that provides it. The per-milestone
+narrative that follows is preserved as the original plan of record; treat this
+table as the authoritative status.
+
+| Feature | Planned in | Status | Where |
+| --- | --- | --- | --- |
+| `uint` / `double` as first-class declared types | v0.3.0 | ✅ Delivered | `semantic_validator.py` numeric type set; `codegen.py` `_PRIMITIVE_TYPE_MAP` |
+| Semantic validator on the typed AST (non-expression + expression paths) | v0.2.0–v0.3.0 | ✅ Delivered | `semantic_validator.py`; `tests/test_semantic_validator_ast_path.py` |
+| Parameterized SIMD width (`--target-width`, `LOCKSTEP_SIMD_WIDTH`) | v0.4.0 | ✅ Delivered | `codegen.py`, `c_header.py`; `tests/test_target_width_execution.py` |
+| Out-of-process simulator reduction execution | v0.4.0 | ✅ Delivered | `simulator.py` subprocess path; `SECURITY.md` §"Pipeline simulator" |
+| Parser input-complexity limits (size / nesting / parse timeout) | v0.4.0 | ✅ Delivered | `compiler.py` `FrontendLimits`; `cli.py` `--max-source-bytes`, `--max-expr-nesting`, `--parse-timeout-ms` |
+| Arena size overflow checking + `static_assert` in the C header (`LCK502`) | v0.4.0 | ✅ Delivered | `arena_layout.py`, `c_header.py` |
+| SoA decomposition in the arena layout | v0.5.0 | ✅ Delivered | `arena_layout.py` `_flatten_type_leaves` / `_build_layout_from_bindings` |
+| Single-arena-pointer `Lockstep_Tick` ABI | v0.5.0 | ✅ Delivered | `codegen.py`; `examples/minimal_host.c` |
+| `select` expression (branchless typed mux) | v0.6.0 | ✅ Delivered | `codegen.py`, `semantic_validator.py`, `simulator.py` |
+| `import` / `#include` resolution (with root sandboxing + circular detection) | v0.6.0 | ✅ Delivered | `compiler.py` `_resolve_dependency_sources` |
+| Benchmark suite (frontend + native + SoA-vs-AoS + fusion) | v0.8.0 | ✅ Delivered | `benchmarks/`, `benchmarks/RESULTS.md` |
+| Dependency pinning with SHA-256 hash verification | v0.9.0 | ✅ Delivered | `requirements*.lock`, `make check-lock-deps` |
+| Comment-preserving formatter | v0.7.0 | ⏳ Planned | `formatter.py` still returns source unchanged when comments are present |
+| Formal `noalias` correctness proof | v0.8.0 | ⏳ Planned | backend does not yet emit `noalias` on arena pointers |
+| Grammar-aware fuzz testing | v0.8.0 | 🚧 Partial | property-based generators exist (`tests/test_property_program_generators.py`); no dedicated fuzz target yet |
+| LSP workspace-wide diagnostics / rename / `--visualize` | v0.7.0 | ⏳ Planned | LSP ships single-file diagnostics, hover, go-to-def, completion |
+
+The milestone sections below retain their original text. Items marked ✅ above
+have already landed and should be read as historical context rather than
+outstanding work.
+
+---
+
 ## v0.2.0 — Internal Representation Consolidation
 
 The central goal of v0.2.0 is to eliminate the dual AST / entity-dict representation that currently threads through the compiler pipeline. Today, `emit_llvm_ir`, `emit_c_header`, and the simulator all accept `AstProgram | dict[str, Any]`, with normalization shims (`_normalize_codegen_input`, `_normalize_structs`) bridging the gap. The typed `AstProgram` is already the primary path; v0.2.0 makes it the only path.
