@@ -61,6 +61,7 @@ The `--simulate` flag executes a lightweight simulation of the pipeline's bind r
 - **Native-code execution still occurs, but out-of-process.** The simulator no longer executes generated native code in the compiler process address space. This removes the highest-severity in-process memory-corruption risk from MCJIT execution. However, a subprocess still executes generated code and therefore still carries host-level execution risk if used on untrusted input.
 - **Toolchain dependency and fallback behavior.** Subprocess execution depends on `clang` or `lli` being present at runtime. If neither is available (or subprocess compilation/execution fails), the simulator falls back to Python `sum` semantics for numeric folds to preserve simulator availability.
 - **Timeout-bounded subprocesses.** Compilation and execution subprocess calls are timeout-bounded to reduce runaway execution risk, but they are not cgroup/namespace isolated by Lockstep itself.
+- **Resource-limited execution subprocess (POSIX).** The subprocess that executes generated native code is launched with clamped POSIX resource limits (`RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_FSIZE`, and `RLIMIT_CORE` set to `0`) via a `preexec_fn`. This bounds CPU time, address space, output file size, and core dumps so that a pathological or malicious generated program cannot spin, exhaust memory, or fill the disk beyond these ceilings — a stronger guarantee than the wall-clock timeout alone, which does not cap memory or output. The limits are lowered from the inherited hard limits only (never raised) and degrade gracefully where a limit is unsupported. On platforms without `rlimit` support (Windows), the subprocess falls back to the wall-clock timeout.
 
 ### LSP server
 
@@ -113,7 +114,6 @@ Verification in CI:
 
 The following improvements are planned for future releases:
 
-- **Input size and complexity limits** for the parser frontend (maximum file size, maximum nesting depth, parse timeout).
-- **Stronger process isolation** for simulator subprocesses (for example, optional namespace/cgroup sandboxing when available).
+- **Stronger process isolation** for simulator subprocesses. POSIX resource limits (CPU, address space, file size, core dumps) are now applied to the execution subprocess; deeper isolation (namespace/cgroup sandboxing when available) remains future work.
 - **Formal verification** of arena aliasing and offset correctness invariants, confirming that generated accesses are sound across all valid Lockstep programs.
 - **Automated dependency vulnerability scanning** via Dependabot or similar tooling in CI.
