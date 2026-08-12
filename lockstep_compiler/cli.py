@@ -222,7 +222,7 @@ def run_cli(
         try:
             ver = _pkg_version("Lockstep")
         except PackageNotFoundError:
-            ver = "0.1.0"
+            ver = "0.2.0"
         print(f"lockstepc {ver}", file=stdout)
         return 0
 
