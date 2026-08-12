@@ -6,7 +6,7 @@
     "multi_stage_pipeline": {
       "rows_per_tick": 131072,
       "arena_bytes": 5767168,
-      "checksum": 13105.6002
+      "checksum": 20968.9607
     },
     "particle_energy": {
       "rows_per_tick": 32768,

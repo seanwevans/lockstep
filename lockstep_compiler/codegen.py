@@ -19,6 +19,7 @@ from .ast import (
     AstKernelDecl,
     AstKernelParam,
     AstProgram,
+    AstReturnStmt,
     AstStatement,
     AstStreamDecl,
     AstStructField,
@@ -375,6 +376,15 @@ def emit_llvm_ir(
     _reducible_accums: dict[str, tuple[str, str]] = {}
     _reducible_writer: dict[str, int] = {}
     _fused_reductions: dict[str, tuple[ir.Value, str]] = {}
+    # Filter-group register-carry: a multi-stage group that fuses through a
+    # filter can also carry its accumulators in loop-carried vector registers
+    # instead of the O(rows) arena buffer -- the same win as ``_fused_reductions``
+    # but spanning the whole fused loop and supporting multiple folds per
+    # accumulator.  Keyed by the fold's uniform name (each fold is a distinct
+    # consumer), populated at group-lowering time and consumed by the fold route.
+    _fused_group_reductions: dict[str, tuple[ir.Value, str]] = {}
+    _accum_writer_ids: dict[str, list[int]] = {}
+    _accum_fold_routes: dict[str, list[AstFoldBindRoute]] = {}
 
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
@@ -769,6 +779,46 @@ def emit_llvm_ir(
 
         return reduced
 
+    def _horizontal_reduce_vector(
+        operator: str, vector_value: ir.Value, uniform_type: ir.Type, name: str
+    ) -> ir.Value:
+        # Collapse a ``<simd_width x T>`` lane-wise partial accumulator to a
+        # scalar with the matching ``llvm.vector.reduce.*`` intrinsic -- the same
+        # horizontal step ``_reduce_fold`` performs, factored out so the fused
+        # group's register-carried accumulator can reuse it without a buffer.
+        is_float = isinstance(uniform_type, (ir.FloatType, ir.DoubleType))
+        suffix = {
+            (True, "sum"): "fadd",
+            (True, "avg"): "fadd",
+            (True, "min"): "fmin",
+            (True, "max"): "fmax",
+            (False, "sum"): "add",
+            (False, "avg"): "add",
+            (False, "min"): "smin",
+            (False, "max"): "smax",
+        }.get((is_float, operator))
+        if suffix is None:
+            return _zero_value(uniform_type)
+        vector_ty = ir.VectorType(uniform_type, simd_width)
+        intrinsic_name = (
+            f"llvm.vector.reduce.{suffix}.v{simd_width}{uniform_type.intrinsic_name}"
+        )
+        if is_float and operator in {"sum", "avg"}:
+            intrinsic = _get_vector_reduce_intrinsic(
+                intrinsic_name, uniform_type, [uniform_type, vector_ty]
+            )
+            reduced = tick_builder.call(
+                intrinsic, [ir.Constant(uniform_type, 0.0), vector_value], name=name
+            )
+        else:
+            intrinsic = _get_vector_reduce_intrinsic(
+                intrinsic_name, uniform_type, [vector_ty]
+            )
+            reduced = tick_builder.call(intrinsic, [vector_value], name=name)
+        if is_float:
+            reduced.fastmath.add("fast")
+        return reduced
+
     def _kernel_function_and_params(
         kernel_name: str,
     ) -> tuple[ir.Function | None, tuple[AstKernelParam, ...]]:
@@ -857,10 +907,16 @@ def emit_llvm_ir(
         for index, param in enumerate(callee.args):
             arg_name = route.args[index] if index < len(route.args) else ""
             modifier = params[index].modifier if index < len(params) else None
+            # A filter's out stream is normally written through its compacting
+            # store (below).  But when that out is an eliminated intermediate
+            # forwarded through a fused group's scalar tail (``local_slots``),
+            # the value stays in a register for the next stage -- there is no
+            # stream to compact into -- so route it like an ordinary out param.
             is_filter_output = (
                 route.kernel in filter_names
                 and modifier == "out"
                 and arg_name in stream_slots
+                and not (local_slots and arg_name in local_slots)
             )
             call_arg = (
                 None
@@ -1700,6 +1756,110 @@ def emit_llvm_ir(
             name=f"fused_{_sanitize_symbol(name)}_vector_ptr",
         )
 
+    def _leaf_memory_scalar(scalar_ty: ir.Type) -> ir.Type:
+        # ``bool`` is an ``i1`` value but occupies one whole byte per row in the
+        # arena.  A contiguous ``<N x i1>`` load would be bit-packed (N lanes in
+        # one byte) and misread the column, so bool leaves are moved as ``<N x
+        # i8>`` and trunc/zext'd at the register boundary.  Every other primitive
+        # leaf already matches its byte stride, so its memory type is itself.
+        if isinstance(scalar_ty, ir.IntType) and scalar_ty.width == 1:
+            return ir.IntType(8)
+        return scalar_ty
+
+    def _leaf_supports_contiguous_vector(scalar_ty: ir.Type) -> bool:
+        # A contiguous ``<N x T>`` memory op over an SoA column is valid when the
+        # element's packed layout matches the column's per-row byte stride.  That
+        # holds for float/double and byte-or-wider integers directly, and for
+        # ``i1`` (bool) via the ``i8`` memory type in ``_leaf_memory_scalar``.
+        if isinstance(scalar_ty, ir.IntType):
+            return scalar_ty.width == 1 or scalar_ty.width >= 8
+        return isinstance(scalar_ty, (ir.FloatType, ir.DoubleType))
+
+    def _leaf_vector_ptr(
+        name: str,
+        rel_path: tuple[str, ...],
+        scalar_ty: ir.Type,
+        current: ir.Value,
+        kind: str = "stream",
+    ) -> ir.Value | None:
+        scalar_ptr = _leaf_ptr(kind, name, rel_path, scalar_ty, current)
+        if scalar_ptr is None:
+            return None
+        vector_ty = ir.VectorType(scalar_ty, simd_width)
+        return tick_builder.bitcast(
+            scalar_ptr,
+            vector_ty.as_pointer(),
+            name=(
+                f"fused_{_sanitize_symbol(name)}_"
+                f"{'_'.join(rel_path)}_vector_ptr"
+            ),
+        )
+
+    def _leaf_contiguous_vector_load(
+        name: str,
+        rel_path: tuple[str, ...],
+        scalar_ty: ir.Type,
+        current: ir.Value,
+        chunk_trip_count: int,
+        kind: str,
+    ) -> ir.Value | None:
+        # Load ``simd_width`` consecutive rows of one SoA leaf column as a single
+        # packed vector, or ``None`` when that leaf/chunk can't use the contiguous
+        # path (caller falls back to lane-by-lane gather).
+        if not (
+            _leaf_supports_contiguous_vector(scalar_ty)
+            and _stream_has_contiguous_vector_chunk(name, chunk_trip_count, kind)
+        ):
+            return None
+        mem_ty = _leaf_memory_scalar(scalar_ty)
+        vector_ptr = _leaf_vector_ptr(name, rel_path, mem_ty, current, kind)
+        if vector_ptr is None:
+            return None
+        vector_load = tick_builder.load(
+            vector_ptr,
+            name=f"fused_{_sanitize_symbol(name)}_{'_'.join(rel_path)}_vector",
+        )
+        vector_load.align = 1
+        if mem_ty is scalar_ty:
+            return vector_load
+        return tick_builder.trunc(
+            vector_load,
+            ir.VectorType(scalar_ty, simd_width),
+            name=f"fused_{_sanitize_symbol(name)}_{'_'.join(rel_path)}_trunc",
+        )
+
+    def _leaf_contiguous_vector_store(
+        name: str,
+        rel_path: tuple[str, ...],
+        value: ir.Value,
+        current: ir.Value,
+        chunk_trip_count: int,
+        kind: str,
+    ) -> bool:
+        # Store a packed leaf vector back over ``simd_width`` consecutive rows.
+        # Returns ``False`` when the contiguous path does not apply so the caller
+        # can scatter lane-by-lane instead.
+        scalar_ty = value.type.element
+        if not (
+            _leaf_supports_contiguous_vector(scalar_ty)
+            and _stream_has_contiguous_vector_chunk(name, chunk_trip_count, kind)
+        ):
+            return False
+        mem_ty = _leaf_memory_scalar(scalar_ty)
+        vector_ptr = _leaf_vector_ptr(name, rel_path, mem_ty, current, kind)
+        if vector_ptr is None:
+            return False
+        store_value = value
+        if mem_ty is not scalar_ty:
+            store_value = tick_builder.zext(
+                value,
+                ir.VectorType(mem_ty, simd_width),
+                name=f"fused_store_{_sanitize_symbol(name)}_{'_'.join(rel_path)}_zext",
+            )
+        store_inst = tick_builder.store(store_value, vector_ptr)
+        store_inst.align = 1
+        return True
+
     def _load_stream_vector(
         name: str,
         scalar_ty: ir.Type,
@@ -1785,6 +1945,12 @@ def emit_llvm_ir(
                 )
                 continue
             vector_ty = ir.VectorType(scalar_ty, simd_width)
+            contiguous = _leaf_contiguous_vector_load(
+                name, rel_path, scalar_ty, current, chunk_trip_count, kind
+            )
+            if contiguous is not None:
+                loaded[rel_path] = contiguous
+                continue
             lane_indices = _vector_lane_indices(current)
             result = ir.Constant(vector_ty, ir.Undefined)
             for lane in range(simd_width):
@@ -1832,6 +1998,10 @@ def emit_llvm_ir(
             if not rel_path:
                 _store_stream_vector(name, value, current, chunk_trip_count, kind)
                 continue
+            if _leaf_contiguous_vector_store(
+                name, rel_path, value, current, chunk_trip_count, kind
+            ):
+                continue
             lane_indices = _vector_lane_indices(current)
             for lane in range(simd_width):
                 lane_index = tick_builder.extract_element(
@@ -1862,7 +2032,15 @@ def emit_llvm_ir(
         current: ir.Value,
         eliminated_targets: set[str],
         chunk_trip_count: int,
-    ) -> None:
+        carried_accums: set[str] | None = None,
+    ) -> dict[str, ir.Value]:
+        # ``carried_accums`` names accumulators the caller reduces in a
+        # loop-carried register instead of the arena buffer: their slot is seeded
+        # to the zero identity (never loaded from the buffer), the buffer is never
+        # written, and each row's partial vector is returned for the caller to
+        # combine.  Returns ``{accum_name: partial_vector}`` for those accums.
+        carried_accums = carried_accums or set()
+        carried_partials: dict[str, ir.Value] = {}
         route_values: dict[str, dict[tuple[str, ...], ir.Value]] = {}
         for route in routes:
             signature = kernel_signatures[route.kernel]
@@ -1870,6 +2048,7 @@ def emit_llvm_ir(
             vector_lowerer = _FusedVectorLowerer()
             out_params: list[tuple[str, str, str]] = []
             accum_params: list[tuple[str, str, str]] = []
+            carried_params: list[tuple[str, str, str]] = []
             for index, param in enumerate(params):
                 arg_name = route.args[index] if index < len(route.args) else ""
                 param_type_name = _type_name(param.declared_type)
@@ -1914,6 +2093,13 @@ def emit_llvm_ir(
                         ).items():
                             vector_lowerer.set_slot_leaf(param.name, rel_path, value)
                     out_params.append((arg_name, param.name, param_type_name))
+                elif param.modifier == "accum" and arg_name in carried_accums:
+                    # Register-carried accumulator: leave the slot at its zero
+                    # identity (``define_slot`` already zeroed it) so ``acc = acc +
+                    # delta`` yields this row's partial, exactly as the standalone
+                    # fold-into-kernel path seeds its scratch.  The buffer is
+                    # neither read nor written; the partial is returned below.
+                    carried_params.append((arg_name, param.name, param_type_name))
                 elif param.modifier == "accum" and arg_name in accum_slots:
                     # An accumulator slot is a per-row read-modify-write buffer:
                     # seed the vector lowerer with the current window so kernel
@@ -1963,6 +2149,92 @@ def emit_llvm_ir(
                     chunk_trip_count,
                     "accum",
                 )
+            for arg_name, param_name, _param_type_name in carried_params:
+                values = vector_lowerer.slot_leaf_values(param_name)
+                partial = values.get(())
+                if partial is None:
+                    root_key = vector_lowerer._key((param_name,))
+                    partial = vector_lowerer.values.get(root_key)
+                if partial is not None:
+                    carried_partials[arg_name] = partial
+        return carried_partials
+
+    def _filter_always_keeps(kernel_name: str) -> bool:
+        # A filter keeps every row unconditionally when its body never returns a
+        # keep flag: the generated function falls through to ``ret i1 1`` (see
+        # ``lower_function``), matching the simulator's ``keep_row`` default. Such
+        # a filter is semantically an identity copy -- its compacting store
+        # degenerates to a straight store at the read index -- so it can fuse like
+        # a shader. A ``return true;`` is treated the same. Any other return makes
+        # the keep flag data-dependent, so the filter is *not* an unconditional
+        # pass and must keep its scalar compacting loop.
+        signature = kernel_signatures.get(kernel_name)
+        if signature is None:
+            return False
+        kernel_decl, _ = signature
+        for statement in kernel_decl.body:
+            if isinstance(statement, AstReturnStmt):
+                value = statement.value
+                if not (
+                    isinstance(value, AstExprLiteral)
+                    and str(value.value) == "true"
+                ):
+                    return False
+        return True
+
+    def _group_carry_reductions(
+        routes: tuple[AstKernelBindRoute, ...],
+    ) -> tuple[set[str], list[dict]] | None:
+        # Decide whether the group's accumulators can be carried in loop-carried
+        # registers (no arena buffer).  Returns ``(carried_accum_names,
+        # reductions)`` when every accumulator written in the group qualifies, or
+        # ``None`` when any does not -- in which case the caller keeps the per-row
+        # buffer for the whole group (unchanged behavior).  An accumulator
+        # qualifies when it has a single writer, that writer is in this group, its
+        # scalar type is reducible, and each fold over it uses sum/min/max on the
+        # matching type (``avg`` keeps the buffer -- its divisor is the buffer
+        # width).  An accumulator with no fold at all still qualifies: its buffer
+        # is write-only dead state, so it is simply dropped.
+        group_ids = {id(route) for route in routes}
+        group_accums: list[str] = []
+        seen: set[str] = set()
+        for route in routes:
+            _, params = kernel_signatures.get(route.kernel, (None, ()))
+            for index, param in enumerate(params):
+                if param.modifier != "accum":
+                    continue
+                accum = route.args[index] if index < len(route.args) else ""
+                if accum in accum_slots and accum not in seen:
+                    seen.add(accum)
+                    group_accums.append(accum)
+        if not group_accums:
+            return set(), []
+        reductions: list[dict] = []
+        for accum in group_accums:
+            writers = _accum_writer_ids.get(accum, [])
+            if len(writers) != 1 or writers[0] not in group_ids:
+                return None
+            accum_type_name = binding_declared_types.get(("accum", accum), "float")
+            accum_ty = lowerer._llvm_type(accum_type_name, known_structs)
+            if not isinstance(accum_ty, (ir.FloatType, ir.DoubleType, ir.IntType)):
+                return None
+            for fold_route in _accum_fold_routes.get(accum, []):
+                if fold_route.operator not in {"sum", "min", "max"}:
+                    return None
+                uniform_type_name = _type_name(fold_route.uniform_type)
+                uniform_type = lowerer._llvm_type(uniform_type_name, known_structs)
+                if uniform_type != accum_ty:
+                    return None
+                reductions.append(
+                    {
+                        "uniform": fold_route.uniform_name,
+                        "accum": accum,
+                        "op": fold_route.operator,
+                        "uty": uniform_type,
+                        "utn": uniform_type_name,
+                    }
+                )
+        return set(group_accums), reductions
 
     def _lower_fused_kernel_group(
         routes: tuple[AstKernelBindRoute, ...], group_index: int
@@ -1974,7 +2246,17 @@ def emit_llvm_ir(
         if not eliminated_targets:
             _lower_kernel_route(routes[0])
             return
-        if any(route.kernel in filter_names for route in routes):
+        # A group may fuse through a filter only when that filter passes every
+        # row unconditionally: with no data-dependent drop, its keep flag is a
+        # constant and its compacting store degenerates to a straight store at
+        # the read index, making it an identity copy that fuses like a shader in
+        # any position. A filter that actually drops rows shifts every downstream
+        # write index and still needs its scalar compacting loop, so fall back to
+        # per-stage lowering.
+        filter_routes = [route for route in routes if route.kernel in filter_names]
+        if filter_routes and not all(
+            _filter_always_keeps(route.kernel) for route in filter_routes
+        ):
             for route in routes:
                 _lower_kernel_route(route)
             return
@@ -1983,9 +2265,33 @@ def emit_llvm_ir(
                 _lower_kernel_route(route)
             return
 
+        carry = _group_carry_reductions(routes)
+        carried_accums: set[str] = set() if carry is None else carry[0]
+        reductions: list[dict] = [] if carry is None else carry[1]
+
         full_trip_count = (trip_count // simd_width) * simd_width
         index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fused_{group_index}_idx")
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+
+        # Loop-carried register accumulators for the group's folds: one vector
+        # partial per fold (carried across the vector loop) plus a scalar partial
+        # (folded across the scalar tail), each seeded to the operator identity.
+        for reduction in reductions:
+            uniform_type = reduction["uty"]
+            vector_ty = ir.VectorType(uniform_type, simd_width)
+            identity = _reduction_identity(uniform_type, reduction["op"])
+            vec_slot = tick_builder.alloca(
+                vector_ty, name=f"fused_{group_index}_{reduction['uniform']}_vec"
+            )
+            tick_builder.store(
+                ir.Constant(vector_ty, [identity] * simd_width), vec_slot
+            )
+            tail_slot = tick_builder.alloca(
+                uniform_type, name=f"fused_{group_index}_{reduction['uniform']}_tail"
+            )
+            tick_builder.store(identity, tail_slot)
+            reduction["vec"] = vec_slot
+            reduction["tail"] = tail_slot
 
         loop_cond = tick.append_basic_block(f"fused_{group_index}_cond")
         loop_body = tick.append_basic_block(f"fused_{group_index}_body")
@@ -2003,7 +2309,26 @@ def emit_llvm_ir(
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
-        _emit_vector_fused_chunk(routes, current, eliminated_targets, trip_count)
+        partials = _emit_vector_fused_chunk(
+            routes,
+            current,
+            eliminated_targets,
+            trip_count,
+            carried_accums=carried_accums,
+        )
+        for reduction in reductions:
+            partial = partials.get(reduction["accum"])
+            if partial is None:
+                continue
+            running = tick_builder.load(reduction["vec"], name="fused_carry_cur")
+            combined = _reduction_combine(
+                reduction["op"],
+                running,
+                partial,
+                reduction["uty"],
+                "fused_carry_next",
+            )
+            tick_builder.store(combined, reduction["vec"])
         next_index = tick_builder.add(
             current, ir.Constant(ir.IntType(32), simd_width), name="fused_idx_next"
         )
@@ -2051,7 +2376,52 @@ def emit_llvm_ir(
                         local_slots[route.args[index]] = tick_builder.alloca(
                             param.type.pointee, name=f"fused_{slot_name}_tail_slot"
                         )
-                _emit_kernel_call(route, tail_current, local_slots=local_slots)
+                # Carried accumulators the scalar tail row writes: redirect them
+                # to per-row scratch (never the buffer) and fold each partial into
+                # the reduction's scalar tail accumulator.
+                tail_scratch: dict[str, tuple[ir.AllocaInstr, ir.Type]] = {}
+                for index, param in enumerate(params):
+                    if param.modifier != "accum":
+                        continue
+                    accum = route.args[index] if index < len(route.args) else ""
+                    if accum not in carried_accums or accum in tail_scratch:
+                        continue
+                    accum_ty = lowerer._llvm_type(
+                        binding_declared_types.get(("accum", accum), "float"),
+                        known_structs,
+                    )
+                    scratch_slot = tick_builder.alloca(
+                        accum_ty, name=f"fused_{_sanitize_symbol(accum)}_tail_acc"
+                    )
+                    tick_builder.store(ir.Constant(accum_ty, None), scratch_slot)
+                    tail_scratch[accum] = (scratch_slot, accum_ty)
+                _emit_kernel_call(
+                    route,
+                    tail_current,
+                    local_slots=local_slots,
+                    accum_overrides={
+                        accum: slot for accum, (slot, _ty) in tail_scratch.items()
+                    }
+                    or None,
+                )
+                for accum, (scratch_slot, _ty) in tail_scratch.items():
+                    delta = tick_builder.load(scratch_slot, name="fused_tail_acc_val")
+                    for reduction in reductions:
+                        if reduction["accum"] != accum:
+                            continue
+                        current_tail = tick_builder.load(
+                            reduction["tail"], name="fused_tail_cur"
+                        )
+                        tick_builder.store(
+                            _reduction_combine(
+                                reduction["op"],
+                                current_tail,
+                                delta,
+                                reduction["uty"],
+                                "fused_tail_next_acc",
+                            ),
+                            reduction["tail"],
+                        )
             tail_next = tick_builder.add(
                 tail_current, ir.Constant(ir.IntType(32), 1), name="fused_tail_next"
             )
@@ -2059,10 +2429,42 @@ def emit_llvm_ir(
             tick_builder.branch(tail_cond)
             tick_builder.position_at_end(tail_exit)
 
+        # Horizontally reduce each carried vector partial and fold in the scalar
+        # tail partial, then publish the scalar for the fold route to consume.
+        for reduction in reductions:
+            vector_partial = tick_builder.load(
+                reduction["vec"], name="fused_carry_final_vec"
+            )
+            reduced = _horizontal_reduce_vector(
+                reduction["op"],
+                vector_partial,
+                reduction["uty"],
+                "fused_carry_reduce",
+            )
+            tail_partial = tick_builder.load(
+                reduction["tail"], name="fused_carry_final_tail"
+            )
+            reduced = _reduction_combine(
+                reduction["op"],
+                reduced,
+                tail_partial,
+                reduction["uty"],
+                "fused_carry_final",
+            )
+            _fused_group_reductions[reduction["uniform"]] = (reduced, reduction["utn"])
+
     def _lower_fold_route(route: AstFoldBindRoute) -> None:
         source_name = route.source
         uniform_name = route.uniform_name
         if source_name not in accum_slots or uniform_name not in uniform_slots:
+            return
+        # If a fused filter-group already reduced this fold's accumulator in a
+        # loop-carried register (keyed per fold uniform, so one accumulator can
+        # feed several folds), consume that scalar directly.
+        group_reduced = _fused_group_reductions.get(uniform_name)
+        if group_reduced is not None:
+            reduced_value, fused_type_name = group_reduced
+            _store_value("uniform", uniform_name, reduced_value, fused_type_name)
             return
         # If the writing kernel route already reduced this accumulator in-register
         # (fold-into-kernel fusion), consume that value instead of re-reducing the
@@ -2264,6 +2666,9 @@ def emit_llvm_ir(
         _reducible_accums.clear()
         _reducible_writer.clear()
         _fused_reductions.clear()
+        _fused_group_reductions.clear()
+        _accum_writer_ids.clear()
+        _accum_fold_routes.clear()
         _accum_writers: dict[str, list[tuple[int, int]]] = {}
         _fold_consumers: dict[str, list[tuple[int, AstFoldBindRoute]]] = {}
         for position, bind_route in enumerate(pipeline.bind_routes):
@@ -2280,10 +2685,12 @@ def emit_llvm_ir(
                     _accum_writers.setdefault(accum_arg, []).append(
                         (position, id(bind_route))
                     )
+                    _accum_writer_ids.setdefault(accum_arg, []).append(id(bind_route))
             elif isinstance(bind_route, AstFoldBindRoute):
                 _fold_consumers.setdefault(bind_route.source, []).append(
                     (position, bind_route)
                 )
+                _accum_fold_routes.setdefault(bind_route.source, []).append(bind_route)
         for accum_name, consumers in _fold_consumers.items():
             if len(consumers) != 1:
                 continue

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the API and grammar are pre-1.0, breaking changes may occur in minor
 releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **Pass-through filter-group fusion.** A multi-stage group whose only filter
+  keeps every row unconditionally (no `return`) now fuses through that filter
+  into a single vector loop instead of falling back to one strip-mined loop per
+  stage. The eliminated intermediate streams stay in registers, each SoA leaf
+  column is moved as a contiguous `<N x T>` vector load/store (bool columns via
+  an `i8` memory type), and the fold accumulators are carried in loop-carried
+  vector registers — reduced horizontally at the end, with multiple folds per
+  accumulator supported — rather than an O(rows) arena buffer. This lifts the
+  `multi_stage_pipeline` and `telemetry_filter_aggregation` benchmarks to ~0.9×
+  and ~0.7× of hand-written C (from ~0.21× and ~0.19×), a ~3.9× native-throughput
+  gain. A filter with a data-dependent `return` still uses the per-stage
+  compacting fallback. The ABI (arena layout, offset macros) is unchanged.
+
+### Changed
+
+- The native benchmark harness (`benchmarks/native/run_native.py`) now checksums
+  a pipeline's **terminal** output column instead of the first bind target, which
+  may be an intermediate stream that fusion no longer materializes. This changes
+  the reported `multi_stage_pipeline` checksum (13105.6 → 20969.0) with no change
+  to the computed result.
+
 ## [0.2.0] - 2026-08-12
 
 The internal representation moved to a typed `AstProgram`, the code generator
