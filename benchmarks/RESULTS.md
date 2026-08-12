@@ -8,14 +8,19 @@ Absolute throughput is host-dependent (CPU, memory bandwidth, compiler
 version), so treat these as a concrete reference point and a relative/regression
 signal, not a portable constant. What is portable is the *shape* of the results:
 SIMD-friendly SoA layout beats AoS by an order of magnitude, and stage fusion
-recovers a multiple-x throughput win over the per-stage loops codegen emits
-today. The flip side is measured and reported honestly too: against an idiomatic
+recovers a multiple-x throughput win over the per-stage loops codegen used to
+emit. The flip side is measured and reported honestly too: against an idiomatic
 single-pass **hand-written C** baseline (table 4), the single fused-kernel
-workload (`particle_energy`) now runs **at parity** — after codegen learned to
-fuse a fold's reduction into the writing kernel loop instead of materializing a
-per-row accumulator buffer — while the multi-stage filter pipelines still trail
-by ~4–6×, which quantifies exactly what the remaining codegen work in
-[`../ROADMAP.md`](../ROADMAP.md) (fusing through filters) is worth.
+workload (`particle_energy`) runs **at parity** — after codegen learned to fuse a
+fold's reduction into the writing kernel loop instead of materializing a per-row
+accumulator buffer. The two multi-stage filter pipelines used to trail by ~4–6×;
+codegen now **fuses through their pass-through filters** into one vector pass —
+loading and storing each SoA column as a contiguous vector and carrying the fold
+accumulators in registers instead of an O(rows) buffer — which lifts them to
+**~2× (multi-stage, near parity) and ~1.4× (telemetry)** of hand-written C, a
+~4× native-throughput gain (table 1). A filter that actually *drops* rows still
+falls back to the per-stage compacting path; fusing through a dropping filter is
+the remaining codegen work in [`../ROADMAP.md`](../ROADMAP.md).
 
 ## Host environment
 
@@ -27,7 +32,7 @@ by ~4–6×, which quantifies exactly what the remaining codegen work in
 | OS / kernel | Linux 6.18.5 (x86-64) |
 | Compiler | Ubuntu clang 18.1.3 |
 | Python | 3.11.15 |
-| Date | 2026-08-11 |
+| Date | 2026-08-12 |
 
 The native harnesses build with `clang -O3 -march=native`, so codegen targets
 this host's AVX-512 units. The frontend harnesses time pure CPython.
@@ -46,16 +51,20 @@ python benchmarks/native/run_native.py --iterations 4000
 
 | workload | rows/tick | arena | per_tick_us | Mrows/s | GiB/s | checksum |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| particle_energy | 32,768 | 1.62 MiB | 46.62 | 702.8 | 34.04 | 65528.0 |
-| telemetry_filter_aggregation | 65,536 | 2.19 MiB | 106.98 | 612.6 | 19.97 | 65528.0 |
-| multi_stage_pipeline | 131,072 | 5.50 MiB | 353.43 | 370.9 | 15.20 | 13105.6 |
+| particle_energy | 32,768 | 1.62 MiB | 48.21 | 679.8 | 32.92 | 65528.0 |
+| telemetry_filter_aggregation | 65,536 | 2.19 MiB | 29.58 | 2215.9 | 72.23 | 65528.0 |
+| multi_stage_pipeline | 131,072 | 5.50 MiB | 91.08 | 1439.1 | 58.97 | 20969.0 |
 
-`particle_energy` (single fused kernel) reaches ~34 GiB/s of arena traffic. The
-two accumulator pipelines sit lower per row because codegen emits one
-strip-mined loop **per stage** and materializes intermediate streams: both end
-in a filter, and codegen still lowers filter-containing groups per stage (the
-`accum` restriction on fusion has since been lifted — see the fusion probe
-below).
+`particle_energy` (single fused kernel) reaches ~33 GiB/s of arena traffic. The
+two accumulator pipelines now run **~3.9× faster than before** (telemetry
+612→2216 Mrows/s, multi-stage 371→1439 Mrows/s): codegen fuses each pipeline —
+including its trailing/leading pass-through filter — into a single vector loop
+that streams every SoA column as a contiguous vector and carries the fold
+accumulators in registers, so it makes one trip through memory instead of one
+per stage. (The `multi_stage_pipeline` checksum moved from 13105.6 to 20969.0
+only because the harness now sums the pipeline's *terminal* output column rather
+than an intermediate stream that fusion no longer materializes — the computed
+result is unchanged and still agrees with the hand-written C reference below.)
 
 ---
 
@@ -107,14 +116,14 @@ python benchmarks/native/fusion_probe.py
 | 256,000 | 631.9 | 6229.5 | **9.9×** |
 | 1,000,000 | 650.0 | 3329.7 | **5.1×** |
 
-Even at memory-bound sizes the fully fused form runs ~5× faster. Codegen used to
-skip this fusion whenever a stage took an `accum` parameter; that restriction has
-been lifted, and a pure accumulator pipeline (no filter) now fuses — measuring
-~1.9× over per-stage loops on this host. `multi_stage_pipeline` and
-`telemetry_filter_aggregation` still fall back to per-stage loops because each
-group ends in a **filter**, whose data-dependent compacting store the vector
-path does not yet lower. Fusing through the trailing filter is the highest-
-leverage remaining codegen throughput opportunity for these pipelines.
+Even at memory-bound sizes the fully fused form runs ~5× faster. This probe
+measures the win in isolation; codegen now **realizes** it for the shipped
+`multi_stage_pipeline` and `telemetry_filter_aggregation` workloads, whose
+pass-through filters (`KeepActive` / the telemetry keep stage) fuse into the
+group as identity copies (see table 1 and table 4). A filter that *drops* rows —
+a data-dependent `return` — still has a compacting store the vector path does not
+lower, so it keeps the per-stage fallback; fusing through a dropping filter is
+the remaining opportunity.
 
 ---
 
@@ -135,33 +144,38 @@ python benchmarks/native/lockstep_vs_c.py --iterations 5000
 
 | workload | rows/tick | Lockstep Mrows/s | C Mrows/s | **ratio (C time / Lockstep time)** |
 | --- | ---: | ---: | ---: | ---: |
-| particle_energy | 32,768 | 689.3 | 697.6 | **0.99×** |
-| telemetry_filter_aggregation | 65,536 | 581.0 | 3137.3 | **0.19×** |
-| multi_stage_pipeline | 131,072 | 373.1 | 1766.7 | **0.21×** |
+| particle_energy | 32,768 | 717.9 | 737.1 | **0.97×** |
+| telemetry_filter_aggregation | 65,536 | 2340.9 | 3569.3 | **0.66×** |
+| multi_stage_pipeline | 131,072 | 1512.8 | 1645.5 | **0.92×** |
 
-`ratio >= 1.0` means Lockstep matches or beats hand-written C.
+`ratio >= 1.0` means Lockstep matches or beats hand-written C. The C baseline is
+noisy on this host (its cache-resident copy loops swing several hundred Mrows/s
+run to run), while Lockstep is stable, so read each ratio as a band: across
+repeats `particle_energy` spans ~0.85–1.02, `multi_stage_pipeline` ~0.81–0.93,
+and `telemetry_filter_aggregation` ~0.66–0.95.
 
-* **`particle_energy` — now at parity (~0.99×, and it beats C outright on some
-  runs; the ratio spans ~0.86–1.00 across repeats on this noisy host).** It used
-  to trail C by ~20%, and the whole gap was one thing: the `accum` was lowered as
-  a per-row `[rows × f32]` arena buffer that the tick **read-modify-wrote every
+* **`particle_energy` — at parity (~0.97×, above 1.0 on some runs).** It used to
+  trail C by ~20%, and the whole gap was one thing: the `accum` was lowered as a
+  per-row `[rows × f32]` arena buffer that the tick **read-modify-wrote every
   row**, then a separate `fold` strip-mined it back to a scalar — while C keeps
-  the sum in a register. Codegen now performs **fold-into-kernel fusion**: when an
+  the sum in a register. Codegen performs **fold-into-kernel fusion**: when an
   accumulator is written by a single standalone route and consumed by exactly one
   `fold`, the reduction is carried in a loop-carried register across the route
   loop and the O(rows) buffer is never touched (the arena still *reserves* it, so
   the ABI is unchanged). The folded scalar is bit-identical to the strip-mine path
   (verified in `tests/test_fold_reduction_fusion.py`). See
   [`native/README.md`](native/README.md#fold-into-kernel-fusion).
-* **`telemetry_filter_aggregation` (~5.4×)** and **`multi_stage_pipeline` (~4.7×)**
-  are multi-stage pipelines ending in a filter. Codegen emits one strip-mined loop
-  **per stage** and materializes the intermediate streams, so the single-pass C
-  reference makes one trip through memory instead of two or three. This is the
-  same gap `fusion_probe.py` measures internally, now against a real external
-  baseline: it is what fusing-through-filters would recover. (Their accumulator
-  stages sit inside the filter group, so they keep the per-row buffer rather than
-  fusing the fold — the dominant cost there is the intermediate streams, not the
-  accumulator.)
+* **`multi_stage_pipeline` (~0.92×, near parity)** and
+  **`telemetry_filter_aggregation` (~0.66×)** used to trail by ~4.7× and ~5.4×.
+  Codegen now fuses each pipeline **through its pass-through filter** into a
+  single vector loop: the eliminated intermediate streams stay in registers, each
+  SoA column moves as a contiguous vector load/store, and the fold accumulators
+  are carried in loop-carried vector registers (reduced horizontally at the end)
+  instead of a per-row buffer — so the tick makes **one** trip through memory,
+  like the C reference. `multi_stage_pipeline` lands at near parity;
+  `telemetry_filter_aggregation`'s tighter, more cache-resident copy still leaves
+  the hand-written single loop a memory-bandwidth edge. A filter that actually
+  drops rows keeps the per-stage compacting fallback (see the fusion probe).
 
 Absolute Mrows/s are host-dependent; the **ratio** is the portable signal.
 

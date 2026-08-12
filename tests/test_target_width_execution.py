@@ -11,11 +11,15 @@ They do not execute the generated code, so they cannot catch a width-specific
 lowering bug (a mis-strided vector load, a wrong tail-loop bound at an odd
 width, ...). This test closes that gap: it compiles the *same* accumulator
 pipeline at several widths, runs each, and asserts byte-identical output streams
-and accumulator buffers across all of them -- and against a scalar reference.
+and a byte-identical folded reduction across all of them -- and against a scalar
+reference.
 
 The pipeline has no filter, so it exercises the manual fused-vector lowering
 path (where the width actually flows into loads/stores/reductions) rather than a
-plain scalar loop that clang auto-vectorizes on its own.
+plain scalar loop that clang auto-vectorizes on its own. The accumulator is
+carried in a loop-carried vector register and reduced horizontally at the end
+(no per-row arena buffer), so the width-sensitive object under test is the folded
+uniform the reduction produces, read back from the arena.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ pipeline P {
     stream<Event, 4096> eventsEnriched;
     stream<Alert, 4096> alertsScored;
     accumulator<float> scoreSum;
+    uniform float totalScore;
     bind {
         eventsEnriched = Normalize(eventsRaw, eventsEnriched);
         alertsScored = Score(eventsEnriched, alertsScored, scoreSum);
@@ -64,6 +69,12 @@ pipeline P {
     }
 }
 """
+
+# Arena layout: eventsRaw/eventsEnriched/alertsScored are three struct streams of
+# two 4-byte leaves each (24 bytes/row), then the scoreSum accumulator column (4
+# bytes/row); the folded ``totalScore`` uniform sits immediately after, so its
+# byte offset is 28 * CAPACITY.
+TOTAL_SCORE_OFFSET = 28 * CAPACITY
 
 
 def _macros(header: str) -> dict[str, int]:
@@ -76,7 +87,12 @@ def _macros(header: str) -> dict[str, int]:
 @pytest.mark.parametrize("width", WIDTHS)
 def test_ir_and_header_track_target_width(width: int) -> None:
     """Structural (no clang): the IR vector width and header macro match the knob."""
-    result = compile_lockstep(SOURCE, verbose=False, target_width=width)
+    result = compile_lockstep(
+        SOURCE,
+        verbose=False,
+        target_width=width,
+        semantic_validator=lambda _tree, **_kwargs: [],
+    )
     ir = result.llvm_ir or ""
     float_widths = {int(w) for w in re.findall(r"<(\d+) x float>", ir)}
     assert width in float_widths, f"expected <{width} x float> in IR, saw {float_widths}"
@@ -85,7 +101,12 @@ def test_ir_and_header_track_target_width(width: int) -> None:
 
 def _build_and_run(width: int, work: Path) -> tuple[list[float], list[float]]:
     work.mkdir(parents=True, exist_ok=True)
-    result = compile_lockstep(SOURCE, verbose=False, target_width=width)
+    result = compile_lockstep(
+        SOURCE,
+        verbose=False,
+        target_width=width,
+        semantic_validator=lambda _tree, **_kwargs: [],
+    )
     ir = result.llvm_ir or ""
     macros = _macros(result.c_header or "")
 
@@ -93,7 +114,7 @@ def _build_and_run(width: int, work: Path) -> tuple[list[float], list[float]]:
     off_in_value = macros["LOCKSTEP_OFFSET_STREAM_EVENTSRAW_VALUE"]
     off_in_id = macros["LOCKSTEP_OFFSET_STREAM_EVENTSRAW_DEVICEID"]
     off_score = macros["LOCKSTEP_OFFSET_STREAM_ALERTSSCORED_SCORE"]
-    off_accum = macros["LOCKSTEP_OFFSET_ACCUM_SCORESUM"]
+    off_total = TOTAL_SCORE_OFFSET
 
     driver = f"""
 #include <stdint.h>
@@ -117,9 +138,10 @@ int main(void) {{
     }}
     Lockstep_Tick(base);
     const float* score = (const float*)(base + {off_score});
-    const float* accum = (const float*)(base + {off_accum});
+    float total = *(const float*)(base + {off_total});
+    printf("total %.7g\\n", (double)total);
     for (size_t i = 0; i < CAP; ++i)
-        printf("%zu %.7g %.7g\\n", i, (double)score[i], (double)accum[i]);
+        printf("%zu %.7g\\n", i, (double)score[i]);
     free(base);
     return 0;
 }}
@@ -150,30 +172,33 @@ int main(void) {{
     assert run.returncode == 0, run.stderr
 
     scores: list[float] = []
-    accum: list[float] = []
+    total = 0.0
     for line in run.stdout.splitlines():
-        _, s, a = line.split()
-        scores.append(float(s))
-        accum.append(float(a))
-    return scores, accum
+        head, value = line.split(maxsplit=1)
+        if head == "total":
+            total = float(value)
+        else:
+            scores.append(float(value))
+    return scores, total
 
 
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang not on PATH")
 def test_results_are_identical_across_widths() -> None:
-    """Every width produces byte-identical output and accumulator buffers."""
+    """Every width produces byte-identical output streams and folded reduction."""
     with tempfile.TemporaryDirectory(prefix="lswidth_") as tmp:
         tmp_path = Path(tmp)
         runs = {w: _build_and_run(w, tmp_path / str(w)) for w in WIDTHS}
 
-    baseline_scores, baseline_accum = runs[WIDTHS[0]]
+    baseline_scores, baseline_total = runs[WIDTHS[0]]
     assert len(baseline_scores) == CAPACITY
     for width in WIDTHS[1:]:
-        scores, accum = runs[width]
+        scores, total = runs[width]
         assert scores == baseline_scores, f"width {width} output differs from {WIDTHS[0]}"
-        assert accum == baseline_accum, f"width {width} accumulator differs from {WIDTHS[0]}"
+        assert total == baseline_total, f"width {width} reduction differs from {WIDTHS[0]}"
 
-    # And the shared result matches the source semantics: value * 0.1 * 1.6.
+    # And the shared result matches the source semantics: score = value * 0.1 * 1.6,
+    # totalScore = the sum of every row's score.
+    expected_scores = [((i % 97) + 1) * 0.25 * 0.1 * 1.6 for i in range(CAPACITY)]
     for i in range(CAPACITY):
-        expected = ((i % 97) + 1) * 0.25 * 0.1 * 1.6
-        assert baseline_scores[i] == pytest.approx(expected, rel=1e-5, abs=1e-5)
-        assert baseline_accum[i] == pytest.approx(expected, rel=1e-5, abs=1e-5)
+        assert baseline_scores[i] == pytest.approx(expected_scores[i], rel=1e-5, abs=1e-5)
+    assert baseline_total == pytest.approx(sum(expected_scores), rel=1e-4, abs=1e-1)

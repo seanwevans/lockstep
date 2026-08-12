@@ -1,23 +1,31 @@
-"""Fusion of accumulator pipeline stages.
+"""Fusion of accumulator pipeline stages, including through pass-through filters.
 
-The code generator plans stage fusion in the optimizer but historically refused
-to emit the single fused vector loop whenever a stage took an ``accum``
-parameter -- ``_can_vectorize_fused_group`` bailed on ``param.modifier ==
-"accum"``.  That forced accumulator pipelines into one strip-mined loop *per
-stage*, each streaming the whole arena and materializing the intermediate
-streams the optimizer said it would eliminate.
+The code generator plans stage fusion in the optimizer; historically it refused
+to emit the single fused vector loop whenever a stage took an ``accum`` parameter
+*or* whenever the group contained a ``filter``. Both restrictions have been
+lifted:
 
-These tests pin the two guarantees of lifting that restriction:
+* An accumulator group fuses into one vector loop and carries each fold's
+  accumulator in a **loop-carried vector register** -- reduced horizontally at
+  the end -- instead of materializing the O(rows) per-row arena buffer.
+* A group fuses *through* a filter when that filter keeps every row
+  unconditionally (its compacting store degenerates to a straight store), so the
+  whole Normalize -> Score -> KeepAll chain collapses to one pass. A filter that
+  actually drops rows (a data-dependent ``return``) still forces the per-stage
+  fallback, because its compacted output shifts every downstream write index.
 
-* **Structural** (always runs): a pure multi-shader accumulator pipeline with no
-  filter now emits exactly one fused loop, the accumulator is written inside it,
-  and the eliminated intermediate stream gets no per-stage loop of its own.
-* **Differential** (requires ``clang``): the fused pipeline computes bit-for-bit
-  the same output stream and the same per-row accumulator buffer as the scalar
-  path.  The scalar reference is produced from the *same* source by appending a
-  keep-all filter, which makes the group fall back to per-stage scalar loops
-  (codegen still refuses to fuse groups containing a filter), so the only
-  variable between the two runs is whether the accumulating stages were fused.
+These tests pin those guarantees:
+
+* **Structural** (always runs): the accumulator group emits exactly one fused
+  loop with a horizontal ``llvm.vector.reduce`` and no per-row accumulator
+  buffer store; a trailing keep-all filter does not break that; and a
+  data-dependent filter falls back to per-stage scalar loops.
+* **Differential** (requires ``clang``): the fused register-carry path, the
+  fuse-through-filter path, and the per-stage scalar fallback all compute the
+  same output stream and the same folded reduction, and all match the source
+  semantics. The scalar reference is the same computation behind a
+  data-dependent (but at run time always-true) filter, so the only variable is
+  whether the stages were fused.
 """
 
 from __future__ import annotations
@@ -37,8 +45,9 @@ INTRINSICS_C = REPO_ROOT / "benchmarks" / "native" / "lockstep_intrinsics.c"
 
 CAPACITY = 4096
 
-# A two-stage pipeline: Normalize feeds Score, Score accumulates.  No filter, so
-# with the accum restriction lifted the whole group fuses into one loop.
+# A two-stage accumulator pipeline: Normalize feeds Score, Score accumulates.
+# No filter, so the whole group fuses into one loop and scoreSum is register
+# carried.
 FUSED_SOURCE = """
 struct Event { int deviceId; float value; };
 struct Alert { int deviceId; float score; };
@@ -60,6 +69,7 @@ pipeline P {
     stream<Event, 4096> eventsEnriched;
     stream<Alert, 4096> alertsScored;
     accumulator<float> scoreSum;
+    uniform float totalScore;
     bind {
         eventsEnriched = Normalize(eventsRaw, eventsEnriched);
         alertsScored = Score(eventsEnriched, alertsScored, scoreSum);
@@ -68,10 +78,9 @@ pipeline P {
 }
 """
 
-# Same computation, but a trailing keep-all filter forces the group to bail to
-# per-stage scalar loops (codegen does not fuse groups that contain a filter).
-# The accumulator buffer and the alertsScored output are written identically.
-SCALAR_SOURCE = """
+# Same computation with a trailing keep-all filter (no ``return`` -> keeps every
+# row). Codegen now fuses through it, so this still collapses to one loop.
+FILTER_FUSED_SOURCE = """
 struct Event { int deviceId; float value; };
 struct Alert { int deviceId; float score; };
 
@@ -98,6 +107,7 @@ pipeline P {
     stream<Alert, 4096> alertsScored;
     stream<Alert, 4096> alertsKept;
     accumulator<float> scoreSum;
+    uniform float totalScore;
     bind {
         eventsEnriched = Normalize(eventsRaw, eventsEnriched);
         alertsScored = Score(eventsEnriched, alertsScored, scoreSum);
@@ -107,6 +117,61 @@ pipeline P {
 }
 """
 
+# Same computation, but the trailing filter has a data-dependent ``return`` (true
+# for all rows at run time on this input). Codegen cannot prove it keeps every
+# row, so the group falls back to per-stage scalar loops with the accumulator
+# buffer -- the un-fused reference.
+SCALAR_SOURCE = """
+struct Event { int deviceId; float value; };
+struct Alert { int deviceId; float score; };
+
+shader Normalize(in Event src, out Event dst) {
+    dst.deviceId = src.deviceId;
+    dst.value = src.value * 0.1;
+}
+
+shader Score(in Event src, out Alert dst, accum float scoreSum) {
+    float score = src.value * 1.6;
+    scoreSum = scoreSum + score;
+    dst.deviceId = src.deviceId;
+    dst.score = score;
+}
+
+filter KeepBounded(in Alert src, out Alert dst) {
+    dst.deviceId = src.deviceId;
+    dst.score = src.score;
+    return src.score > -1000000.0;
+}
+
+pipeline P {
+    stream<Event, 4096> eventsRaw;
+    stream<Event, 4096> eventsEnriched;
+    stream<Alert, 4096> alertsScored;
+    stream<Alert, 4096> alertsKept;
+    accumulator<float> scoreSum;
+    uniform float totalScore;
+    bind {
+        eventsEnriched = Normalize(eventsRaw, eventsEnriched);
+        alertsScored = Score(eventsEnriched, alertsScored, scoreSum);
+        alertsKept = KeepBounded(alertsScored, alertsKept);
+        uniform float totalScore = fold sum(scoreSum);
+    }
+}
+"""
+
+# A single decl uniform reads back the fold. Its byte offset is the streams and
+# the accumulator column that precede it: three 8-byte struct streams + a 4-byte
+# accumulator = 28 bytes/row for FUSED_SOURCE; the filter variants add a fourth
+# stream = 36 bytes/row.
+_TOTAL_OFFSET_NO_FILTER = 28 * CAPACITY
+_TOTAL_OFFSET_WITH_FILTER = 36 * CAPACITY
+
+
+def _compile(source: str):
+    return compile_lockstep(
+        source, verbose=False, semantic_validator=lambda _tree, **_kwargs: []
+    )
+
 
 def _macros(header: str) -> dict[str, int]:
     return {
@@ -115,46 +180,55 @@ def _macros(header: str) -> dict[str, int]:
     }
 
 
-def test_accumulator_group_emits_single_fused_loop() -> None:
-    """The accumulating group fuses: one fused loop, accumulator stored inside."""
-    result = compile_lockstep(FUSED_SOURCE, verbose=False)
-    ir = result.llvm_ir or ""
+def test_accumulator_group_fuses_and_register_carries() -> None:
+    """The accumulating group fuses into one loop with a register reduction."""
+    ir = _compile(FUSED_SOURCE).llvm_ir or ""
 
     fused_loops = set(re.findall(r"fused_(\d+)_cond", ir))
     assert fused_loops == {"0"}, f"expected exactly one fused loop, got {fused_loops}"
 
-    # The accumulator is written from within the fused loop rather than a
-    # separate per-stage pass.
-    assert "fused_store_scoreSum" in ir or "accum_scoreSum" in ir
+    # The fold is a loop-carried vector reduction, not a strip-mine over a per-row
+    # buffer: the accumulator column is never stored to from the fused loop.
+    assert "llvm.vector.reduce" in ir
+    assert "fused_store_scoreSum" not in ir
+    assert "fold_e_strip_cond" not in ir
 
-    # The eliminated intermediate (eventsEnriched) must not get its own
-    # per-stage kernel loop -- that is exactly the traffic fusion removes.
+    # The eliminated intermediate must not get its own per-stage kernel loop.
     assert "route_Normalize_cond" not in ir
     assert "route_Score_cond" not in ir
 
 
-def test_accumulator_restriction_was_the_only_blocker() -> None:
-    """Sanity: the same pipeline with a filter still falls back to scalar loops."""
-    ir = compile_lockstep(SCALAR_SOURCE, verbose=False).llvm_ir or ""
-    # Filter in the group -> no fused loop; stages emitted as scalar routes.
+def test_group_fuses_through_keep_all_filter() -> None:
+    """A trailing keep-all filter no longer blocks fusion."""
+    ir = _compile(FILTER_FUSED_SOURCE).llvm_ir or ""
+    assert "fused_0_cond" in ir
+    assert "route_Normalize_cond" not in ir
+    assert "route_Score_cond" not in ir
+    assert "route_KeepAll_cond" not in ir
+    assert "llvm.vector.reduce" in ir
+
+
+def test_data_dependent_filter_falls_back_to_scalar_loops() -> None:
+    """A filter that can drop rows keeps the per-stage compacting scalar path."""
+    ir = _compile(SCALAR_SOURCE).llvm_ir or ""
     assert "fused_0_cond" not in ir
     assert "route_Score_cond" in ir
 
 
-def _build_and_run(source: str, work: Path) -> tuple[list[float], list[float]]:
-    """Compile ``source`` to a native executable that primes inputs, ticks once,
-    and dumps the alertsScored.score column and the scoreSum accumulator buffer.
-    Returns (scores, accum)."""
+def _build_and_run(
+    source: str, work: Path, score_macro: str, total_offset: int
+) -> tuple[list[float], float]:
+    """Compile ``source``, tick once over primed inputs, and return the final
+    output stream's score column and the folded ``totalScore`` uniform."""
     work.mkdir(parents=True, exist_ok=True)
-    result = compile_lockstep(source, verbose=False)
+    result = _compile(source)
     ir = result.llvm_ir or ""
     macros = _macros(result.c_header or "")
 
     arena_bytes = macros["LOCKSTEP_ARENA_BYTES"]
     off_in_value = macros["LOCKSTEP_OFFSET_STREAM_EVENTSRAW_VALUE"]
     off_in_id = macros["LOCKSTEP_OFFSET_STREAM_EVENTSRAW_DEVICEID"]
-    off_score = macros["LOCKSTEP_OFFSET_STREAM_ALERTSSCORED_SCORE"]
-    off_accum = macros["LOCKSTEP_OFFSET_ACCUM_SCORESUM"]
+    off_score = macros[score_macro]
 
     driver = f"""
 #include <stdint.h>
@@ -178,9 +252,9 @@ int main(void) {{
     }}
     Lockstep_Tick(base);
     const float* score = (const float*)(base + {off_score});
-    const float* accum = (const float*)(base + {off_accum});
+    printf("total %.7g\\n", (double)*(const float*)(base + {total_offset}));
     for (size_t i = 0; i < CAP; ++i)
-        printf("%zu %.7g %.7g\\n", i, (double)score[i], (double)accum[i]);
+        printf("%zu %.7g\\n", i, (double)score[i]);
     free(base);
     return 0;
 }}
@@ -213,28 +287,50 @@ int main(void) {{
     assert run.returncode == 0, run.stderr
 
     scores: list[float] = []
-    accum: list[float] = []
+    total = 0.0
     for line in run.stdout.splitlines():
-        _, s, a = line.split()
-        scores.append(float(s))
-        accum.append(float(a))
-    return scores, accum
+        head, value = line.split(maxsplit=1)
+        if head == "total":
+            total = float(value)
+        else:
+            scores.append(float(value))
+    return scores, total
 
 
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang not on PATH")
-def test_fused_accumulator_matches_scalar_path() -> None:
-    """Fused and scalar codegen produce identical output and accumulator buffers."""
+def test_fused_and_scalar_paths_agree() -> None:
+    """Register-carry, fuse-through-filter, and per-stage fallback all agree."""
     with tempfile.TemporaryDirectory(prefix="lsfuse_") as tmp:
         work = Path(tmp)
-        fused_scores, fused_accum = _build_and_run(FUSED_SOURCE, work / "f")
-        scalar_scores, scalar_accum = _build_and_run(SCALAR_SOURCE, work / "s")
+        fused_scores, fused_total = _build_and_run(
+            FUSED_SOURCE,
+            work / "f",
+            "LOCKSTEP_OFFSET_STREAM_ALERTSSCORED_SCORE",
+            _TOTAL_OFFSET_NO_FILTER,
+        )
+        filter_scores, filter_total = _build_and_run(
+            FILTER_FUSED_SOURCE,
+            work / "ff",
+            "LOCKSTEP_OFFSET_STREAM_ALERTSKEPT_SCORE",
+            _TOTAL_OFFSET_WITH_FILTER,
+        )
+        scalar_scores, scalar_total = _build_and_run(
+            SCALAR_SOURCE,
+            work / "s",
+            "LOCKSTEP_OFFSET_STREAM_ALERTSKEPT_SCORE",
+            _TOTAL_OFFSET_WITH_FILTER,
+        )
 
     assert len(fused_scores) == CAPACITY
-    assert fused_scores == scalar_scores
-    assert fused_accum == scalar_accum
+    assert fused_scores == filter_scores == scalar_scores
 
-    # And both match the source semantics: score = value * 0.1 * 1.6.
+    # The folded reduction agrees across all three lowerings (modulo float
+    # reassociation between the register reduction and the scalar strip-mine).
+    assert fused_total == pytest.approx(scalar_total, rel=1e-5, abs=1e-2)
+    assert filter_total == pytest.approx(scalar_total, rel=1e-5, abs=1e-2)
+
+    # And all match the source semantics: score = value * 0.1 * 1.6.
+    expected_scores = [((i % 97) + 1) * 0.25 * 0.1 * 1.6 for i in range(CAPACITY)]
     for i in range(CAPACITY):
-        expected = ((i % 97) + 1) * 0.25 * 0.1 * 1.6
-        assert fused_scores[i] == pytest.approx(expected, rel=1e-5, abs=1e-5)
-        assert fused_accum[i] == pytest.approx(expected, rel=1e-5, abs=1e-5)
+        assert fused_scores[i] == pytest.approx(expected_scores[i], rel=1e-5, abs=1e-5)
+    assert fused_total == pytest.approx(sum(expected_scores), rel=1e-4, abs=1e-1)

@@ -139,13 +139,16 @@ accumulator slot in a register across the fused body and writes it back per row
 accumulator pipeline measures ~1.9× faster fused than as per-stage loops on the
 current host.
 
-The remaining blocker for the shipped `multi_stage_pipeline` and
-`telemetry_filter_aggregation` workloads is the **trailing filter** in each
-group (`KeepActive` / the telemetry keep stage): `_lower_fused_kernel_group`
-still falls back to per-stage lowering for any group containing a filter, because
-a filter's compacting store has a data-dependent write index that the current
-vector path does not lower. Fusing through filters is the next codegen step; the
-probe below still bounds the win available once it lands.
+Codegen now also fuses **through** a filter when that filter keeps every row
+unconditionally (no `return`, so its compacting store is a straight store at the
+read index): `_lower_fused_kernel_group` treats such a pass-through filter as an
+identity copy and fuses the whole group, carrying the fold accumulators in
+loop-carried vector registers instead of the per-row buffer. That is what lifts
+the shipped `multi_stage_pipeline` (`KeepActive`) and
+`telemetry_filter_aggregation` (`KeepHealthy`) workloads to a single vector pass.
+A filter with a **data-dependent** `return` still has a compacting store the
+vector path does not lower, so it keeps the per-stage fallback; the probe below
+bounds the win still available for that case.
 
 The probe runs the multi_stage computation two ways over identical SoA data —
 `unfused` (three loops writing/re-reading intermediates) and `fused` (one loop,
@@ -196,12 +199,12 @@ useful part:
   ~20%; see [Fold-into-kernel fusion](#fold-into-kernel-fusion) below for what
   closed the gap.
 * `telemetry_filter_aggregation` and `multi_stage_pipeline` — multi-stage
-  pipelines ending in a filter. Codegen lowers them to one strip-mined loop per
-  stage and materializes the intermediate streams, so the single-pass C
-  reference (one trip through memory instead of two or three) wins by **~5×** and
-  **~4×** respectively. This is the same gap `fusion_probe.py` measures
-  internally, now shown against a real external baseline: it is what
-  fusing-through-filters would recover.
+  pipelines with a pass-through filter. Codegen fuses each into a single vector
+  pass (through the filter, intermediates in registers, fold accumulators
+  register-carried), closing the old ~5× / ~4× gap: `multi_stage_pipeline` runs
+  at near parity (~0.9×) and `telemetry_filter_aggregation` at ~0.66–0.95× of the
+  hand-written single loop, a ~3.9× native-throughput gain over the previous
+  per-stage lowering.
 
 This is the harness to reach for when the question is "what beats us on raw
 numbers" — and the one that proved the single fused kernel reached C parity.

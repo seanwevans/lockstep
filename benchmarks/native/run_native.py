@@ -213,8 +213,15 @@ def _build_plan(name: str, source: str, target_width: int = 8) -> WorkloadPlan:
     for stream_name in sorted(input_names):
         input_fields.extend(_fields_for(stream_name))
 
+    # Checksum a *terminal* output stream -- a bind target that no later kernel
+    # consumes -- so the signal covers the whole pipeline and lands on a column
+    # that is actually written.  Earlier stages (intermediate streams) may be
+    # eliminated by stage fusion and never materialized in the arena, so summing
+    # one of those would read primed garbage rather than a computed result.
+    terminal_outputs = [n for n in output_names if n not in input_names]
+    checksum_streams = terminal_outputs or output_names or sorted(input_names)
     checksum_field: StreamField | None = None
-    for stream_name in output_names or sorted(input_names):
+    for stream_name in checksum_streams:
         for field in _fields_for(stream_name):
             if not field.is_integer:
                 checksum_field = field

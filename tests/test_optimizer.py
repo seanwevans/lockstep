@@ -355,7 +355,10 @@ def test_compile_pipeline_vectorizes_fused_struct_field_assignments(monkeypatch)
     assert "fadd <4 x float>" in result.llvm_ir
     assert "fmul <4 x float>" in result.llvm_ir
     assert "insertelement <4 x float>" in result.llvm_ir
-    assert "extractelement <4 x float>" in result.llvm_ir
+    # SoA leaf columns are loaded and stored as contiguous ``<4 x float>`` vectors
+    # (each field is its own packed column), not gathered/scattered lane by lane.
+    assert "load <4 x float>" in result.llvm_ir
+    assert "store <4 x float>" in result.llvm_ir
     llvm.parse_assembly(result.llvm_ir)
 
 
