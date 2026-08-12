@@ -791,7 +791,7 @@ def run_lsp_server() -> int:
             "LSP dependencies are missing. Install with: pip install pygls lsprotocol"
         ) from exc
 
-    server = LanguageServer("lockstep-lsp", "0.1.0")
+    server = LanguageServer("lockstep-lsp", "0.2.0")
     debounce_seconds = 0.15
     # Cache strategy:
     # - Keys are (uri, version, source_hash) snapshots.
