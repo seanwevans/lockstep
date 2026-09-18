@@ -1202,6 +1202,10 @@ def build_semantic_validator(base_visitor_cls):
                         )
                     )
                 for uniform in pipeline.uniforms:
+                    if uniform.from_fold:
+                        # Declared below by `_validate_ast_fold_route`, so that a
+                        # name introduced by two folds still reports a duplicate.
+                        continue
                     ctx = self._ctx_from_location(uniform.location)
                     declared_type = str(uniform.declared_type)
                     self._validate_declared_type(declared_type, ctx, "LCK310")

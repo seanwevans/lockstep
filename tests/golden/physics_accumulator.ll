@@ -3,7 +3,7 @@ target triple = "x86_64-unknown-linux-gnu"
 target datalayout = ""
 
 %"struct.Particle" = type {i32, float, float, float, float, float}
-%"struct.Lockstep_Arena" = type {[2048 x i32], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x i32], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float]}
+%"struct.Lockstep_Arena" = type {[2048 x i32], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x i32], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float], [2048 x float], float}
 declare float @"pure_step"(float %"edge", float %"x")
 
 declare float @"pure_mix"(float %"a", float %"b", float %"t")
@@ -288,5 +288,9 @@ reduce_IntegrateAndAccumulate_body:
   br label %"reduce_IntegrateAndAccumulate_cond"
 reduce_IntegrateAndAccumulate_exit:
   %"reduce_kineticEnergy_final" = load float, float* %"reduce_kineticEnergy_acc"
+  %"uniform_totalEnergy_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
+  %"uniform_totalEnergy_value_byte_ptr" = getelementptr i8, i8* %"uniform_totalEnergy_arena_bytes", i32 106496
+  %".63" = bitcast i8* %"uniform_totalEnergy_value_byte_ptr" to float*
+  store float %"reduce_kineticEnergy_final", float* %".63"
   ret void
 }

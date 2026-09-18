@@ -3,7 +3,7 @@ target triple = "x86_64-unknown-linux-gnu"
 target datalayout = ""
 
 %"struct.Reading" = type {i32, float, i1}
-%"struct.Lockstep_Arena" = type {[4096 x i32], [4096 x float], [4096 x i1], [4096 x i32], [4096 x float], [4096 x i1], [4096 x i32], [4096 x float], [4096 x i1], [4096 x float]}
+%"struct.Lockstep_Arena" = type {[4096 x i32], [4096 x float], [4096 x i1], [4096 x i32], [4096 x float], [4096 x i1], [4096 x i32], [4096 x float], [4096 x i1], [4096 x float], float}
 declare float @"pure_step"(float %"edge", float %"x")
 
 declare float @"pure_mix"(float %"a", float %"b", float %"t")
@@ -202,6 +202,10 @@ fused_0_exit:
   %"fused_carry_reduce" = call fast float @"llvm.vector.reduce.fadd.v8f32"(float              0x0, <8 x float> %"fused_carry_final_vec")
   %"fused_carry_final_tail" = load float, float* %"fused_0_grandTotal_tail"
   %"fused_carry_final" = fadd fast float %"fused_carry_reduce", %"fused_carry_final_tail"
+  %"uniform_grandTotal_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
+  %"uniform_grandTotal_value_byte_ptr" = getelementptr i8, i8* %"uniform_grandTotal_arena_bytes", i32 126976
+  %".22" = bitcast i8* %"uniform_grandTotal_value_byte_ptr" to float*
+  store float %"fused_carry_final", float* %".22"
   ret void
 }
 

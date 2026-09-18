@@ -276,6 +276,13 @@ class AstUniformDecl:
     declared_type: AstType
     initializer: str | None = None
     location: AstLocation = AstLocation()
+    # True when this uniform was introduced by a `uniform T x = fold op(y);`
+    # bind statement rather than a pipeline-scope `uniform` declaration. It is
+    # a real uniform either way -- it needs an arena slot so the fold has
+    # somewhere to store its result -- but the semantic validator declares it
+    # from the fold route instead, so duplicate-declaration diagnostics keep
+    # pointing at the fold that introduced the name.
+    from_fold: bool = False
 
     def __post_init__(self):
         object.__setattr__(self, "declared_type", _normalize_type(self.declared_type))
@@ -790,20 +797,40 @@ class AstBuilder(_AstBuilderMixin):
             fold_operator = self._call(bind_stmt, "foldOperator")
             route_text = bind_stmt.getText()
             if fold_operator is not None and len(id_tokens) >= 2:
+                uniform_type = (
+                    self._resolve_type_ctx(self._call(bind_stmt, "typeName"))
+                    if self._call(bind_stmt, "typeName")
+                    else self._resolve_type("float")
+                )
+                uniform_name = id_tokens[0].getText()
+                location = self._token_location(id_tokens[0])
                 self._active_bind_routes.append(
                     AstFoldBindRoute(
-                        uniform_type=(
-                            self._resolve_type_ctx(self._call(bind_stmt, "typeName"))
-                            if self._call(bind_stmt, "typeName")
-                            else self._resolve_type("float")
-                        ),
-                        uniform_name=id_tokens[0].getText(),
+                        uniform_type=uniform_type,
+                        uniform_name=uniform_name,
                         operator=fold_operator.getText(),
                         source=id_tokens[1].getText(),
                         route=route_text,
-                        location=self._token_location(id_tokens[0]),
+                        location=location,
                     )
                 )
+                # `uniform T x = fold op(y);` declares x. Register it like any
+                # other pipeline uniform so it gets an arena slot: without one,
+                # codegen computes the reduction and then drops it on the floor
+                # (the store in `_lower_fold_route` is skipped), the host has no
+                # way to read the folded scalar back, and LLVM deletes the whole
+                # accumulator dataflow as dead code.
+                if not any(
+                    uniform.name == uniform_name for uniform in self._active_uniforms
+                ):
+                    self._active_uniforms.append(
+                        AstUniformDecl(
+                            name=uniform_name,
+                            declared_type=uniform_type,
+                            location=location,
+                            from_fold=True,
+                        )
+                    )
                 continue
 
             if len(id_tokens) >= 2:
