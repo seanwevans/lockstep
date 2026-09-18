@@ -7,9 +7,10 @@ hand-edited figures. Reproduce any table by running the command shown above it.
 Absolute throughput is host-dependent (CPU, memory bandwidth, compiler
 version), so treat these as a concrete reference point and a relative/regression
 signal, not a portable constant. What is portable is the *shape* of the results:
-SIMD-friendly SoA layout beats AoS by an order of magnitude, and stage fusion
-recovers a multiple-x throughput win over the per-stage loops codegen used to
-emit. The flip side is measured and reported honestly too: against an idiomatic
+SIMD-friendly SoA layout beats AoS by several-x on layout alone (the order-of-
+magnitude figure in table 2 is partly clang's gather/scatter lowering for the
+AoS baseline, quantified there), and stage fusion recovers a multiple-x
+throughput win over the per-stage loops codegen used to emit. The flip side is measured and reported honestly too: against an idiomatic
 single-pass **hand-written C** baseline (table 4), the single fused-kernel
 workload (`particle_energy`) runs **at parity** — after codegen learned to fuse a
 fold's reduction into the writing kernel loop instead of materializing a per-row
@@ -93,6 +94,40 @@ peaking above 50× when cache-resident. `energy` reads only velocity + mass: SoA
 additionally wins on **bandwidth** by not dragging unused position fields through
 cache. Both speedups narrow once the sweep goes memory-bound past ~256k rows but
 stay firmly above 1× — which is the point: SoA is a win across the whole range.
+
+### How much of `integrate` is layout, and how much is instruction selection
+
+The `integrate` column above overstates the layout effect on this host, and the
+harness now measures by how much. Clang lowers `integrate_aos`'s 24-byte-stride
+accesses to `vgatherqps`/`vscatterqps` — 10 gathers and 10 scatters per vector
+iteration — and those are slow enough to dominate. That is a **codegen** cost,
+not a property of Array-of-Structs.
+
+`soa_vs_aos.py` therefore rebuilds the *same source* with `-mno-avx512f`, which
+denies the vectorizer scatter (the expensive, AVX-512-only half), and reports a
+second table. SoA is essentially unchanged — it never used scatter — while AoS
+speeds up several-fold:
+
+| n | integrate speedup (native) | integrate speedup (no scatter) | integrate AoS Mrows/s: native → no scatter |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 39.3× | **7.7×** | 346 → 1,882 |
+| 4,000 | 16.0× | **5.8×** | 346 → 928 |
+| 16,000 | 15.0× | **3.7×** | 354 → 1,340 |
+| 64,000 | 15.5× | **9.0×** | 330 → 593 |
+| 256,000 | 4.7× | **3.5×** | 304 → 486 |
+| 1,000,000 | 5.1× | **3.3×** | 326 → 447 |
+
+So the honest reading of `integrate` is **~3–8×** for layout, with the rest of
+the headline figure attributable to clang's instruction selection for the AoS
+store on an AVX-512 host. Both costs are real and both are paid by anyone
+writing AoS here — but only the first is portable to a host without AVX-512.
+
+The `energy` column needs no such correction: it is a gather-only read with no
+scatter, and its speedup barely moves between the two builds (6.9× → 7.5× at
+n=1,000, 2.2× → 2.9× at n=1,000,000). That one is a genuine bandwidth win.
+
+The AoS timings are noisy run to run, so read individual rows as approximate and
+the trend as the result.
 
 ---
 

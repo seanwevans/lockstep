@@ -209,19 +209,74 @@ def _iterations_for(n: int) -> int:
     return max(20, min(20000, 200_000_000 // max(n, 1)))
 
 
-def _build(clang: str, work_dir: Path) -> Path:
+def _build(
+    clang: str,
+    work_dir: Path,
+    *,
+    label: str = "native",
+    extra_flags: tuple[str, ...] = (),
+    check: bool = True,
+) -> Path | None:
     src = work_dir / "soa_vs_aos.c"
-    exe = work_dir / "soa_vs_aos"
+    exe = work_dir / f"soa_vs_aos_{label}"
     src.write_text(_C_SOURCE, encoding="utf-8")
     # -ffast-math mirrors Lockstep's codegen: the backend emits reduction loops
     # with `fast` flags so LLVM may reassociate float adds into a vector tree.
     # Without it a scalar float reduction serializes on its accumulator and no
     # layout can vectorize it, which would understate the SoA bandwidth win.
-    cmd = [clang, "-O3", "-march=native", "-ffast-math", str(src), "-o", str(exe), "-lm"]
+    cmd = [
+        clang,
+        "-O3",
+        "-march=native",
+        *extra_flags,
+        "-ffast-math",
+        str(src),
+        "-o",
+        str(exe),
+        "-lm",
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
+        if not check:
+            return None
         raise BenchmarkError(f"clang failed ({proc.returncode})\n{proc.stderr.strip()}")
     return exe
+
+
+def _emits_gather_scatter(clang: str, work_dir: Path) -> bool:
+    """Does the native build lower a kernel to gather/scatter instructions?
+
+    Only the AoS kernels can: their interleaved stride is what pushes the
+    vectorizer onto ``vgather*``/``vscatter*``, while the SoA columns are
+    contiguous unit-stride loads and stores. So a hit anywhere in this
+    translation unit means the AoS baseline is paying for gather/scatter, which
+    is a *codegen* cost rather than a property of the memory layout -- and on
+    Intel those instructions are slow enough to dominate the comparison.
+
+    Scatter is the expensive half and is AVX-512-only, which is why the control
+    build below is checked for scatter specifically: AVX2 still has gather.
+    """
+    src = work_dir / "soa_vs_aos.c"
+    src.write_text(_C_SOURCE, encoding="utf-8")
+    asm = work_dir / "soa_vs_aos.s"
+    proc = subprocess.run(
+        [
+            clang,
+            "-O3",
+            "-march=native",
+            "-ffast-math",
+            "-S",
+            str(src),
+            "-o",
+            str(asm),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return False
+    text = asm.read_text(encoding="utf-8", errors="replace")
+    return "vgather" in text or "vscatter" in text
 
 
 def _run_size(exe: Path, n: int) -> dict[str, float]:
@@ -262,6 +317,14 @@ def _summarize(raw: dict[str, float]) -> dict[str, object]:
     }
 
 
+def _summarize_no_scatter(raw: dict[str, float]) -> dict[str, object]:
+    """Same metrics from the gather/scatter-free build, suffixed."""
+    base = _summarize(raw)
+    return {
+        f"{key}_no_scatter": value for key, value in base.items() if key != "n"
+    }
+
+
 def _results_agree(raw: dict[str, float]) -> bool:
     def close(a: float, b: float) -> bool:
         scale = max(1.0, abs(a), abs(b))
@@ -272,9 +335,44 @@ def _results_agree(raw: dict[str, float]) -> bool:
     )
 
 
-def run(sizes: list[int], clang: str) -> list[dict[str, object]]:
+def run(
+    sizes: list[int],
+    clang: str,
+    *,
+    no_scatter_flags: tuple[str, ...] = ("-mno-avx512f",),
+    skip_no_scatter: bool = False,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Measure the layout win, and separate it from gather/scatter codegen.
+
+    On an AVX-512 host clang lowers the AoS kernels to ``vgatherqps`` /
+    ``vscatterqps``, which are slow enough to dominate the comparison and make
+    the layout look far more decisive than it is. Rebuilding the *same source*
+    with scatter unavailable leaves SoA essentially unchanged while AoS speeds
+    up several-fold, so the second build is what separates "SoA is a better
+    layout" from "clang picked scatter for the AoS store".
+    """
     with tempfile.TemporaryDirectory(prefix="lssoa_") as tmp:
-        exe = _build(clang, Path(tmp))
+        work = Path(tmp)
+        exe = _build(clang, work)
+        assert exe is not None  # check=True raises instead of returning None
+        uses_gather_scatter = _emits_gather_scatter(clang, work)
+
+        no_scatter_exe: Path | None = None
+        if uses_gather_scatter and not skip_no_scatter:
+            no_scatter_exe = _build(
+                clang,
+                work,
+                label="noscatter",
+                extra_flags=no_scatter_flags,
+                check=False,
+            )
+            if no_scatter_exe is not None and _emits_scatter_with(
+                clang, work, no_scatter_flags
+            ):
+                # The flags did not actually remove scatter; reporting the build
+                # as a scatter-free control would be a lie.
+                no_scatter_exe = None
+
         summaries: list[dict[str, object]] = []
         for n in sizes:
             raw = _run_size(exe, n)
@@ -282,8 +380,40 @@ def run(sizes: list[int], clang: str) -> list[dict[str, object]]:
                 raise BenchmarkError(
                     f"AoS and SoA disagree at n={n}; layout comparison is invalid"
                 )
-            summaries.append(_summarize(raw))
-    return summaries
+            summary = _summarize(raw)
+            if no_scatter_exe is not None:
+                ns_raw = _run_size(no_scatter_exe, n)
+                if not _results_agree(ns_raw):
+                    raise BenchmarkError(
+                        f"AoS and SoA disagree at n={n} in the no-scatter build; "
+                        "layout comparison is invalid"
+                    )
+                summary.update(_summarize_no_scatter(ns_raw))
+            summaries.append(summary)
+
+    meta: dict[str, object] = {
+        "aos_uses_gather_scatter": uses_gather_scatter,
+        "no_scatter_build": no_scatter_exe is not None,
+        "no_scatter_flags": list(no_scatter_flags) if no_scatter_exe is not None else [],
+    }
+    return summaries, meta
+
+
+def _emits_scatter_with(
+    clang: str, work_dir: Path, extra_flags: tuple[str, ...]
+) -> bool:
+    """Does a build with ``extra_flags`` still emit scatter stores?"""
+    src = work_dir / "soa_vs_aos.c"
+    asm = work_dir / "soa_vs_aos_noscatter.s"
+    proc = subprocess.run(
+        [clang, "-O3", "-march=native", *extra_flags, "-ffast-math", "-S",
+         str(src), "-o", str(asm)],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return True  # cannot prove it is gone
+    return "vscatter" in asm.read_text(encoding="utf-8", errors="replace")
 
 
 def main() -> int:
@@ -298,6 +428,21 @@ def main() -> int:
     parser.add_argument("--clang", default="clang", help="C compiler to use.")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table.")
     parser.add_argument("--output", type=Path, help="Also write the JSON report to this path.")
+    parser.add_argument(
+        "--no-scatter-flags",
+        nargs="+",
+        default=["-mno-avx512f"],
+        help=(
+            "Flags for the control build that denies the vectorizer "
+            "gather/scatter (default: -mno-avx512f, i.e. x86). Only used when "
+            "the native build actually emits them."
+        ),
+    )
+    parser.add_argument(
+        "--skip-no-scatter",
+        action="store_true",
+        help="Report only the native build, without the gather/scatter control.",
+    )
     args = parser.parse_args()
 
     clang = shutil.which(args.clang)
@@ -306,8 +451,13 @@ def main() -> int:
             f"'{args.clang}' not found on PATH; this micro-benchmark requires clang."
         )
 
-    results = run(sorted(set(args.sizes)), clang)
-    payload = {"schema_version": 1, "kind": "soa_vs_aos", "results": results}
+    results, meta = run(
+        sorted(set(args.sizes)),
+        clang,
+        no_scatter_flags=tuple(args.no_scatter_flags),
+        skip_no_scatter=args.skip_no_scatter,
+    )
+    payload = {"schema_version": 2, "kind": "soa_vs_aos", "results": results, **meta}
 
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +479,38 @@ def main() -> int:
             f"| {row['integrate_soa_mrows_per_sec']} | {row['integrate_soa_speedup']}x "
             f"| {row['energy_aos_mrows_per_sec']} | {row['energy_soa_mrows_per_sec']} "
             f"| {row['energy_soa_speedup']}x |"
+        )
+
+    if meta["no_scatter_build"]:
+        flags = " ".join(str(f) for f in meta["no_scatter_flags"])  # type: ignore[union-attr]
+        print()
+        print(
+            f"The AoS kernels lower to gather/scatter on this host. Same source "
+            f"rebuilt with `{flags}`, which denies the vectorizer\n"
+            "scatter (the expensive, AVX-512-only half) -- the residual gap is "
+            "much closer to the layout effect proper:"
+        )
+        print()
+        print(
+            "| rows | integrate AoS | integrate SoA | speedup | energy AoS | energy SoA | speedup |"
+        )
+        print("| ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for row in results:
+            print(
+                f"| {row['n']} | {row['integrate_aos_mrows_per_sec_no_scatter']} "
+                f"| {row['integrate_soa_mrows_per_sec_no_scatter']} "
+                f"| {row['integrate_soa_speedup_no_scatter']}x "
+                f"| {row['energy_aos_mrows_per_sec_no_scatter']} "
+                f"| {row['energy_soa_mrows_per_sec_no_scatter']} "
+                f"| {row['energy_soa_speedup_no_scatter']}x |"
+            )
+    elif meta["aos_uses_gather_scatter"]:
+        print()
+        print(
+            "NOTE: the AoS kernels lower to gather/scatter on this host, so the "
+            "speedups above\nconflate that codegen cost with the layout effect, "
+            "but the control build was\nunavailable (flags rejected, or they did "
+            "not remove the instructions)."
         )
     return 0
 

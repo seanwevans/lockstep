@@ -109,6 +109,7 @@ mirrors the `fast` flags Lockstep emits on reduction loops).
 ```bash
 python benchmarks/native/soa_vs_aos.py
 python benchmarks/native/soa_vs_aos.py --sizes 16000 1000000 --json
+python benchmarks/native/soa_vs_aos.py --skip-no-scatter   # native build only
 ```
 
 Two kernels model the two ways layout matters:
@@ -121,6 +122,38 @@ Two kernels model the two ways layout matters:
 
 Expect the SoA speedup to be largest when the data is cache-resident and to
 narrow (but stay well above 1×) once the sweep goes memory-bound at large sizes.
+
+### The gather/scatter control build
+
+On an AVX-512 host the `integrate` speedup is **not** all layout. Clang lowers
+`integrate_aos`'s 24-byte-stride accesses to `vgatherqps`/`vscatterqps` — 10
+gathers and 10 scatters per vector iteration — and those are slow enough to
+dominate the comparison. That is a *codegen* cost, not a property of AoS.
+
+So when the native build emits gather/scatter, the harness rebuilds the **same
+source** with `--no-scatter-flags` (default `-mno-avx512f`) and reports a second
+table. Scatter is the expensive, AVX-512-only half, so the control is validated
+by checking scatter is actually gone from the generated assembly; AVX2 gathers
+may remain. If the flags are rejected or fail to remove scatter, the harness
+says so rather than presenting an invalid control.
+
+Measured on an AVX-512 Xeon, `integrate` (the `energy` column barely moves, and
+SoA is unchanged either way — it never used scatter):
+
+| rows | speedup, native | speedup, no scatter | AoS Mrows/s native → no scatter |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 39.3× | **7.7×** | 346 → 1882 |
+| 16,000 | 15.0× | **3.7×** | 354 → 1340 |
+| 256,000 | 4.7× | **3.5×** | 304 → 486 |
+| 1,000,000 | 5.1× | **3.3×** | 326 → 447 |
+
+Read the no-scatter column as the layout effect and the gap between the two as
+what clang's instruction selection costs the AoS baseline on this host. Both are
+real; only the second is portable to a host without AVX-512. The AoS numbers are
+noisy run to run, so treat individual rows as approximate.
+
+`aos_uses_gather_scatter`, `no_scatter_build` and `no_scatter_flags` in the JSON
+record which of the two applied.
 
 ## Multi-stage fusion probe
 
