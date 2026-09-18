@@ -67,8 +67,19 @@ def _ir_arena_bytes(ir_text: str) -> int:
     )
     assert match is not None, "arena struct type missing from IR"
     total = 0
-    for array in re.finditer(r"\[(\d+)\s*x\s*(\w+)\]", match.group(1)):
-        total += int(array.group(1)) * _LLVM_ELEMENT_BYTES[array.group(2)]
+    for field in match.group(1).split(","):
+        field = field.strip()
+        if not field:
+            continue
+        array = re.match(r"\[(\d+)\s*x\s*(\w+)\]", field)
+        if array is not None:
+            total += int(array.group(1)) * _LLVM_ELEMENT_BYTES[array.group(2)]
+            continue
+        # Scalar leaves (a folded/pipeline uniform) are a bare primitive type.
+        # Counting only arrays silently under-reports the arena, which is
+        # exactly the ABI drift this test exists to catch.
+        assert field in _LLVM_ELEMENT_BYTES, f"unhandled arena field type: {field!r}"
+        total += _LLVM_ELEMENT_BYTES[field]
     return total
 
 

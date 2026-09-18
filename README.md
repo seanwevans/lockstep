@@ -141,6 +141,10 @@ The compiler emits a C-compatible header for the host (C/C++, Rust, Zig):
 2. **Prime** initial data into the SoA fields at the header's byte offsets.
 3. **Tick** by calling `Lockstep_Tick(arena)`. There is no separate
    `Lockstep_BindMemory` entry point.
+4. **Read back** any folded uniform at its `LOCKSTEP_OFFSET_UNIFORM_<NAME>`
+   byte offset. A `uniform float total = fold sum(acc);` in the `bind` block
+   reserves a slot in the arena that `Lockstep_Tick` writes the reduced scalar
+   to.
 
 See [`examples/minimal_host.c`](examples/) for a complete end-to-end host app.
 

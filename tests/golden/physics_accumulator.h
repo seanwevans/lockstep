@@ -36,9 +36,10 @@ LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {
     float stream_particlesOut_vy[2048];
     float stream_particlesOut_mass[2048];
     float accum_kineticEnergy_value[2048];
+    float uniform_totalEnergy_value;
 });
 
-#define LOCKSTEP_ARENA_BYTES 106496
+#define LOCKSTEP_ARENA_BYTES 106500
 #define LOCKSTEP_SIMD_WIDTH 8
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");
@@ -53,6 +54,7 @@ _Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_
 #define LOCKSTEP_OFFSET_STREAM_PARTICLESIN 0
 #define LOCKSTEP_OFFSET_STREAM_PARTICLESOUT 49152
 #define LOCKSTEP_OFFSET_ACCUM_KINETICENERGY 98304
+#define LOCKSTEP_OFFSET_UNIFORM_TOTALENERGY 106496
 #define LOCKSTEP_OFFSET_STREAM_PARTICLESIN_ID 0
 #define LOCKSTEP_OFFSET_STREAM_PARTICLESIN_PX 8192
 #define LOCKSTEP_OFFSET_STREAM_PARTICLESIN_PY 16384

@@ -9,6 +9,24 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Folded uniforms now reach the host.** `uniform T x = fold op(y);` declares
+  `x`, but that declaration produced no arena slot: `_lower_fold_route` hit its
+  `uniform_name not in uniform_slots` guard and returned without storing, the
+  generated header exposed no offset for `x`, and a host had no way to read the
+  folded scalar. Because nothing consumed the reduction, LLVM deleted the whole
+  accumulator dataflow as dead code — for a copy-shaped pipeline such as
+  `telemetry_filter_aggregation` the compiled `Lockstep_Tick` collapsed to a
+  column copy containing no floating-point arithmetic at all. Fold-declared
+  uniforms are now registered like any other pipeline uniform, so they get an
+  arena slot, a `LOCKSTEP_OFFSET_UNIFORM_*` macro, and a real store.
+
+  **This changes the ABI:** `LOCKSTEP_ARENA_BYTES` grows by one element per
+  folded uniform (stream and accumulator offsets are unchanged — the uniforms
+  are appended). Rebuild hosts against the regenerated header. Output checksums
+  are unchanged.
+
 ### Added
 
 - **Pass-through filter-group fusion.** A multi-stage group whose only filter

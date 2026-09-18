@@ -31,9 +31,10 @@ LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {
     int32_t stream_alertsScored_deviceId[4096];
     float stream_alertsScored_score[4096];
     float accum_scoreSum_value[4096];
+    float uniform_totalScore_value;
 });
 
-#define LOCKSTEP_ARENA_BYTES 114688
+#define LOCKSTEP_ARENA_BYTES 114692
 #define LOCKSTEP_SIMD_WIDTH 8
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");
@@ -49,6 +50,7 @@ _Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_
 #define LOCKSTEP_OFFSET_STREAM_EVENTSENRICHED 32768
 #define LOCKSTEP_OFFSET_STREAM_ALERTSSCORED 65536
 #define LOCKSTEP_OFFSET_ACCUM_SCORESUM 98304
+#define LOCKSTEP_OFFSET_UNIFORM_TOTALSCORE 114688
 #define LOCKSTEP_OFFSET_STREAM_EVENTSRAW_DEVICEID 0
 #define LOCKSTEP_OFFSET_STREAM_EVENTSRAW_VALUE 16384
 #define LOCKSTEP_OFFSET_STREAM_EVENTSENRICHED_DEVICEID 32768

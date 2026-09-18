@@ -30,9 +30,10 @@ LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {
     float stream_readingsAggregated_value[4096];
     uint8_t stream_readingsAggregated_valid[4096];
     float accum_total_value[4096];
+    float uniform_grandTotal_value;
 });
 
-#define LOCKSTEP_ARENA_BYTES 126976
+#define LOCKSTEP_ARENA_BYTES 126980
 #define LOCKSTEP_SIMD_WIDTH 8
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");
@@ -48,6 +49,7 @@ _Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_
 #define LOCKSTEP_OFFSET_STREAM_READINGSVALID 36864
 #define LOCKSTEP_OFFSET_STREAM_READINGSAGGREGATED 73728
 #define LOCKSTEP_OFFSET_ACCUM_TOTAL 110592
+#define LOCKSTEP_OFFSET_UNIFORM_GRANDTOTAL 126976
 #define LOCKSTEP_OFFSET_STREAM_READINGSRAW_SENSORID 0
 #define LOCKSTEP_OFFSET_STREAM_READINGSRAW_VALUE 16384
 #define LOCKSTEP_OFFSET_STREAM_READINGSRAW_VALID 32768
