@@ -184,10 +184,33 @@ two paths produce the same output checksum. (Those checksums also match
 `run_native.py`'s for the shared workloads, cross-validating the references.)
 Built with `clang -O3 -march=native -ffast-math`.
 
+### Measurement order
+
+Each arena is 1–6 MiB, so the two do not stay cache-resident together. Timing
+one kernel to completion and then the other therefore hands the second one
+whatever cache state the first left behind, and a fixed order bakes that bias
+into every run: on the previous driver, swapping which kernel went first moved
+`telemetry_filter_aggregation`'s mean ratio from **1.036 to 0.832**.
+
+The harness instead interleaves the two kernels in alternating rounds
+(`--rounds`, default 9), swapping which one leads on odd rounds, and reports the
+**median** round. That also spreads any drift — frequency, a noisy neighbour on
+a shared host — across both kernels instead of charging it to whoever ran last.
+`lockstep_per_tick_us_min` / `c_per_tick_us_min` carry the fastest round, so a
+noisy run is visible instead of silently folded into the ratio.
+
+What this does *not* fix is cross-process variation. Within one process both
+kernels are stable (median within a few percent of min), but on some hosts the
+cache-resident C copy loops settle into a different mode from run to run — for
+`telemetry_filter_aggregation` the C baseline has been observed swinging 14–20 µs
+across invocations while `Lockstep_Tick` held steady. Run the harness several
+times and read each ratio as a band.
+
 ```bash
 python benchmarks/native/lockstep_vs_c.py
 make bench-vs-c
 python benchmarks/native/lockstep_vs_c.py --workload particle_energy --target-width 16 --json
+python benchmarks/native/lockstep_vs_c.py --rounds 21 --iterations 10000   # noisier host
 ```
 
 `ratio = C time / Lockstep time`: `>= 1.0` means Lockstep matches or beats
