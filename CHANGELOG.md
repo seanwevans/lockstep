@@ -23,6 +23,12 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
   every stream whose row count is only known at run time: a filter's output,
   and any stage fed only by such streams. The tick writes the count; later
   stages loop to it, and folds reduce only the rows it covers.
+- **Alias-analysis probe** (`benchmarks/native/alias_probe.py`,
+  `make bench-alias`). It measures which optimizations LLVM's alias analysis
+  blocks in `Lockstep_Tick`, and what sound per-leaf scoped alias metadata
+  would recover. The result: perfect scopes add little once the changes below
+  are in, and no benchmark workload gets measurably faster. Scoped
+  metadata moves to "Deferred past v1.0.0" in `ROADMAP.md`.
 
 - **Differential oracle** (`tests/test_differential_oracle.py`, `make oracle`).
   It generates random valid programs and checks the simulator against
@@ -31,6 +37,18 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
   minimal regression test.
 
 ### Changed
+
+- **Uniforms are loaded once per route, before its row loop.** Codegen used to
+  reload a uniform on every row, and LLVM couldn't prove the row stores miss it.
+  That kept per-stage shader loops scalar. Such loops are now vectorized: 1.52×
+  on a 1M-row `Brighten`.
+- **Row indices are clamped with a scalar `smax`/`smin`** instead of a
+  `<4 x i32>` splat/select/extract idiom. Scalar evolution can analyze the new
+  form, so the vectorizer can bound the loop, and instcombine removes the clamp
+  when the trip count equals the capacity. That is 1.72× on a nested-struct
+  fan-in stage. A loop with a run-time row count (after a filter) skips the
+  clamp whenever its static row bound fits the stream, which LLVM can't infer
+  on its own.
 
 - **The simulator now uses the compiled numeric model.** `float` is IEEE single
   precision (it used to be double), and `int` wraps at 32 bits with C

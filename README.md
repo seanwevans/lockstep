@@ -125,8 +125,11 @@ Lockstep targets **LLVM IR** directly.
   `noalias nocapture` (it is the sole pointer parameter and every access is
   derived from it, so it is provably non-aliasing — a `restrict`-like guarantee
   at the ABI boundary). Scoped alias metadata on the individual arena-derived
-  stream/accumulator pointers inside the tick is not yet emitted, so do not
-  assume full intra-loop alias disambiguation (see [ROADMAP.md](ROADMAP.md)).
+  stream/accumulator pointers inside the tick is not emitted. We measured what
+  it would buy (`make bench-alias`, [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)):
+  it helps a small number of loops, and no benchmark workload gets measurably
+  faster. The loop-invariant loads that aliasing actually blocked (uniforms)
+  are now loaded once, before each row loop.
 * **SSA locals.** Scalar and concrete-struct locals are lowered through
   SSA-friendly values where possible; arena loads/stores stay byte-addressed for
   ABI stability.

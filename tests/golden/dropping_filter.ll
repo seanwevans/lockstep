@@ -220,43 +220,33 @@ fused_0_tail_cond:
   br i1 %"fused_tail_active", label %"fused_0_tail_body", label %"fused_0_tail_exit"
 fused_0_tail_body:
   %"fused_samplesKept_tail_slot" = alloca %"struct.Sample"
-  %".28" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 %"fused_tail_idx", i32 0
-  %"route_i32_splat" = shufflevector <4 x i32> %".28", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %".29" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 0, i32 0
-  %"route_i32_splat.1" = shufflevector <4 x i32> %".29", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %"route_vec_max_cmp" = icmp sgt <4 x i32> %"route_i32_splat", %"route_i32_splat.1"
-  %"route_vec_max" = select  <4 x i1> %"route_vec_max_cmp", <4 x i32> %"route_i32_splat", <4 x i32> %"route_i32_splat.1"
-  %"route_i32_lane0" = extractelement <4 x i32> %"route_vec_max", i32 0
-  %".30" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 %"route_i32_lane0", i32 0
-  %"route_i32_splat.2" = shufflevector <4 x i32> %".30", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %".31" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 19, i32 0
-  %"route_i32_splat.3" = shufflevector <4 x i32> %".31", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %"route_vec_min_cmp" = icmp slt <4 x i32> %"route_i32_splat.2", %"route_i32_splat.3"
-  %"route_vec_min" = select  <4 x i1> %"route_vec_min_cmp", <4 x i32> %"route_i32_splat.2", <4 x i32> %"route_i32_splat.3"
-  %"route_i32_lane0.1" = extractelement <4 x i32> %"route_vec_min", i32 0
-  %"stream_samplesRaw_byte_index.3" = mul i32 %"route_i32_lane0.1", 4
+  %"route_clamp_lo_cmp" = icmp sgt i32 %"fused_tail_idx", 0
+  %"route_clamp_lo" = select  i1 %"route_clamp_lo_cmp", i32 %"fused_tail_idx", i32 0
+  %"route_clamp_hi_cmp" = icmp slt i32 %"route_clamp_lo", 19
+  %"route_clamp" = select  i1 %"route_clamp_hi_cmp", i32 %"route_clamp_lo", i32 19
+  %"stream_samplesRaw_byte_index.3" = mul i32 %"route_clamp", 4
   %"stream_samplesRaw_byte_offset.3" = add i32 0, %"stream_samplesRaw_byte_index.3"
   %"stream_samplesRaw_arena_bytes.3" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesRaw_id_byte_ptr.1" = getelementptr i8, i8* %"stream_samplesRaw_arena_bytes.3", i32 %"stream_samplesRaw_byte_offset.3"
-  %".32" = bitcast i8* %"stream_samplesRaw_id_byte_ptr.1" to i32*
-  %"stream_samplesRaw_val" = load i32, i32* %".32"
-  %".33" = insertvalue %"struct.Sample" undef, i32 %"stream_samplesRaw_val", 0
-  %"stream_samplesRaw_byte_index.4" = mul i32 %"route_i32_lane0.1", 4
+  %".28" = bitcast i8* %"stream_samplesRaw_id_byte_ptr.1" to i32*
+  %"stream_samplesRaw_val" = load i32, i32* %".28"
+  %".29" = insertvalue %"struct.Sample" undef, i32 %"stream_samplesRaw_val", 0
+  %"stream_samplesRaw_byte_index.4" = mul i32 %"route_clamp", 4
   %"stream_samplesRaw_byte_offset.4" = add i32 80, %"stream_samplesRaw_byte_index.4"
   %"stream_samplesRaw_arena_bytes.4" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesRaw_value_byte_ptr.1" = getelementptr i8, i8* %"stream_samplesRaw_arena_bytes.4", i32 %"stream_samplesRaw_byte_offset.4"
-  %".34" = bitcast i8* %"stream_samplesRaw_value_byte_ptr.1" to float*
-  %"stream_samplesRaw_val.1" = load float, float* %".34"
-  %".35" = insertvalue %"struct.Sample" %".33", float %"stream_samplesRaw_val.1", 1
-  %"stream_samplesRaw_byte_index.5" = mul i32 %"route_i32_lane0.1", 1
+  %".30" = bitcast i8* %"stream_samplesRaw_value_byte_ptr.1" to float*
+  %"stream_samplesRaw_val.1" = load float, float* %".30"
+  %".31" = insertvalue %"struct.Sample" %".29", float %"stream_samplesRaw_val.1", 1
+  %"stream_samplesRaw_byte_index.5" = mul i32 %"route_clamp", 1
   %"stream_samplesRaw_byte_offset.5" = add i32 160, %"stream_samplesRaw_byte_index.5"
   %"stream_samplesRaw_arena_bytes.5" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesRaw_flagged_byte_ptr.1" = getelementptr i8, i8* %"stream_samplesRaw_arena_bytes.5", i32 %"stream_samplesRaw_byte_offset.5"
-  %".36" = bitcast i8* %"stream_samplesRaw_flagged_byte_ptr.1" to i1*
-  %"stream_samplesRaw_val.2" = load i1, i1* %".36"
-  %".37" = insertvalue %"struct.Sample" %".35", i1 %"stream_samplesRaw_val.2", 2
-  %".38" = call i1 @"filter_DropFlagged"(%"struct.Sample" %".37", %"struct.Sample"* %"fused_samplesKept_tail_slot")
-  br i1 %".38", label %"fused_0_tail_kept_0", label %"fused_0_tail_row_done"
+  %".32" = bitcast i8* %"stream_samplesRaw_flagged_byte_ptr.1" to i1*
+  %"stream_samplesRaw_val.2" = load i1, i1* %".32"
+  %".33" = insertvalue %"struct.Sample" %".31", i1 %"stream_samplesRaw_val.2", 2
+  %".34" = call i1 @"filter_DropFlagged"(%"struct.Sample" %".33", %"struct.Sample"* %"fused_samplesKept_tail_slot")
+  br i1 %".34", label %"fused_0_tail_kept_0", label %"fused_0_tail_row_done"
 fused_0_tail_exit:
   %"fused_carry_final_vec" = load <8 x float>, <8 x float>* %"fused_0_keptTotal_vec"
   %"fused_carry_reduce" = call fast float @"llvm.vector.reduce.fadd.v8f32"(float              0x0, <8 x float> %"fused_carry_final_vec")
@@ -265,12 +255,12 @@ fused_0_tail_exit:
   %"fused_0_kept" = load i32, i32* %"fused_0_write_idx"
   %"count_samplesScaled_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"count_samplesScaled_value_byte_ptr" = getelementptr i8, i8* %"count_samplesScaled_arena_bytes", i32 628
-  %".67" = bitcast i8* %"count_samplesScaled_value_byte_ptr" to i32*
-  store i32 %"fused_0_kept", i32* %".67"
+  %".59" = bitcast i8* %"count_samplesScaled_value_byte_ptr" to i32*
+  store i32 %"fused_0_kept", i32* %".59"
   %"uniform_keptTotal_arena_bytes" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"uniform_keptTotal_value_byte_ptr" = getelementptr i8, i8* %"uniform_keptTotal_arena_bytes", i32 620
-  %".69" = bitcast i8* %"uniform_keptTotal_value_byte_ptr" to float*
-  store float %"fused_carry_final", float* %".69"
+  %".61" = bitcast i8* %"uniform_keptTotal_value_byte_ptr" to float*
+  store float %"fused_carry_final", float* %".61"
   ret void
 fused_0_tail_row_done:
   %"fused_tail_next" = add i32 %"fused_tail_idx", 1
@@ -281,66 +271,56 @@ fused_0_tail_kept_0:
   store float 0.0, float* %"fused_total_tail_acc"
   %"fused_tail_write_idx" = load i32, i32* %"fused_0_write_idx"
   %"fused_samplesKept" = load %"struct.Sample", %"struct.Sample"* %"fused_samplesKept_tail_slot"
-  %".41" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 %"fused_tail_write_idx", i32 0
-  %"route_i32_splat.4" = shufflevector <4 x i32> %".41", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %".42" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 0, i32 0
-  %"route_i32_splat.5" = shufflevector <4 x i32> %".42", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %"route_vec_max_cmp.1" = icmp sgt <4 x i32> %"route_i32_splat.4", %"route_i32_splat.5"
-  %"route_vec_max.1" = select  <4 x i1> %"route_vec_max_cmp.1", <4 x i32> %"route_i32_splat.4", <4 x i32> %"route_i32_splat.5"
-  %"route_i32_lane0.2" = extractelement <4 x i32> %"route_vec_max.1", i32 0
-  %".43" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 %"route_i32_lane0.2", i32 0
-  %"route_i32_splat.6" = shufflevector <4 x i32> %".43", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %".44" = insertelement <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, i32 19, i32 0
-  %"route_i32_splat.7" = shufflevector <4 x i32> %".44", <4 x i32> <i32 undef, i32 undef, i32 undef, i32 undef>, <4 x i32> <i32 0, i32 0, i32 0, i32 0>
-  %"route_vec_min_cmp.1" = icmp slt <4 x i32> %"route_i32_splat.6", %"route_i32_splat.7"
-  %"route_vec_min.1" = select  <4 x i1> %"route_vec_min_cmp.1", <4 x i32> %"route_i32_splat.6", <4 x i32> %"route_i32_splat.7"
-  %"route_i32_lane0.3" = extractelement <4 x i32> %"route_vec_min.1", i32 0
+  %"route_clamp_lo_cmp.1" = icmp sgt i32 %"fused_tail_write_idx", 0
+  %"route_clamp_lo.1" = select  i1 %"route_clamp_lo_cmp.1", i32 %"fused_tail_write_idx", i32 0
+  %"route_clamp_hi_cmp.1" = icmp slt i32 %"route_clamp_lo.1", 19
+  %"route_clamp.1" = select  i1 %"route_clamp_hi_cmp.1", i32 %"route_clamp_lo.1", i32 19
   %"route_samplesScaled_out_slot" = alloca %"struct.Sample"
   %"stream_samplesScaled_byte_index.6" = mul i32 %"fused_tail_write_idx", 4
   %"stream_samplesScaled_byte_offset.6" = add i32 360, %"stream_samplesScaled_byte_index.6"
   %"stream_samplesScaled_arena_bytes.6" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_id_byte_ptr.2" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.6", i32 %"stream_samplesScaled_byte_offset.6"
-  %".45" = bitcast i8* %"stream_samplesScaled_id_byte_ptr.2" to i32*
-  %"stream_samplesScaled_val" = load i32, i32* %".45"
-  %".46" = insertvalue %"struct.Sample" undef, i32 %"stream_samplesScaled_val", 0
+  %".37" = bitcast i8* %"stream_samplesScaled_id_byte_ptr.2" to i32*
+  %"stream_samplesScaled_val" = load i32, i32* %".37"
+  %".38" = insertvalue %"struct.Sample" undef, i32 %"stream_samplesScaled_val", 0
   %"stream_samplesScaled_byte_index.7" = mul i32 %"fused_tail_write_idx", 4
   %"stream_samplesScaled_byte_offset.7" = add i32 440, %"stream_samplesScaled_byte_index.7"
   %"stream_samplesScaled_arena_bytes.7" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_value_byte_ptr.2" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.7", i32 %"stream_samplesScaled_byte_offset.7"
-  %".47" = bitcast i8* %"stream_samplesScaled_value_byte_ptr.2" to float*
-  %"stream_samplesScaled_val.1" = load float, float* %".47"
-  %".48" = insertvalue %"struct.Sample" %".46", float %"stream_samplesScaled_val.1", 1
+  %".39" = bitcast i8* %"stream_samplesScaled_value_byte_ptr.2" to float*
+  %"stream_samplesScaled_val.1" = load float, float* %".39"
+  %".40" = insertvalue %"struct.Sample" %".38", float %"stream_samplesScaled_val.1", 1
   %"stream_samplesScaled_byte_index.8" = mul i32 %"fused_tail_write_idx", 1
   %"stream_samplesScaled_byte_offset.8" = add i32 520, %"stream_samplesScaled_byte_index.8"
   %"stream_samplesScaled_arena_bytes.8" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_flagged_byte_ptr.2" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.8", i32 %"stream_samplesScaled_byte_offset.8"
-  %".49" = bitcast i8* %"stream_samplesScaled_flagged_byte_ptr.2" to i1*
-  %"stream_samplesScaled_val.2" = load i1, i1* %".49"
-  %".50" = insertvalue %"struct.Sample" %".48", i1 %"stream_samplesScaled_val.2", 2
-  store %"struct.Sample" %".50", %"struct.Sample"* %"route_samplesScaled_out_slot"
+  %".41" = bitcast i8* %"stream_samplesScaled_flagged_byte_ptr.2" to i1*
+  %"stream_samplesScaled_val.2" = load i1, i1* %".41"
+  %".42" = insertvalue %"struct.Sample" %".40", i1 %"stream_samplesScaled_val.2", 2
+  store %"struct.Sample" %".42", %"struct.Sample"* %"route_samplesScaled_out_slot"
   call void @"shader_Scale"(%"struct.Sample" %"fused_samplesKept", %"struct.Sample"* %"route_samplesScaled_out_slot", float* %"fused_total_tail_acc")
   %"route_samplesScaled_out_value" = load %"struct.Sample", %"struct.Sample"* %"route_samplesScaled_out_slot"
-  %".53" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 0
+  %".45" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 0
   %"stream_samplesScaled_byte_index.9" = mul i32 %"fused_tail_write_idx", 4
   %"stream_samplesScaled_byte_offset.9" = add i32 360, %"stream_samplesScaled_byte_index.9"
   %"stream_samplesScaled_arena_bytes.9" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_id_byte_ptr.3" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.9", i32 %"stream_samplesScaled_byte_offset.9"
-  %".54" = bitcast i8* %"stream_samplesScaled_id_byte_ptr.3" to i32*
-  store i32 %".53", i32* %".54"
-  %".56" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 1
+  %".46" = bitcast i8* %"stream_samplesScaled_id_byte_ptr.3" to i32*
+  store i32 %".45", i32* %".46"
+  %".48" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 1
   %"stream_samplesScaled_byte_index.10" = mul i32 %"fused_tail_write_idx", 4
   %"stream_samplesScaled_byte_offset.10" = add i32 440, %"stream_samplesScaled_byte_index.10"
   %"stream_samplesScaled_arena_bytes.10" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_value_byte_ptr.3" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.10", i32 %"stream_samplesScaled_byte_offset.10"
-  %".57" = bitcast i8* %"stream_samplesScaled_value_byte_ptr.3" to float*
-  store float %".56", float* %".57"
-  %".59" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 2
+  %".49" = bitcast i8* %"stream_samplesScaled_value_byte_ptr.3" to float*
+  store float %".48", float* %".49"
+  %".51" = extractvalue %"struct.Sample" %"route_samplesScaled_out_value", 2
   %"stream_samplesScaled_byte_index.11" = mul i32 %"fused_tail_write_idx", 1
   %"stream_samplesScaled_byte_offset.11" = add i32 520, %"stream_samplesScaled_byte_index.11"
   %"stream_samplesScaled_arena_bytes.11" = bitcast %"struct.Lockstep_Arena"* %"arena" to i8*
   %"stream_samplesScaled_flagged_byte_ptr.3" = getelementptr i8, i8* %"stream_samplesScaled_arena_bytes.11", i32 %"stream_samplesScaled_byte_offset.11"
-  %".60" = bitcast i8* %"stream_samplesScaled_flagged_byte_ptr.3" to i1*
-  store i1 %".59", i1* %".60"
+  %".52" = bitcast i8* %"stream_samplesScaled_flagged_byte_ptr.3" to i1*
+  store i1 %".51", i1* %".52"
   %"fused_tail_acc_val" = load float, float* %"fused_total_tail_acc"
   %"fused_tail_cur" = load float, float* %"fused_0_keptTotal_tail"
   %"fused_tail_next_acc" = fadd fast float %"fused_tail_cur", %"fused_tail_acc_val"

@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov oracle lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion bench-vs-c
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov oracle lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion bench-vs-c bench-alias
 
 verify: lint test mypy
 
@@ -100,3 +100,6 @@ bench-fusion:
 # Requires clang on PATH.
 bench-vs-c:
 	python benchmarks/native/lockstep_vs_c.py --output lockstep-vs-c-results.json
+
+bench-alias:
+	python benchmarks/native/alias_probe.py --output alias-probe-results.json

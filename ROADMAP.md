@@ -24,6 +24,7 @@ Each links to the code that provides it.
 | Pass-through filter-group fusion (fuse through an unconditional-keep filter into one vector loop: contiguous SoA leaf vectors + register-carried fold accumulators, multiple folds per accumulator; lifts the two multi-stage filter pipelines to ~0.9× / ~0.7× of hand-written C) | `codegen.py` (`_lower_fused_kernel_group`, `_filter_always_keeps`, `_group_carry_reductions`, `_leaf_contiguous_vector_load`/`_store`), `tests/test_accumulator_fusion.py` |
 | Live row counts: a filtered stream publishes how many rows are valid (`LOCKSTEP_OFFSET_COUNT_*`), and later stages and folds run over only those rows | `arena_layout.py` (`counted_streams`), `codegen.py` (`_live_counts`) |
 | Fusing through a dropping filter: the keep flag masks lanes, the sink is compress-stored, and masked lanes fold as the identity (3.0× on `telemetry_drop_unhealthy`, 1.31× hand-written C with AVX-512) | `codegen.py` (`_lower_fused_kernel_group`, `_compress_store_binding_vectors`), `benchmarks/RESULTS.md` table 5 |
+| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp, omitted when provably in range (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
 | Arena size-overflow checking + C `static_assert` (`LCK502`) | `arena_layout.py`, `c_header.py` |
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |
@@ -34,16 +35,6 @@ Each links to the code that provides it.
 | Opt-in LSP: diagnostics, hover, go-to-definition, completion | `lsp.py` |
 
 ## Remaining toward v1.0.0
-
-**Backend**
-
-- **Scoped alias metadata on arena-derived pointers.** `Lockstep_Tick`'s arena
-  parameter is already `noalias nocapture` (provably sound — the sole pointer
-  parameter). What remains is disambiguating the individual stream/accumulator
-  pointers *inside* the tick: emitting `noalias` on kernel pointer parameters
-  (guarded by a whole-program check that no bind route feeds one resource to two
-  pointer params) and/or `!alias.scope` metadata per disjoint arena region,
-  backed by a short soundness argument in a `PROOFS.md`.
 
 **Language**
 
@@ -90,12 +81,30 @@ Each links to the code that provides it.
 
 1. **Correct** — every valid program's generated IR, compiled against the
    generated header, matches the simulator's observable behavior, backed by the
-   `noalias` argument, fuzzing, and the benchmark suite.
+   differential oracle, fuzzing, and the benchmark suite.
 2. **Stable** — the public API, diagnostic catalog, grammar, and C header ABI are
    frozen under semantic versioning.
 3. **Complete** — CLI, simulator, LSP, formatter, header generator, and IR
    backend together cover authoring → validation → compilation → host
    integration.
+
+## Deferred past v1.0.0
+
+- **Scoped alias metadata on arena-derived pointers** (`!alias.scope` per arena
+  leaf, or `noalias` on kernel pointer parameters). `make bench-alias` measured
+  the upper bound: sound per-leaf scopes on every arena access, across the
+  benchmark workloads, the golden programs and 300 random programs.
+  - LLVM never needed a runtime alias check (`vector.memcheck`).
+  - The misses aliasing did cause came almost entirely from uniforms reloaded
+    inside row loops, and from a row-index clamp scalar evolution couldn't
+    analyze. Three small codegen changes fixed those, with no metadata.
+  - After those fixes, perfect scopes vectorize 12 more loops across ~300 fused
+    programs.
+  - Benchmark-workload timings stay within 0.95–1.07×, which is inside this
+    host's run-to-run noise.
+
+  This is worth revisiting only if a workload shows a measured gap. See
+  `benchmarks/RESULTS.md` ("Alias-analysis probe").
 
 ## Non-goals for v1.0.0
 

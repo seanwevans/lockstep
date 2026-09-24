@@ -386,6 +386,50 @@ def emit_llvm_ir(
     _accum_writer_ids: dict[str, list[int]] = {}
     _accum_fold_routes: dict[str, list[AstFoldBindRoute]] = {}
 
+    # Uniform arguments loaded once in a route's preheader (see
+    # ``_hoist_uniform_loads``), keyed by (uniform name, LLVM type).
+    _hoisted_uniforms: dict[tuple[str, str], ir.Value] = {}
+    # The fused vector path's per-leaf uniform scalars, loaded the same way.
+    _hoisted_uniform_leaves: dict[tuple[str, tuple[str, ...], str], ir.Value] = {}
+
+    def _hoist_uniform_loads(
+        routes: Sequence[AstKernelBindRoute], *, vector_leaves: bool = False
+    ) -> None:
+        # A uniform is constant for the whole route, but loading it inside the
+        # row loop leaves LLVM to prove the row stores never overwrite it.  The
+        # arena is one pointer and BasicAA can't bound the row index, so it
+        # can't: the load stays in the loop and blocks vectorization.  Loading
+        # it once before the loop sidesteps the question entirely.
+        _hoisted_uniforms.clear()
+        _hoisted_uniform_leaves.clear()
+        for route in routes:
+            callee, params = _kernel_function_and_params(route.kernel)
+            if callee is None:
+                continue
+            for param, arg_name in zip(params, route.args):
+                if not vector_leaves:
+                    break
+                if param.modifier != "uniform" or arg_name not in uniform_slots:
+                    continue
+                leaves = _vectorizable_leaf_fields(_type_name(param.declared_type))
+                for rel_path, (leaf_ty, leaf_type_name) in (leaves or {}).items():
+                    leaf_key = (arg_name, rel_path, str(leaf_ty))
+                    if leaf_key not in _hoisted_uniform_leaves:
+                        _hoisted_uniform_leaves[leaf_key] = _load_value(
+                            "uniform", arg_name, leaf_ty, leaf_type_name, rel_path
+                        )
+            for index, param in enumerate(params):
+                if index >= len(route.args) or index >= len(callee.args):
+                    continue
+                arg_name = route.args[index]
+                if param.modifier != "uniform" or arg_name not in uniform_slots:
+                    continue
+                llvm_type = callee.args[index].type
+                key = (arg_name, str(llvm_type))
+                if key not in _hoisted_uniforms:
+                    _hoisted_uniforms[key] = _load_tick_param(
+                        "uniform", arg_name, llvm_type
+                    )
     # --- Live row counts ----------------------------------------------------
     #
     # A filter keeps a data-dependent number of rows, and a stage reading only
@@ -625,38 +669,17 @@ def emit_llvm_ir(
             intrinsic = ir.Function(module, fn_ty, name=name)
         return intrinsic
 
-    def _vector_i32_splat(value: ir.Value, width: int = 4) -> ir.Value:
-        vec_ty = ir.VectorType(ir.IntType(32), width)
-        seed = tick_builder.insert_element(
-            ir.Constant(vec_ty, ir.Undefined), value, ir.Constant(ir.IntType(32), 0)
-        )
-        mask_ty = ir.VectorType(ir.IntType(32), width)
-        mask = ir.Constant(mask_ty, [0] * width)
-        return tick_builder.shuffle_vector(
-            seed, ir.Constant(vec_ty, ir.Undefined), mask, name="route_i32_splat"
-        )
-
-    def _vector_i32_extract_lane0(vector: ir.Value) -> ir.Value:
-        return tick_builder.extract_element(
-            vector, ir.Constant(ir.IntType(32), 0), name="route_i32_lane0"
-        )
-
-    def _vector_i32_max(lhs: ir.Value, rhs: ir.Value, width: int = 4) -> ir.Value:
-        lhs_vec = _vector_i32_splat(lhs, width)
-        rhs_vec = _vector_i32_splat(rhs, width)
-        pred = tick_builder.icmp_signed(">", lhs_vec, rhs_vec, name="route_vec_max_cmp")
-        merged = tick_builder.select(pred, lhs_vec, rhs_vec, name="route_vec_max")
-        return _vector_i32_extract_lane0(merged)
-
-    def _vector_i32_min(lhs: ir.Value, rhs: ir.Value, width: int = 4) -> ir.Value:
-        lhs_vec = _vector_i32_splat(lhs, width)
-        rhs_vec = _vector_i32_splat(rhs, width)
-        pred = tick_builder.icmp_signed("<", lhs_vec, rhs_vec, name="route_vec_min_cmp")
-        merged = tick_builder.select(pred, lhs_vec, rhs_vec, name="route_vec_min")
-        return _vector_i32_extract_lane0(merged)
-
-    def _vector_i32_clamp(value: ir.Value, lo: ir.Value, hi: ir.Value) -> ir.Value:
-        return _vector_i32_min(_vector_i32_max(value, lo), hi)
+    def _clamp_i32(value: ir.Value, lo: ir.Value, hi: ir.Value) -> ir.Value:
+        # A plain scalar smax/smin: LLVM's scalar evolution understands it, so
+        # the vectorizer can bound every clamped row index, and instcombine
+        # drops the clamp entirely when the trip count never exceeds the
+        # capacity.  (A <4 x i32> splat/select/extract formulation used to be
+        # emitted here; SCEV cannot see through it, which left per-stage loops
+        # scalar with "cannot identify array bounds".)
+        above = tick_builder.icmp_signed(">", value, lo, name="route_clamp_lo_cmp")
+        raised = tick_builder.select(above, value, lo, name="route_clamp_lo")
+        below = tick_builder.icmp_signed("<", raised, hi, name="route_clamp_hi_cmp")
+        return tick_builder.select(below, raised, hi, name="route_clamp")
 
     def _average_over_count(
         total: ir.Value, count: ir.Value, uniform_type: ir.Type, name: str
@@ -999,6 +1022,16 @@ def emit_llvm_ir(
             trip_count = max(trip_count, stream_capacities[route.target])
         return max(trip_count, 1)
 
+    # Static upper bound on the row index of the loop being emitted, pushed
+    # only for loops whose trip count is a run-time row count (static trip
+    # counts let instcombine drop the clamp on its own).
+    _row_bound: list[int] = []
+
+    def _dynamic_trip_bound(route: AstKernelBindRoute) -> int:
+        return max(
+            (stream_capacities[name] for name in _route_in_streams(route)), default=1
+        )
+
     def _clamped_stream_index(
         name: str, current: ir.Value, kind: str = "stream"
     ) -> ir.Value:
@@ -1008,8 +1041,14 @@ def emit_llvm_ir(
             else stream_capacities.get(name, 0)
         )
         safe_capacity = max(int(raw_capacity), 1)
+        if kind == "stream" and _row_bound and _row_bound[-1] <= safe_capacity:
+            # The loop visits fewer rows than this stream holds, so the index
+            # is already in range.  With a run-time row count LLVM can't prove
+            # that itself, and the clamp would stop it from bounding the loop's
+            # addresses (the vectorizer's "cannot identify array bounds").
+            return current
         max_index = ir.Constant(ir.IntType(32), safe_capacity - 1)
-        return _vector_i32_clamp(current, ir.Constant(ir.IntType(32), 0), max_index)
+        return _clamp_i32(current, ir.Constant(ir.IntType(32), 0), max_index)
 
     def _route_arg_value(
         *,
@@ -1064,6 +1103,9 @@ def emit_llvm_ir(
         if modifier == "accum" and arg_name in accum_slots:
             return _load_tick_param_ptr("accum", arg_name, param.type.pointee, current)
         if modifier == "uniform" and arg_name in uniform_slots:
+            hoisted = _hoisted_uniforms.get((arg_name, str(param.type)))
+            if hoisted is not None:
+                return hoisted
             return _load_tick_param("uniform", arg_name, param.type)
         return _zero_value(param.type)
 
@@ -1203,6 +1245,9 @@ def emit_llvm_ir(
         )
         pad_counts = _pad_counts_for(route, trip_value) if dynamic_trip else None
         kernel_name = route.kernel
+        if dynamic_trip is not None:
+            _row_bound.append(_dynamic_trip_bound(route))
+        _hoist_uniform_loads([route])
 
         index_ptr = tick_builder.alloca(
             ir.IntType(32), name=f"{_sanitize_symbol(kernel_name)}_idx"
@@ -1264,6 +1309,9 @@ def emit_llvm_ir(
         tick_builder.branch(loop_cond)
 
         tick_builder.position_at_end(loop_exit)
+        _hoist_uniform_loads(())
+        if dynamic_trip is not None:
+            _row_bound.pop()
         _finish_route_counts(
             route,
             trip_value,
@@ -2331,7 +2379,9 @@ def emit_llvm_ir(
                             f"type '{param_type_name}' cannot be SIMD-vectorized"
                         )
                     for rel_path, (leaf_ty, leaf_type_name) in uniform_values.items():
-                        scalar = _load_value(
+                        scalar = _hoisted_uniform_leaves.get(
+                            (arg_name, rel_path, str(leaf_ty))
+                        ) or _load_value(
                             "uniform", arg_name, leaf_ty, leaf_type_name, rel_path
                         )
                         vector_lowerer.set_slot_leaf(
@@ -2648,6 +2698,11 @@ def emit_llvm_ir(
                     _lower_kernel_route(route)
                 return
 
+        _hoist_uniform_loads(routes, vector_leaves=True)
+        if dynamic_trip:
+            _row_bound.append(
+                max((stream_capacities[name] for name in entry_streams), default=1)
+            )
         index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fused_{group_index}_idx")
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
         write_index_ptr = None
@@ -2931,6 +2986,9 @@ def emit_llvm_ir(
                 "fused_carry_final",
             )
             _fused_group_reductions[reduction["uniform"]] = (reduced, reduction["utn"])
+        _hoist_uniform_loads(())
+        if dynamic_trip:
+            _row_bound.pop()
 
         sink_count: ir.Value = (
             tick_builder.load(write_index_ptr, name=f"fused_{group_index}_kept")
@@ -3068,6 +3126,8 @@ def emit_llvm_ir(
         )
         pad_counts = _pad_counts_for(route, trip_value) if dynamic_trip else None
         kernel_symbol = _sanitize_symbol(route.kernel)
+        if dynamic_trip is not None:
+            _row_bound.append(_dynamic_trip_bound(route))
 
         # accum_name -> (acc_slot, operator, uniform_type, uniform_type_name)
         reductions: dict[str, tuple[ir.AllocaInstr, str, ir.Type, str]] = {}
@@ -3086,6 +3146,7 @@ def emit_llvm_ir(
             tick_builder.store(_reduction_identity(uniform_type, operator), acc_slot)
             reductions[accum_name] = (acc_slot, operator, uniform_type, uniform_type_name)
 
+        _hoist_uniform_loads([route])
         index_ptr = tick_builder.alloca(ir.IntType(32), name=f"reduce_{kernel_symbol}_idx")
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
         loop_cond = tick.append_basic_block(f"reduce_{kernel_symbol}_cond")
@@ -3158,6 +3219,9 @@ def emit_llvm_ir(
                             name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
                         )
             _fused_reductions[accum_name] = (reduced, uniform_type_name)
+        _hoist_uniform_loads(())
+        if dynamic_trip is not None:
+            _row_bound.pop()
         _finish_route_counts(route, trip_value, trip_value)
 
     for pipeline_index, pipeline in enumerate(program.pipelines):

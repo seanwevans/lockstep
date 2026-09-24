@@ -346,6 +346,89 @@ rather than a precise measurement.
 
 ---
 
+## Alias-analysis probe (`make bench-alias`)
+
+Should Lockstep emit scoped alias metadata (`!alias.scope` per arena leaf), as
+`ROADMAP.md` used to plan? `benchmarks/native/alias_probe.py` answers that
+before anyone builds it. The corpus is:
+
+- the benchmark workloads;
+- the golden programs;
+- 300 of the differential oracle's random programs.
+
+Each program is lowered two ways, fused as shipped and per-stage with fusion
+disabled, and compiled with the benchmark flags. For `Lockstep_Tick` the probe
+reads LLVM's optimization record and optimized IR, and counts:
+
+- loops LLVM vectorized;
+- runtime alias checks (`vector.memcheck`);
+- loop-vectorize refusals by reason;
+- LICM/GVN misses whose stated cause is a possibly-aliasing store.
+
+Its **upper-bound** variant force-inlines the kernels and tags *every* arena
+access with a scope for its leaf, marked `!noalias` against all other leaves.
+That is sound: leaves are disjoint byte ranges and row indices are clamped. It
+is compared against the same inlined IR without tags.
+
+```bash
+python benchmarks/native/alias_probe.py --generated 300
+```
+
+Loops vectorized by LLVM in `Lockstep_Tick`, over 309 programs:
+
+| codegen | fused | + perfect scopes | per-stage | + perfect scopes |
+| --- | ---: | ---: | ---: | ---: |
+| before this change | 46 | 58 | 73 | 90 |
+| after this change (the three fixes below) | **71** | 83 | **108** | 128 |
+
+What the probe found:
+
+- **Zero runtime alias checks**, in every variant. LLVM never had to version
+  a loop on pointer overlap.
+- **Aliasing did block optimization, through one pattern:** a `uniform`
+  argument reloaded from the arena on every row.
+  - BasicAA can't bound the row index, so it can't prove that the row stores
+    miss the uniform's slot.
+  - As a result the load stays in the loop, and the vectorizer then refuses
+    the loop ("unsafe dependent memory operations").
+  - Codegen now loads each uniform once, before a route's loop (and before a
+    fused group's vector loop).
+- **Many "unvectorized" loops weren't an alias problem at all.**
+  - Codegen clamped row indices with a `<4 x i32>` splat/select/extract
+    idiom. Scalar evolution can't analyze it, which produced most of the
+    "cannot identify array bounds" and "instruction return type" refusals.
+  - A scalar `smax`/`smin` clamp fixes both, and instcombine removes the clamp
+    entirely when a route's trip count is a constant equal to its capacity.
+- **Loops with a run-time row count** (after a filter) still had the clamp,
+  because LLVM can't know the count never exceeds capacity. Codegen does know,
+  so it now omits the clamp when the loop's static row bound fits the stream.
+- **After those three changes, perfect scopes add +12 fused / +20 per-stage
+  loops**, and every benchmark workload stays within noise (inlined control
+  vs. the scoped upper bound, median of 7 interleaved rounds):
+
+  | workload | fused | per-stage |
+  | --- | ---: | ---: |
+  | particle_energy | 1.07× | 0.97× |
+  | telemetry_filter_aggregation | 0.97× | 1.01× |
+  | multi_stage_pipeline | 0.98× | 1.02× |
+  | telemetry_drop_unhealthy | 1.01× | 0.95× |
+
+- **The two fixes on programs they affect.** Measured `main` vs. this change,
+  same driver, median of 5:
+  - `Brighten`, the golden `minimal` shader with a uniform, at 1M rows: 2.05 →
+    1.35 ms/tick (**1.52×**).
+  - A nested-struct stage with fan-in over 262,144 rows: 718 → 418 µs/tick
+    (**1.72×**).
+
+  Checksums are identical.
+
+The remaining LICM/GVN remarks aren't lost optimizations either. GVN reports
+`LoadClobbered` for every load it tried to prove redundant, and in compaction
+code those loads aren't redundant anyway. Scoped metadata moves to "Deferred
+past v1.0.0" in `ROADMAP.md`.
+
+---
+
 ## Reproducing
 
 ```bash
@@ -354,6 +437,7 @@ make bench-native      # native compiled-code throughput   (table 1)
 make bench-soa         # SoA vs AoS layout                  (table 2)
 make bench-fusion      # multi-stage fusion probe           (table 3)
 make bench-vs-c        # Lockstep vs hand-written C         (table 4)
+make bench-alias       # alias-analysis probe               (alias section)
 python benchmarks/run_workloads.py   # frontend workloads   (table 6)
 make bench             # frontend microbenchmark KPI        (table 7)
 ```
