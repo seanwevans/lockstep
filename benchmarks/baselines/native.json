@@ -5,7 +5,7 @@
   "workloads": {
     "multi_stage_pipeline": {
       "rows_per_tick": 131072,
-      "arena_bytes": 5767176,
+      "arena_bytes": 5767180,
       "checksum": 20968.9607
     },
     "particle_energy": {
@@ -13,9 +13,14 @@
       "arena_bytes": 1703940,
       "checksum": 65528.0
     },
+    "telemetry_drop_unhealthy": {
+      "rows_per_tick": 65536,
+      "arena_bytes": 2293776,
+      "checksum": 49158.0
+    },
     "telemetry_filter_aggregation": {
       "rows_per_tick": 65536,
-      "arena_bytes": 2293768,
+      "arena_bytes": 2293776,
       "checksum": 65528.0
     }
   }

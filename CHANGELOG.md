@@ -11,11 +11,23 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Added
 
+- **Fusing through filters that drop rows.** A multi-stage group whose filter has
+  a data-dependent `return` now fuses into one vector loop. The keep flag
+  becomes a lane mask, the group's sink is written with
+  `llvm.masked.compressstore` at a running write index, and fold accumulators
+  add the operator identity for dropped lanes. On the new
+  `telemetry_drop_unhealthy` workload this is 3.0× faster than the per-stage
+  path. It is also 1.31× faster than a hand-written branchy C compaction loop,
+  on AVX-512. Without AVX-512 the store is expanded lane by lane: 1.05× on AVX2.
+- **Live row counts** (`LOCKSTEP_OFFSET_COUNT_<STREAM>`, `uint32_t`). They cover
+  every stream whose row count is only known at run time: a filter's output,
+  and any stage fed only by such streams. The tick writes the count; later
+  stages loop to it, and folds reduce only the rows it covers.
 - **Alias-analysis probe** (`benchmarks/native/alias_probe.py`,
   `make bench-alias`). It measures which optimizations LLVM's alias analysis
   blocks in `Lockstep_Tick`, and what sound per-leaf scoped alias metadata
-  would recover. The result: perfect scopes add little once the two changes
-  below are in, and no benchmark workload gets measurably faster. Scoped
+  would recover. The result: perfect scopes add little once the changes below
+  are in, and no benchmark workload gets measurably faster. Scoped
   metadata moves to "Deferred past v1.0.0" in `ROADMAP.md`.
 
 - **Differential oracle** (`tests/test_differential_oracle.py`, `make oracle`).
@@ -34,7 +46,9 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
   `<4 x i32>` splat/select/extract idiom. Scalar evolution can analyze the new
   form, so the vectorizer can bound the loop, and instcombine removes the clamp
   when the trip count equals the capacity. That is 1.72× on a nested-struct
-  fan-in stage.
+  fan-in stage. A loop with a run-time row count (after a filter) skips the
+  clamp whenever its static row bound fits the stream, which LLVM can't infer
+  on its own.
 
 - **The simulator now uses the compiled numeric model.** `float` is IEEE single
   precision (it used to be double), and `int` wraps at 32 bits with C
@@ -48,6 +62,18 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Fixed
 
+- **Stages after a filter processed the rows the filter dropped.** A stream had
+  no live row count, so the next stage ran over the filter output's full
+  capacity, including the stale rows past the kept ones. Folds downstream
+  counted those rows too. The differential oracle had pinned this as a known
+  divergence; it now matches the simulator. When a stage reads two filtered
+  streams with different counts, it runs to the longer count and reads the
+  shorter stream as zeros past its end, as the simulator does. A fold over zero
+  rows now gives the operator identity in the simulator too (it used to give
+  `null`).
+
+  **This changes the ABI:** `LOCKSTEP_ARENA_BYTES` grows by 4 bytes per counted
+  stream. The count slots come after the uniforms, so no existing offset moves.
 - **`min(...)` and `max(...)` could not be called.** They were lexer keywords,
   reserved for the `fold` operators, so the documented intrinsics failed to
   parse.

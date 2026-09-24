@@ -67,7 +67,12 @@ _PRIMITIVE_C = {
     "double": ("double", 8, False),
 }
 
-WORKLOADS = ("particle_energy", "telemetry_filter_aggregation", "multi_stage_pipeline")
+WORKLOADS = (
+    "particle_energy",
+    "telemetry_filter_aggregation",
+    "multi_stage_pipeline",
+    "telemetry_drop_unhealthy",
+)
 
 
 @dataclass
@@ -244,7 +249,10 @@ def _render_driver(plan: WorkloadPlan, iterations: int, warmup: int) -> str:
     prime_lines: list[str] = []
     for idx, field in enumerate(plan.input_fields):
         cast = f"({field.c_type}*)(base + {field.offset})"
-        if field.is_integer:
+        if field.c_type == "uint8_t":
+            # ``bool`` columns hold 0/1 (any other byte is not a valid bool).
+            value = f"(uint8_t)((((i * 2654435761u) + {idx}u) >> 7) & 1u)"
+        elif field.is_integer:
             value = f"({field.c_type})((i * 2654435761u) + {idx}u)"
         else:
             # Bounded, non-trivial, deterministic float pattern per lane.

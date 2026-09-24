@@ -22,7 +22,9 @@ Each links to the code that provides it.
 | Fused-vector lowering, incl. accumulator-stage fusion | `codegen.py`, `benchmarks/native/fusion_probe.py` |
 | Fold-into-kernel fusion (single-fold accumulator reduced in-register, no per-row buffer; reaches hand-written-C parity on `particle_energy`) | `codegen.py` (`_lower_reduction_route`), `benchmarks/native/lockstep_vs_c.py`, `tests/test_fold_reduction_fusion.py` |
 | Pass-through filter-group fusion (fuse through an unconditional-keep filter into one vector loop: contiguous SoA leaf vectors + register-carried fold accumulators, multiple folds per accumulator; lifts the two multi-stage filter pipelines to ~0.9× / ~0.7× of hand-written C) | `codegen.py` (`_lower_fused_kernel_group`, `_filter_always_keeps`, `_group_carry_reductions`, `_leaf_contiguous_vector_load`/`_store`), `tests/test_accumulator_fusion.py` |
-| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
+| Live row counts: a filtered stream publishes how many rows are valid (`LOCKSTEP_OFFSET_COUNT_*`), and later stages and folds run over only those rows | `arena_layout.py` (`counted_streams`), `codegen.py` (`_live_counts`) |
+| Fusing through a dropping filter: the keep flag masks lanes, the sink is compress-stored, and masked lanes fold as the identity (3.0× on `telemetry_drop_unhealthy`, 1.31× hand-written C with AVX-512) | `codegen.py` (`_lower_fused_kernel_group`, `_compress_store_binding_vectors`), `benchmarks/RESULTS.md` table 5 |
+| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp, omitted when provably in range (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
 | Arena size-overflow checking + C `static_assert` (`LCK502`) | `arena_layout.py`, `c_header.py` |
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |
@@ -34,14 +36,6 @@ Each links to the code that provides it.
 
 ## Remaining toward v1.0.0
 
-**Backend**
-
-- **Fusing through a *dropping* filter.** Groups containing a pass-through
-  (unconditional-keep) filter now fuse into one vector loop; a filter with a
-  data-dependent `return` still falls back to the per-stage compacting path,
-  because its compacting store has a data-dependent write index the vector path
-  does not yet lower (see `benchmarks/native/README.md`).
-
 **Language**
 
 - **Resolve the simulator/compiled-code semantic gaps** the differential oracle
@@ -50,10 +44,6 @@ Each links to the code that provides it.
   - *Routing into a smaller stream.* The simulator keeps the last `capacity`
     rows. Compiled code writes rows in order and keeps overwriting the final
     "trash can" row, as README §2 describes.
-  - *Stages after a dropping filter.* Compiled streams have no live row count,
-    so a later stage runs over the filter output's full capacity, including its
-    stale tail. The simulator processes only the kept rows. A host also can't
-    tell how many rows a filter kept.
   - *An accumulator written by two kernels.* In compiled code it is one slot
     per row, and the writers' contributions add up in that slot. In the
     simulator it is a flat list of contributions. `sum` agrees; `avg`, `min`
@@ -107,11 +97,11 @@ Each links to the code that provides it.
   - LLVM never needed a runtime alias check (`vector.memcheck`).
   - The misses aliasing did cause came almost entirely from uniforms reloaded
     inside row loops, and from a row-index clamp scalar evolution couldn't
-    analyze. Two small codegen changes fixed both, with no metadata.
-  - After those fixes, perfect scopes vectorize 10 more loops across ~300 fused
+    analyze. Three small codegen changes fixed those, with no metadata.
+  - After those fixes, perfect scopes vectorize 12 more loops across ~300 fused
     programs.
-  - Benchmark-workload timings stay within ±5%, which is inside this host's
-    run-to-run noise.
+  - Benchmark-workload timings stay within 0.95–1.07×, which is inside this
+    host's run-to-run noise.
 
   This is worth revisiting only if a workload shows a measured gap. See
   `benchmarks/RESULTS.md` ("Alias-analysis probe").

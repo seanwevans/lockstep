@@ -6,6 +6,7 @@ and native code, and returns every observable disagreement:
 * every row of every *sink* stream (a route target no later route reads) --
   intermediates may legitimately never be materialized once stages fuse;
 * every ``fold`` uniform, read back from its published arena offset;
+* the live row count a filtered sink publishes (``LOCKSTEP_OFFSET_COUNT_*``);
 * the header's ``LOCKSTEP_OFFSET_*`` macros against the layout the oracle packs
   with, so the oracle can't silently drift from the ABI a host sees.
 
@@ -206,6 +207,13 @@ def check_case(
         if len(sim_rows) > case.capacity:
             mismatches.append(Mismatch(f"{stream} row count", len(sim_rows), case.capacity))
             continue
+        if codec.has_leaf("count", stream):
+            # A filtered stream publishes how many rows are live.
+            nat_count = codec.read_scalar(after, "count", stream)
+            if nat_count != len(sim_rows):
+                mismatches.append(
+                    Mismatch(f"{stream} live row count", len(sim_rows), nat_count)
+                )
         nat_rows = codec.read_rows(after, stream, len(sim_rows))
         mismatches.extend(
             _rows_mismatches(stream, sim_rows, nat_rows, codec.leaf_types(stream))

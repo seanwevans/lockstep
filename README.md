@@ -43,6 +43,12 @@ member's byte offset at compile time.
 * **Saturated writes.** Stream indices use saturation arithmetic instead of
   bounds checks: past capacity, the final element acts as a "trash can" that
   absorbs writes without corruption or branching.
+* **Live row counts.** A filter keeps a data-dependent number of rows, packed at
+  the front of its output stream. Each stream whose row count is only known at
+  run time (a filter's output, and any stage fed only by such streams) has a
+  `uint32_t` count slot at `LOCKSTEP_OFFSET_COUNT_<STREAM>`, which the tick
+  writes. Later stages and folds run over only those rows. A fold over zero
+  rows yields its operator's identity (`avg` yields 0).
 
 ---
 
@@ -147,7 +153,9 @@ The compiler emits a C-compatible header for the host (C/C++, Rust, Zig):
 4. **Read back** any folded uniform at its `LOCKSTEP_OFFSET_UNIFORM_<NAME>`
    byte offset. A `uniform float total = fold sum(acc);` in the `bind` block
    reserves a slot in the arena that `Lockstep_Tick` writes the reduced scalar
-   to.
+   to. For a filtered output stream, read its row count at
+   `LOCKSTEP_OFFSET_COUNT_<STREAM>` first. Rows past the count, and every row of
+   an intermediate stream that fusion eliminated, are unspecified.
 
 See [`examples/minimal_host.c`](examples/) for a complete end-to-end host app.
 
