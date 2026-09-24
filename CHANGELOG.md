@@ -44,6 +44,21 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Changed
 
+- **`codegen.py` is split by responsibility.** `emit_llvm_ir` was one
+  ~3,000-line function whose nested closures shared state. That state now
+  lives on a `_TickCodegen` object, and its lowering steps are methods of five
+  mixins:
+  - `codegen_arena.py`: addressing, live counts, uniforms;
+  - `codegen_routes.py`: per-stage routes;
+  - `codegen_reduce.py`: folds and reductions;
+  - `codegen_vector.py`: SIMD values and SoA vector memory;
+  - `codegen_fused.py`: fused groups.
+
+  `codegen.py` keeps setup and dispatch (~560 lines). The conversion was done
+  mechanically from the syntax tree. It emits byte-identical IR and headers
+  for the goldens, workloads, examples, and 400 random programs at widths 4
+  and 8 (822 cases).
+
 - **Uniforms are loaded once per route, before its row loop.** Codegen used to
   reload a uniform on every row, and LLVM couldn't prove the row stores miss it.
   That kept per-stage shader loops scalar. Such loops are now vectorized: 1.52×

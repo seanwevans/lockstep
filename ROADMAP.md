@@ -13,22 +13,23 @@ Each links to the code that provides it.
 | Feature | Where |
 | --- | --- |
 | Typed `AstProgram` as the internal representation, with an AST-based semantic validator | `ast.py`, `semantic_validator.py`, `tests/test_semantic_validator_ast_path.py` |
-| `uint` / `double` as first-class declared types | `semantic_validator.py`, `codegen.py` (`_PRIMITIVE_TYPE_MAP`) |
+| `uint` / `double` as first-class declared types | `semantic_validator.py`, `codegen_lowerer.py` (`_PRIMITIVE_TYPE_MAP`) |
 | `select` expression (branchless typed mux) | `codegen.py`, `semantic_validator.py`, `simulator.py` |
 | `import` / `#include` resolution (root-sandboxed, circular-import detection) | `compiler.py` (`_resolve_dependency_sources`) |
 | SoA decomposition in the arena layout | `arena_layout.py` (`_flatten_type_leaves`, `_build_layout_from_bindings`) |
 | Single-arena-pointer `Lockstep_Tick` ABI | `codegen.py`, `examples/minimal_host.c` |
 | Parameterized SIMD width (`--target-width`, `LOCKSTEP_SIMD_WIDTH`) | `codegen.py`, `c_header.py`, `tests/test_target_width_execution.py` |
-| Fused-vector lowering, incl. accumulator-stage fusion | `codegen.py`, `benchmarks/native/fusion_probe.py` |
-| Fold-into-kernel fusion (single-fold accumulator reduced in-register, no per-row buffer; reaches hand-written-C parity on `particle_energy`) | `codegen.py` (`_lower_reduction_route`), `benchmarks/native/lockstep_vs_c.py`, `tests/test_fold_reduction_fusion.py` |
-| Pass-through filter-group fusion (fuse through an unconditional-keep filter into one vector loop: contiguous SoA leaf vectors + register-carried fold accumulators, multiple folds per accumulator; lifts the two multi-stage filter pipelines to ~0.9× / ~0.7× of hand-written C) | `codegen.py` (`_lower_fused_kernel_group`, `_filter_always_keeps`, `_group_carry_reductions`, `_leaf_contiguous_vector_load`/`_store`), `tests/test_accumulator_fusion.py` |
-| Live row counts: a filtered stream publishes how many rows are valid (`LOCKSTEP_OFFSET_COUNT_*`), and later stages and folds run over only those rows | `arena_layout.py` (`counted_streams`), `codegen.py` (`_live_counts`) |
-| Fusing through a dropping filter: the keep flag masks lanes, the sink is compress-stored, and masked lanes fold as the identity (3.0× on `telemetry_drop_unhealthy`, 1.31× hand-written C with AVX-512) | `codegen.py` (`_lower_fused_kernel_group`, `_compress_store_binding_vectors`), `benchmarks/RESULTS.md` table 5 |
-| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp, omitted when provably in range (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
+| Fused-vector lowering, incl. accumulator-stage fusion | `codegen_fused.py`, `codegen_vector.py`, `benchmarks/native/fusion_probe.py` |
+| Fold-into-kernel fusion (single-fold accumulator reduced in-register, no per-row buffer; reaches hand-written-C parity on `particle_energy`) | `codegen_reduce.py` (`_lower_reduction_route`), `benchmarks/native/lockstep_vs_c.py`, `tests/test_fold_reduction_fusion.py` |
+| Pass-through filter-group fusion (fuse through an unconditional-keep filter into one vector loop: contiguous SoA leaf vectors + register-carried fold accumulators, multiple folds per accumulator; lifts the two multi-stage filter pipelines to ~0.9× / ~0.7× of hand-written C) | `codegen_fused.py` (`_lower_fused_kernel_group`, `_filter_always_keeps`, `_group_carry_reductions`), `codegen_vector.py` (`_leaf_contiguous_vector_load`/`_store`), `tests/test_accumulator_fusion.py` |
+| Live row counts: a filtered stream publishes how many rows are valid (`LOCKSTEP_OFFSET_COUNT_*`), and later stages and folds run over only those rows | `arena_layout.py` (`counted_streams`), `codegen_arena.py` (`_publish_count`, `_dynamic_route_trip`) |
+| Fusing through a dropping filter: the keep flag masks lanes, the sink is compress-stored, and masked lanes fold as the identity (3.0× on `telemetry_drop_unhealthy`, 1.31× hand-written C with AVX-512) | `codegen_fused.py` (`_lower_fused_kernel_group`), `codegen_vector.py` (`_compress_store_binding_vectors`), `benchmarks/RESULTS.md` table 5 |
+| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp, omitted when provably in range (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen_arena.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
 | Arena size-overflow checking + C `static_assert` (`LCK502`) | `arena_layout.py`, `c_header.py` |
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |
 | Comment-preserving formatter | `formatter.py`, `tests/test_formatter.py` |
+| Code generator split by responsibility: `codegen.py` (setup and dispatch), `codegen_arena.py`, `codegen_routes.py`, `codegen_reduce.py`, `codegen_vector.py`, `codegen_fused.py` (mixins of one `_TickCodegen`), alongside `codegen_lowerer.py` / `codegen_intrinsics.py` | `lockstep_compiler/codegen*.py` |
 | Differential oracle: random valid programs, simulator vs. clang-compiled `Lockstep_Tick`, every sink row and fold compared at several SIMD widths; simulator models single-precision `float` and wrapping 32-bit `int` | `tests/test_differential_oracle.py`, `tests/differential/`, `make oracle` |
 | Benchmark suite (frontend, native, SoA-vs-AoS, fusion) | `benchmarks/`, `benchmarks/RESULTS.md` |
 | Hashed, pinned dependency lockfiles | `requirements*.lock`, `make check-lock-deps` |
