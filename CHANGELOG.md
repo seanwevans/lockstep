@@ -11,6 +11,12 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Added
 
+- **`examples/particles.lock` + `particles_host.c`**, a particle simulation
+  whose C host uses the whole ABI: in-place update, a filter that drops rows
+  (fused, compacted), folded uniforms, and the live row count.
+  `tests/test_examples.py` builds both examples through `lockstepc` and clang
+  and checks the particle output against the simulator frame by frame.
+
 - **Fusing through filters that drop rows.** A multi-stage group whose filter has
   a data-dependent `return` now fuses into one vector loop. The keep flag
   becomes a lane mask, the group's sink is written with
@@ -38,6 +44,21 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Changed
 
+- **`codegen.py` is split by responsibility.** `emit_llvm_ir` was one
+  ~3,000-line function whose nested closures shared state. That state now
+  lives on a `_TickCodegen` object, and its lowering steps are methods of five
+  mixins:
+  - `codegen_arena.py`: addressing, live counts, uniforms;
+  - `codegen_routes.py`: per-stage routes;
+  - `codegen_reduce.py`: folds and reductions;
+  - `codegen_vector.py`: SIMD values and SoA vector memory;
+  - `codegen_fused.py`: fused groups.
+
+  `codegen.py` keeps setup and dispatch (~560 lines). The conversion was done
+  mechanically from the syntax tree. It emits byte-identical IR and headers
+  for the goldens, workloads, examples, and 400 random programs at widths 4
+  and 8 (822 cases).
+
 - **Uniforms are loaded once per route, before its row loop.** Codegen used to
   reload a uniform on every row, and LLVM couldn't prove the row stores miss it.
   That kept per-stage shader loops scalar. Such loops are now vectorized: 1.52×
@@ -61,6 +82,10 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
   and variable names.
 
 ### Fixed
+
+- `examples/minimal_host.c` no longer compiled: it assigned to stream columns
+  as scalars, but they have been arrays since SoA layout. It now indexes row 0,
+  and `tests/test_examples.py` keeps it building.
 
 - **Stages after a filter processed the rows the filter dropped.** A stream had
   no live row count, so the next stage ran over the filter output's full
