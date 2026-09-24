@@ -9,6 +9,51 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **Differential oracle** (`tests/test_differential_oracle.py`, `make oracle`).
+  It generates random valid programs and checks the simulator against
+  clang-compiled `Lockstep_Tick` on every sink-stream row and every folded
+  uniform, at several SIMD widths. Every fix below was found by it and has a
+  minimal regression test.
+
+### Changed
+
+- **The simulator now uses the compiled numeric model.** `float` is IEEE single
+  precision (it used to be double), and `int` wraps at 32 bits with C
+  truncating `/` and `%` (it used to be Python's unbounded ints, floor `%`, and
+  float `/`). An `out` row now starts from the target stream's current row. It
+  used to start as a copy of the input row, which could have a different struct
+  type.
+- `fold` operators are now ordinary identifiers, checked by the validator
+  (`LCK401`). As a result, `min`, `max`, `sum` and `avg` can be used as call
+  and variable names.
+
+### Fixed
+
+- **`min(...)` and `max(...)` could not be called.** They were lexer keywords,
+  reserved for the `fold` operators, so the documented intrinsics failed to
+  parse.
+- **Folds could segfault.** The fold strip-mine loop loaded the accumulator
+  with the vector type's natural alignment. The arena is packed, so an
+  accumulator at an unaligned offset faulted on an aligned SSE load
+  (`movaps`).
+- **Fused groups dropped or corrupted in-place stages.** `s = A(..); s = B(s, s)`
+  in one fused group:
+  - never stored the final `s`;
+  - lowered only the group's first route when `s` was its only intermediate;
+  - read an in-place stage's input from an uninitialized slot in the group's
+    scalar tail.
+- **`bool` casts.** `(float) true` produced `-1.0`, because the cast was lowered
+  as a signed conversion of an `i1`. A `float` → `bool` cast is now a
+  comparison with zero.
+- **`smoothstep(e, e, x)` returned 1.0 in compiled code.** The inlined scalar
+  and vector lowerings divided by zero and clamped the result. It now returns
+  0, like the simulator and the C reference intrinsic.
+- The C reference `pure_mix` in `benchmarks/native/lockstep_intrinsics.c` now
+  uses the same `a*(1-t) + b*t` operation order as the compiler and the
+  simulator.
+
 ## [0.3.0] - 2026-09-24
 
 A correctness release. Folded uniforms computed by `fold` never reached the

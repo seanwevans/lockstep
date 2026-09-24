@@ -26,6 +26,7 @@ Each links to the code that provides it.
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |
 | Comment-preserving formatter | `formatter.py`, `tests/test_formatter.py` |
+| Differential oracle: random valid programs, simulator vs. clang-compiled `Lockstep_Tick`, every sink row and fold compared at several SIMD widths; simulator models single-precision `float` and wrapping 32-bit `int` | `tests/test_differential_oracle.py`, `tests/differential/`, `make oracle` |
 | Benchmark suite (frontend, native, SoA-vs-AoS, fusion) | `benchmarks/`, `benchmarks/RESULTS.md` |
 | Hashed, pinned dependency lockfiles | `requirements*.lock`, `make check-lock-deps` |
 | Opt-in LSP: diagnostics, hover, go-to-definition, completion | `lsp.py` |
@@ -49,6 +50,20 @@ Each links to the code that provides it.
 
 **Language**
 
+- **Resolve the simulator/compiled-code semantic gaps** the differential oracle
+  found. Each needs a decision about which behavior is the language's, and each
+  is pinned as a strict `xfail` in `tests/test_differential_oracle.py`:
+  - *Routing into a smaller stream.* The simulator keeps the last `capacity`
+    rows. Compiled code writes rows in order and keeps overwriting the final
+    "trash can" row, as README §2 describes.
+  - *Stages after a dropping filter.* Compiled streams have no live row count,
+    so a later stage runs over the filter output's full capacity, including its
+    stale tail. The simulator processes only the kept rows. A host also can't
+    tell how many rows a filter kept.
+  - *An accumulator written by two kernels.* In compiled code it is one slot
+    per row, and the writers' contributions add up in that slot. In the
+    simulator it is a flat list of contributions. `sum` agrees; `avg`, `min`
+    and `max` do not.
 - **Multi-stage pipeline composition.** Let a pipeline consume another
   pipeline's output streams, with a combined arena layout and topological tick
   ordering.
@@ -63,9 +78,11 @@ Each links to the code that provides it.
 
 **Verification**
 
-- **Grammar-aware fuzzing.** A dedicated fuzz target over the existing
-  property-based generators, checking for crashes, diagnostic completeness, and
-  `llvm-as`-valid IR.
+- **Widen the differential oracle.** It covers valid programs over `float`,
+  `int`, `bool`, `double`, nested structs, and every intrinsic. Still missing:
+  `uint` (the simulator does not model unsigned arithmetic yet), array fields,
+  multi-tick state, and invalid-program fuzzing (crashes and diagnostic
+  completeness).
 
 **Stability (the 1.0 gate)**
 

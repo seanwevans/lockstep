@@ -617,9 +617,14 @@ def emit_llvm_ir(
             # variable, so the loop body performs one uniform vector load and
             # one vector-strided pointer increment instead of rebuilding scalar
             # byte offsets independently for every SIMD lane.
-            return tick_builder.load(
+            # The arena is packed, so an accumulator column starts at an
+            # arbitrary byte offset: the load must not assume the vector type's
+            # natural alignment (which lowers to a faulting ``movaps``).
+            chunk = tick_builder.load(
                 chunk_vector_ptr, name=f"fold_{_sanitize_symbol(source_name)}_chunk"
             )
+            chunk.align = 1
+            return chunk
 
         def _insert_accum_chunk_lane(
             vector_value: ir.Value, lane: int, element_index: ir.Value
@@ -863,15 +868,22 @@ def emit_llvm_ir(
         modifier: str | None,
         current: ir.Value,
         local_slots: dict[str, ir.AllocaInstr] | None = None,
+        local_out_slots: dict[str, ir.AllocaInstr] | None = None,
         accum_overrides: dict[str, ir.Value] | None = None,
     ) -> ir.Value:
+        # ``local_slots`` holds values forwarded *into* this route by earlier
+        # stages of a fused group; ``local_out_slots`` receives this route's own
+        # eliminated outputs.  They are separate because an in-place stage
+        # (``s = K(s, s)``) reads the previous ``s`` while producing a new one.
         local_slots = local_slots or {}
+        if local_out_slots is None:
+            local_out_slots = local_slots
         if modifier == "in" and arg_name in local_slots:
             return tick_builder.load(
                 local_slots[arg_name], name=f"fused_{_sanitize_symbol(arg_name)}"
             )
-        if modifier == "out" and arg_name in local_slots:
-            return local_slots[arg_name]
+        if modifier == "out" and arg_name in local_out_slots:
+            return local_out_slots[arg_name]
         if modifier in {"in", "out"} and arg_name in stream_slots:
             clamped_index = _clamped_stream_index(arg_name, current)
             if modifier == "out":
@@ -895,10 +907,12 @@ def emit_llvm_ir(
         current: ir.Value,
         *,
         local_slots: dict[str, ir.AllocaInstr] | None = None,
+        local_out_slots: dict[str, ir.AllocaInstr] | None = None,
         output_index: ir.Value | None = None,
         accum_overrides: dict[str, ir.Value] | None = None,
     ) -> ir.Value | None:
         callee, params = _kernel_function_and_params(route.kernel)
+        out_slots = local_slots if local_out_slots is None else local_out_slots
         if callee is None:
             return None
         store_index = output_index if output_index is not None else current
@@ -916,7 +930,7 @@ def emit_llvm_ir(
                 route.kernel in filter_names
                 and modifier == "out"
                 and arg_name in stream_slots
-                and not (local_slots and arg_name in local_slots)
+                and not (out_slots and arg_name in out_slots)
             )
             call_arg = (
                 None
@@ -927,6 +941,7 @@ def emit_llvm_ir(
                     modifier=modifier,
                     current=current,
                     local_slots=local_slots,
+                    local_out_slots=local_out_slots,
                     accum_overrides=accum_overrides,
                 )
             )
@@ -1182,12 +1197,20 @@ def emit_llvm_ir(
             if isinstance(target_elem, (ir.FloatType, ir.DoubleType)) and isinstance(
                 source_elem, ir.IntType
             ):
-                if source_type_name == "uint":
+                # ``bool`` lanes are ``i1``: a signed conversion maps true to -1.
+                if source_type_name == "uint" or source_elem.width == 1:
                     return tick_builder.uitofp(value, target_ty)
                 return tick_builder.sitofp(value, target_ty)
             if isinstance(target_elem, ir.IntType) and isinstance(
                 source_elem, (ir.FloatType, ir.DoubleType)
             ):
+                if target_elem.width == 1:
+                    return tick_builder.fcmp_unordered(
+                        "!=",
+                        value,
+                        ir.Constant(value.type, None),
+                        name="fused_float_to_bool",
+                    )
                 return (
                     tick_builder.fptoui(value, target_ty)
                     if type_name == "uint"
@@ -1629,10 +1652,19 @@ def emit_llvm_ir(
                 one = _splat_to_vector(ir.Constant(ir.FloatType(), 1.0), x_val.type)
                 two = _splat_to_vector(ir.Constant(ir.FloatType(), 2.0), x_val.type)
                 three = _splat_to_vector(ir.Constant(ir.FloatType(), 3.0), x_val.type)
+                span = tick_builder.fsub(edge1, edge0, name="fused_ss_range")
                 t_raw = tick_builder.fdiv(
                     tick_builder.fsub(x_val, edge0, name="fused_ss_diff"),
-                    tick_builder.fsub(edge1, edge0, name="fused_ss_range"),
+                    span,
                     name="fused_ss_raw",
+                )
+                # Degenerate edges (edge0 == edge1) give t = 0, like the scalar
+                # intrinsic and the simulator, instead of clamping +-inf/NaN.
+                degenerate = tick_builder.fcmp_ordered(
+                    "==", span, zero, name="fused_ss_degenerate"
+                )
+                t_raw = tick_builder.select(
+                    degenerate, zero, t_raw, name="fused_ss_raw_safe"
                 )
                 t = self._call("clamp", [t_raw, zero, one])
                 return tick_builder.fmul(
@@ -2242,9 +2274,15 @@ def emit_llvm_ir(
         if not routes:
             return
         trip_count = max(_kernel_route_trip_count(route) for route in routes)
-        eliminated_targets = {route.target for route in routes[:-1]}
+        # An intermediate that the sink stage overwrites in place (``s = A(..);
+        # s = B(s, s)``) is the group's output, not an eliminated temporary: it
+        # must still be stored.
+        eliminated_targets = {route.target for route in routes[:-1]} - {
+            routes[-1].target
+        }
         if not eliminated_targets:
-            _lower_kernel_route(routes[0])
+            for route in routes:
+                _lower_kernel_route(route)
             return
         # A group may fuse through a filter only when that filter passes every
         # row unconditionally: with no data-dependent drop, its keep flag is a
@@ -2358,22 +2396,26 @@ def emit_llvm_ir(
             )
             tick_builder.cbranch(tail_active, tail_body, tail_exit)
             tick_builder.position_at_end(tail_body)
+            # Eliminated intermediates produced so far in this row, forwarded to
+            # later stages; each producing stage gets a fresh slot (see
+            # ``_route_arg_value``).
             local_slots: dict[str, ir.AllocaInstr] = {}
             for route in routes:
                 callee, params = _kernel_function_and_params(route.kernel)
                 if callee is None:
                     continue
+                route_out_slots: dict[str, ir.AllocaInstr] = {}
                 for index, param in enumerate(callee.args):
                     if index >= len(route.args) or index >= len(params):
                         continue
                     if (
                         params[index].modifier == "out"
                         and route.args[index] in eliminated_targets
-                        and route.args[index] not in local_slots
+                        and route.args[index] not in route_out_slots
                         and hasattr(param.type, "pointee")
                     ):
                         slot_name = _sanitize_symbol(route.args[index])
-                        local_slots[route.args[index]] = tick_builder.alloca(
+                        route_out_slots[route.args[index]] = tick_builder.alloca(
                             param.type.pointee, name=f"fused_{slot_name}_tail_slot"
                         )
                 # Carried accumulators the scalar tail row writes: redirect them
@@ -2399,11 +2441,13 @@ def emit_llvm_ir(
                     route,
                     tail_current,
                     local_slots=local_slots,
+                    local_out_slots=route_out_slots,
                     accum_overrides={
                         accum: slot for accum, (slot, _ty) in tail_scratch.items()
                     }
                     or None,
                 )
+                local_slots = {**local_slots, **route_out_slots}
                 for accum, (scratch_slot, _ty) in tail_scratch.items():
                     delta = tick_builder.load(scratch_slot, name="fused_tail_acc_val")
                     for reduction in reductions:

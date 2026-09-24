@@ -1,5 +1,7 @@
 import json
+import math
 import os
+import struct as _struct
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -15,6 +17,171 @@ from llvmlite import ir
 
 from .compiler import compile_lockstep
 from .models import LockstepCompileResult
+
+
+# --- Numeric model ---------------------------------------------------------
+#
+# Compiled Lockstep code computes ``float`` in IEEE single precision and ``int``
+# as wrapping 32-bit two's complement with C division semantics.  The simulator
+# mirrors that so its results match ``Lockstep_Tick`` (the differential oracle
+# in ``tests/test_differential_oracle.py`` checks it): ``float`` values are
+# ``_Float32`` instances whose arithmetic rounds every result to single
+# precision, and integer arithmetic wraps to 32 bits and truncates toward zero.
+# ``double`` stays a plain Python float.  ``uint`` is only partially modeled:
+# the simulator does not track static types, so an integer result wraps as
+# unsigned only when an operand is already outside the signed 32-bit range
+# (which only a ``uint`` can be).
+
+_INT32_MIN = -(1 << 31)
+_INT32_MAX = (1 << 31) - 1
+
+
+def _round_f32(value: float) -> float:
+    try:
+        return cast(float, _struct.unpack("<f", _struct.pack("<f", value))[0])
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+def _ieee_div(numerator: float, denominator: float) -> float:
+    try:
+        return numerator / denominator
+    except ZeroDivisionError:
+        if numerator == 0.0 or math.isnan(numerator):
+            return math.nan
+        return math.copysign(math.inf, numerator) * math.copysign(1.0, denominator)
+
+
+def _ieee_fmod(numerator: float, denominator: float) -> float:
+    # LLVM ``frem`` is C ``fmod`` (result takes the dividend's sign), not
+    # Python's floor-mod.
+    if denominator == 0.0 or math.isinf(numerator) or math.isnan(denominator):
+        return math.nan
+    return math.fmod(numerator, denominator)
+
+
+class _Float32(float):
+    """A ``float`` whose arithmetic rounds each result to IEEE single precision."""
+
+    __slots__ = ()
+
+    def __new__(cls, value: Any = 0.0) -> "_Float32":
+        return super().__new__(cls, _round_f32(float(value)))
+
+    def __add__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(float(self) + float(other))
+
+    __radd__ = __add__
+
+    def __sub__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(float(self) - float(other))
+
+    def __rsub__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(float(other) - float(self))
+
+    def __mul__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(float(self) * float(other))
+
+    __rmul__ = __mul__
+
+    def __truediv__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(_ieee_div(float(self), float(other)))
+
+    def __rtruediv__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(_ieee_div(float(other), float(self)))
+
+    def __mod__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(_ieee_fmod(float(self), float(other)))
+
+    def __rmod__(self, other: Any) -> Any:
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        return _Float32(_ieee_fmod(float(other), float(self)))
+
+    def __neg__(self) -> "_Float32":
+        return _Float32(-float(self))
+
+    def __pos__(self) -> "_Float32":
+        return self
+
+    def __abs__(self) -> "_Float32":
+        return _Float32(abs(float(self)))
+
+
+def _wrap_i32(value: int) -> int:
+    return ((int(value) - _INT32_MIN) & 0xFFFFFFFF) + _INT32_MIN
+
+
+def _wrap_int_result(result: int, *operands: int) -> int:
+    if any(operand > _INT32_MAX for operand in operands):
+        return result & 0xFFFFFFFF
+    return _wrap_i32(result)
+
+
+def _is_sim_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _c_int_div(left: int, right: int) -> int:
+    if right == 0:
+        raise SimulatorRuntimeError("integer division by zero")
+    quotient = abs(left) // abs(right)
+    return _wrap_int_result(
+        quotient if (left < 0) == (right < 0) else -quotient, left, right
+    )
+
+
+def _c_int_rem(left: int, right: int) -> int:
+    if right == 0:
+        raise SimulatorRuntimeError("integer remainder by zero")
+    return _wrap_int_result(left - right * _c_int_div(left, right), left, right)
+
+
+def _typed_sim_value(
+    value: Any,
+    type_name: str | None,
+    struct_field_types: dict[str, dict[str, str]] | None = None,
+) -> Any:
+    """Convert ``value`` to the simulator's representation of ``type_name``."""
+    value = _coerce_sim_value(value)
+    if type_name == "float" and isinstance(value, (int, float)):
+        return _Float32(value)
+    if type_name == "double" and isinstance(value, (int, float)):
+        return float(value)
+    if type_name in {"int", "uint"} and isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return value
+        if type_name == "uint":
+            return int(value) & 0xFFFFFFFF
+        return _wrap_i32(int(value))
+    if type_name == "bool" and isinstance(value, (int, float)):
+        return bool(value)
+    if (
+        isinstance(value, dict)
+        and type_name
+        and struct_field_types
+        and type_name in struct_field_types
+    ):
+        fields = struct_field_types[type_name]
+        return {
+            key: _typed_sim_value(item, fields.get(key), struct_field_types)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _clone_entities(entities: dict[str, Any]) -> dict[str, Any]:
@@ -280,6 +447,14 @@ def _python_numeric_reduce(operator: str, values: list[Any]) -> Any:
     if not numeric_values:
         return None
 
+    if all(_is_sim_int(value) for value in values):
+        # Integer folds wrap like the compiled ``add`` reduction, and ``avg``
+        # divides with C (truncating) semantics like ``sdiv``.
+        total = _wrap_i32(sum(int(value) for value in values))
+        if operator == "avg":
+            return _c_int_div(total, len(values))
+        return total
+
     reduced = float(sum(numeric_values))
     if operator == "avg":
         reduced /= len(numeric_values)
@@ -397,7 +572,9 @@ def _default_sim_value(
     type_name: str | None = None,
     struct_field_types: dict[str, dict[str, str]] | None = None,
 ) -> Any:
-    if type_name in {"float", "double"}:
+    if type_name == "float":
+        return _Float32(0.0)
+    if type_name == "double":
         return 0.0
     if type_name in {"int", "uint"}:
         return 0
@@ -536,33 +713,46 @@ def _eval_sim_call(
     pure_functions: dict[str, dict[str, Any]],
 ) -> Any:
     if name in {"int", "uint"}:
-        return int(_coerce_sim_value(args[0])) if args else 0
-    if name in {"float", "double"}:
+        # fptosi/fptoui truncate toward zero, like Python's int().
+        return _typed_sim_value(int(_coerce_sim_value(args[0])), name) if args else 0
+    if name == "float":
+        return _Float32(_coerce_sim_value(args[0])) if args else _Float32(0.0)
+    if name == "double":
         return float(_coerce_sim_value(args[0])) if args else 0.0
     if name == "bool":
         return _truthy_sim_value(args[0]) if args else False
     if name == "select" and len(args) == 3:
         return args[1] if _truthy_sim_value(args[0]) else args[2]
+    # The intrinsics below are declared on ``float`` (see prelude.lock) and are
+    # evaluated in single precision, in the same operation order as codegen.
     if name == "step" and len(args) == 2:
-        return 0.0 if float(args[1]) < float(args[0]) else 1.0
+        return _Float32(0.0 if float(args[1]) < float(args[0]) else 1.0)
     if name == "mix" and len(args) == 3:
-        return args[0] * (1.0 - args[2]) + args[1] * args[2]
+        a, b, t = (_Float32(arg) for arg in args)
+        return a * (1.0 - t) + b * t
     if name == "clamp" and len(args) == 3:
-        return max(args[1], min(args[0], args[2]))
+        x, lo, hi = (_Float32(arg) for arg in args)
+        lower = x if x > lo else lo
+        return lower if lower < hi else hi
     if name == "max" and len(args) == 2:
-        return max(args[0], args[1])
+        x, y = (_Float32(arg) for arg in args)
+        return x if x > y else y
     if name == "min" and len(args) == 2:
-        return min(args[0], args[1])
+        x, y = (_Float32(arg) for arg in args)
+        return x if x < y else y
     if name == "abs" and len(args) == 1:
-        return abs(args[0])
+        return abs(_Float32(args[0]))
     if name == "sign" and len(args) == 1:
-        return -1.0 if args[0] < 0 else (1.0 if args[0] > 0 else 0.0)
+        return _Float32(-1.0 if args[0] < 0 else (1.0 if args[0] > 0 else 0.0))
     if name == "smoothstep" and len(args) == 3:
-        edge0, edge1, x = map(float, args)
-        if edge0 == edge1:
-            t = 0.0
+        edge0, edge1, x = (_Float32(arg) for arg in args)
+        span = edge1 - edge0
+        if span == 0.0:
+            t = _Float32(0.0)
         else:
-            t = max(0.0, min((x - edge0) / (edge1 - edge0), 1.0))
+            raw = (x - edge0) / span
+            t = raw if raw > 0.0 else _Float32(0.0)
+            t = t if t < 1.0 else _Float32(1.0)
         return t * t * (3.0 - 2.0 * t)
 
     pure = pure_functions.get(name)
@@ -603,8 +793,10 @@ def _eval_sim_expr(
         if kind == "bool":
             return value == "true" if isinstance(value, str) else bool(value)
         if kind in {"int", "uint"}:
-            return int(value)
-        if kind in {"float", "double"}:
+            return _wrap_i32(int(value))
+        if kind == "float":
+            return _Float32(float(value))
+        if kind == "double":
             return float(value)
         return value
     if isinstance(expr, AstExprVar) or (is_mapping_expr and "path" in expr):
@@ -615,7 +807,7 @@ def _eval_sim_expr(
             _sim_mapping_value(expr, "operand"), env, pure_functions
         )
         if op == "-":
-            return -operand
+            return _wrap_i32(-operand) if _is_sim_int(operand) else -operand
         return not _truthy_sim_value(operand)
     if isinstance(expr, AstExprCast) or (is_mapping_expr and "target_type" in expr):
         return _eval_sim_call(
@@ -650,6 +842,21 @@ def _eval_sim_expr(
             )
         left = _eval_sim_expr(_sim_mapping_value(expr, "left"), env, pure_functions)
         right = _eval_sim_expr(_sim_mapping_value(expr, "right"), env, pure_functions)
+        if _is_sim_int(left) and _is_sim_int(right):
+            if op == "+":
+                return _wrap_int_result(left + right, left, right)
+            if op == "-":
+                return _wrap_int_result(left - right, left, right)
+            if op == "*":
+                return _wrap_int_result(left * right, left, right)
+            if op == "/":
+                return _c_int_div(left, right)
+            if op == "%":
+                return _c_int_rem(left, right)
+            if op == "<<":
+                return _wrap_int_result(left << (right & 31), left)
+            if op == ">>":
+                return left >> (right & 31)
         if op == "+":
             return left + right
         if op == "-":
@@ -657,8 +864,16 @@ def _eval_sim_expr(
         if op == "*":
             return left * right
         if op == "/":
+            if isinstance(left, float) or isinstance(right, float):
+                if isinstance(left, _Float32) or isinstance(right, _Float32):
+                    return _Float32(_ieee_div(float(left), float(right)))
+                return _ieee_div(float(left), float(right))
             return left / right
         if op == "%":
+            if isinstance(left, float) or isinstance(right, float):
+                if isinstance(left, _Float32) or isinstance(right, _Float32):
+                    return _Float32(_ieee_fmod(float(left), float(right)))
+                return _ieee_fmod(float(left), float(right))
             return left % right
         if op == "<":
             return left < right
@@ -703,12 +918,15 @@ def _execute_sim_body(
         ):
             name = str(_sim_mapping_value(statement, "name"))
             initializer = _sim_mapping_value(statement, "initializer")
+            declared_type = _sim_type_text(
+                _sim_mapping_value(statement, "declared_type")
+            )
             env[name] = (
-                _eval_sim_expr(initializer, env, pure_functions)
-                if initializer is not None
-                else _default_sim_value(
-                    _sim_type_text(_sim_mapping_value(statement, "declared_type"))
+                _typed_sim_value(
+                    _eval_sim_expr(initializer, env, pure_functions), declared_type
                 )
+                if initializer is not None
+                else _default_sim_value(declared_type)
             )
             assigned.add(name)
             continue
@@ -774,9 +992,9 @@ def _simulate_kernel_rows(
         and arg_name in accumulators
     }
 
+    is_filter = kernel["kind"] == "filter"
     for row_index, row in enumerate(rows):
         env: dict[str, Any] = {}
-        first_input = _copy_sim_value(row)
         out_param_names: list[str] = []
         accum_param_args: dict[str, str] = {}
         for index, param in enumerate(params):
@@ -788,15 +1006,39 @@ def _simulate_kernel_rows(
             if modifier == "in" and isinstance(arg_name, str) and arg_name in streams:
                 arg_rows = streams[arg_name]["rows"]
                 env[param_name] = (
-                    _copy_sim_value(arg_rows[row_index])
+                    _typed_sim_value(
+                        _copy_sim_value(arg_rows[row_index]),
+                        param.get("type"),
+                        struct_field_types,
+                    )
                     if row_index < len(arg_rows)
                     else _default_sim_value(param.get("type"), struct_field_types)
                 )
             elif modifier == "out":
+                # Compiled code starts an ``out`` row from the target stream's
+                # current contents at the row it will be written to (a filter
+                # writes at its compacted index), so fields the kernel never
+                # assigns keep their previous value.
                 out_param_names.append(param_name)
-                env[param_name] = _copy_sim_value(first_input)
+                write_index = len(output_rows) if is_filter else row_index
+                target_rows = (
+                    streams[arg_name]["rows"]
+                    if isinstance(arg_name, str) and arg_name in streams
+                    else []
+                )
+                env[param_name] = (
+                    _typed_sim_value(
+                        _copy_sim_value(target_rows[write_index]),
+                        param.get("type"),
+                        struct_field_types,
+                    )
+                    if write_index < len(target_rows)
+                    else _default_sim_value(param.get("type"), struct_field_types)
+                )
             elif modifier == "uniform" and isinstance(arg_name, str):
-                env[param_name] = _coerce_sim_value(uniforms.get(arg_name, 0))
+                env[param_name] = _typed_sim_value(
+                    uniforms.get(arg_name, 0), param.get("type"), struct_field_types
+                )
             elif modifier == "accum" and isinstance(arg_name, str):
                 accum_param_args[param_name] = arg_name
                 env[param_name] = _default_sim_value(

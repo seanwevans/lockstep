@@ -179,7 +179,10 @@ generation. Provide inputs with `--simulate-input path.json`:
 ```
 
 Output includes per-route `input_count`/`output_count`, updated stream
-snapshots, accumulator contents, and folded uniforms. Folds (`sum`/`avg`) run in
+snapshots, accumulator contents, and folded uniforms. The simulator uses the same
+numeric model as compiled code: `float` is IEEE single precision (every operation
+rounds), `int` is wrapping 32-bit with C (truncating) `/` and `%`, and `double`
+is double precision. Folds (`sum`/`avg`) run in
 deterministic pure-Python mode by default (including mixed `int`/`float`/`bool`
 accumulators). An opt-in LLVM-backed reduction runs when `LOCKSTEP_SIM_USE_LLVM=1`
 (or `use_llvm_runtime=True`); it executes out of process under POSIX resource
@@ -248,6 +251,21 @@ corpus (`tests/golden/programs/*.lock`) covering shaders, folds, filters, and
 fused pipelines; any codegen change surfaces as a reviewable diff. Regenerate
 intentional changes with `LOCKSTEP_UPDATE_GOLDEN=1 pytest tests/test_golden_ir.py`
 (or `python tests/golden/regenerate.py`).
+
+`tests/test_differential_oracle.py` is a differential oracle between the
+simulator and compiled code. It generates random valid programs (seeded, in
+`tests/differential/program_gen.py`), compiles each with clang, and runs one
+`Lockstep_Tick`. It then checks every sink-stream row and every folded uniform
+against the simulator, at several SIMD widths. The default test run covers 80
+seeds. Run a wide sweep, or reproduce a single seed, with:
+
+```bash
+make oracle ORACLE_SEEDS=0:5000                       # needs clang, x86-64 Linux
+PYTHONPATH=.:tests python -m differential.oracle 1234 --width 4
+```
+
+Known semantic gaps between the two are pinned as strict `xfail`s in that
+module (see [ROADMAP.md](ROADMAP.md)).
 
 ### Benchmarking
 

@@ -17,7 +17,8 @@ float pure_step(float edge, float x) {
 }
 
 float pure_mix(float a, float b, float t) {
-    return a + (b - a) * t;
+    /* Same operation order as the vectorized lowering and the simulator. */
+    return a * (1.0f - t) + b * t;
 }
 
 float pure_clamp(float x, float min_value, float max_value) {

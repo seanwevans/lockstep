@@ -134,13 +134,18 @@ class _FunctionLowerer:
         if isinstance(target_type, (ir.FloatType, ir.DoubleType)) and isinstance(
             value.type, ir.IntType
         ):
-            if source_type_name == "uint":
+            # ``bool`` is an ``i1``: a signed conversion would turn true into -1.
+            if source_type_name == "uint" or value.type.width == 1:
                 return self.builder.uitofp(value, target_type)
             return self.builder.sitofp(value, target_type)
 
         if isinstance(target_type, ir.IntType) and isinstance(
             value.type, (ir.FloatType, ir.DoubleType)
         ):
+            if target_type.width == 1:
+                return self.builder.fcmp_unordered(
+                    "!=", value, ir.Constant(value.type, 0.0), name="float_to_bool"
+                )
             if target_type_name == "uint":
                 return self.builder.fptoui(value, target_type)
             return self.builder.fptosi(value, target_type)
