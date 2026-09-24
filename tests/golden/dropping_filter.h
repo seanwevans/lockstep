@@ -13,29 +13,29 @@
 #define LOCKSTEP_PACKED_STRUCT(definition) definition __attribute__((packed))
 #endif
 
-LOCKSTEP_PACKED_STRUCT(struct Lockstep_Reading {
-    int32_t sensorId;
+LOCKSTEP_PACKED_STRUCT(struct Lockstep_Sample {
+    int32_t id;
     float value;
-    uint8_t valid;
+    uint8_t flagged;
 });
 
 LOCKSTEP_PACKED_STRUCT(struct Lockstep_Arena {
-    int32_t stream_readingsRaw_sensorId[4096];
-    float stream_readingsRaw_value[4096];
-    uint8_t stream_readingsRaw_valid[4096];
-    int32_t stream_readingsValid_sensorId[4096];
-    float stream_readingsValid_value[4096];
-    uint8_t stream_readingsValid_valid[4096];
-    int32_t stream_readingsAggregated_sensorId[4096];
-    float stream_readingsAggregated_value[4096];
-    uint8_t stream_readingsAggregated_valid[4096];
-    float accum_total_value[4096];
-    float uniform_grandTotal_value;
-    uint32_t count_readingsValid_value;
-    uint32_t count_readingsAggregated_value;
+    int32_t stream_samplesRaw_id[20];
+    float stream_samplesRaw_value[20];
+    uint8_t stream_samplesRaw_flagged[20];
+    int32_t stream_samplesKept_id[20];
+    float stream_samplesKept_value[20];
+    uint8_t stream_samplesKept_flagged[20];
+    int32_t stream_samplesScaled_id[20];
+    float stream_samplesScaled_value[20];
+    uint8_t stream_samplesScaled_flagged[20];
+    float accum_total_value[20];
+    float uniform_keptTotal_value;
+    uint32_t count_samplesKept_value;
+    uint32_t count_samplesScaled_value;
 });
 
-#define LOCKSTEP_ARENA_BYTES 126988
+#define LOCKSTEP_ARENA_BYTES 632
 #define LOCKSTEP_SIMD_WIDTH 8
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 static_assert(LOCKSTEP_ARENA_BYTES <= SIZE_MAX, "LOCKSTEP_ARENA_BYTES must fit in size_t on the target architecture");
@@ -47,25 +47,25 @@ static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_A
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(struct Lockstep_Arena) == LOCKSTEP_ARENA_BYTES, "Lockstep_Arena size must match LOCKSTEP_ARENA_BYTES");
 #endif
-#define LOCKSTEP_OFFSET_STREAM_READINGSRAW 0
-#define LOCKSTEP_OFFSET_STREAM_READINGSVALID 36864
-#define LOCKSTEP_OFFSET_STREAM_READINGSAGGREGATED 73728
-#define LOCKSTEP_OFFSET_ACCUM_TOTAL 110592
-#define LOCKSTEP_OFFSET_UNIFORM_GRANDTOTAL 126976
-#define LOCKSTEP_OFFSET_COUNT_READINGSVALID 126980
-#define LOCKSTEP_OFFSET_COUNT_READINGSAGGREGATED 126984
-#define LOCKSTEP_OFFSET_STREAM_READINGSRAW_SENSORID 0
-#define LOCKSTEP_OFFSET_STREAM_READINGSRAW_VALUE 16384
-#define LOCKSTEP_OFFSET_STREAM_READINGSRAW_VALID 32768
-#define LOCKSTEP_OFFSET_STREAM_READINGSVALID_SENSORID 36864
-#define LOCKSTEP_OFFSET_STREAM_READINGSVALID_VALUE 53248
-#define LOCKSTEP_OFFSET_STREAM_READINGSVALID_VALID 69632
-#define LOCKSTEP_OFFSET_STREAM_READINGSAGGREGATED_SENSORID 73728
-#define LOCKSTEP_OFFSET_STREAM_READINGSAGGREGATED_VALUE 90112
-#define LOCKSTEP_OFFSET_STREAM_READINGSAGGREGATED_VALID 106496
-#define LOCKSTEP_CAPACITY_STREAM_READINGSRAW 4096
-#define LOCKSTEP_CAPACITY_STREAM_READINGSVALID 4096
-#define LOCKSTEP_CAPACITY_STREAM_READINGSAGGREGATED 4096
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESRAW 0
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESKEPT 180
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESSCALED 360
+#define LOCKSTEP_OFFSET_ACCUM_TOTAL 540
+#define LOCKSTEP_OFFSET_UNIFORM_KEPTTOTAL 620
+#define LOCKSTEP_OFFSET_COUNT_SAMPLESKEPT 624
+#define LOCKSTEP_OFFSET_COUNT_SAMPLESSCALED 628
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESRAW_ID 0
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESRAW_VALUE 80
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESRAW_FLAGGED 160
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESKEPT_ID 180
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESKEPT_VALUE 260
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESKEPT_FLAGGED 340
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESSCALED_ID 360
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESSCALED_VALUE 440
+#define LOCKSTEP_OFFSET_STREAM_SAMPLESSCALED_FLAGGED 520
+#define LOCKSTEP_CAPACITY_STREAM_SAMPLESRAW 20
+#define LOCKSTEP_CAPACITY_STREAM_SAMPLESKEPT 20
+#define LOCKSTEP_CAPACITY_STREAM_SAMPLESSCALED 20
 
 #ifndef LOCKSTEP_SATURATED_WRITE_LOG
 #define LOCKSTEP_SATURATED_WRITE_LOG(stream_name, index, capacity, saturated_index) \

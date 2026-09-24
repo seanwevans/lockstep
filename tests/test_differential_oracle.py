@@ -238,6 +238,132 @@ pipeline P {
     _assert_agree(case_from_source(source, {"s0": rows}, capacity=8))
 
 
+# --- Live row counts and fusing through dropping filters --------------------
+
+
+@needs_native
+@pytest.mark.parametrize("capacity", [3, 8, 21, 64])
+def test_stage_after_dropping_filter_sees_only_kept_rows(capacity: int) -> None:
+    # Compiled streams had no live row count: the stage after a filter ran over
+    # the filter output's full capacity, stale tail included, so its folds saw
+    # extra rows. Now the count is published and bounds every later stage. The
+    # ``pure`` call keeps this on the per-stage path; the next test fuses it.
+    source = f"""
+struct S {{ float a; int b; }};
+pure bool keep(float a) {{ return a > 3.0; }}
+filter F(in S src, out S dst) {{ dst.a = src.a; dst.b = src.b; return keep(src.a); }}
+shader K(in S src, out S dst, accum float acc, accum int n) {{
+    dst.a = src.a + 1.0; dst.b = src.b * 2; acc = acc + src.a; n = n + 1;
+}}
+pipeline P {{
+    stream<S, {capacity}> s0; stream<S, {capacity}> s1; stream<S, {capacity}> s2;
+    accumulator<float> acc; accumulator<int> n;
+    bind {{
+        s1 = F(s0, s1);
+        s2 = K(s1, s2, acc, n);
+        uniform float mean = fold avg(acc);
+        uniform float lo = fold min(acc);
+        uniform int kept = fold sum(n);
+    }}
+}}
+"""
+    rows = [{"a": float(i % 7), "b": i} for i in range(capacity)]
+    _assert_agree(case_from_source(source, {"s0": rows}, capacity=capacity))
+
+
+@needs_native
+@pytest.mark.parametrize("capacity", [3, 8, 21, 64])
+def test_fused_group_compacts_through_dropping_filter(capacity: int) -> None:
+    # Normalize -> DropLow -> Score fuses into one vector loop: the filter's
+    # keep flag masks the lanes, the sink is compress-stored at a running
+    # write index, and masked lanes contribute the fold identity.
+    source = f"""
+struct S {{ float a; int b; bool c; }};
+shader Normalize(in S src, out S dst) {{ dst.a = src.a * 0.5; dst.b = src.b + 1; dst.c = src.b > 3; }}
+filter DropLow(in S src, out S dst) {{ dst.a = src.a; dst.b = src.b; dst.c = src.c; return src.a > 1.0; }}
+shader Score(in S src, out S dst, accum float total, accum int hi) {{
+    dst.a = src.a * 3.0; dst.b = src.b - 2; dst.c = !src.c;
+    total = total + src.a; hi = hi + 1;
+}}
+pipeline P {{
+    stream<S, {capacity}> s0; stream<S, {capacity}> s1; stream<S, {capacity}> s2;
+    stream<S, {capacity}> s3; accumulator<float> total; accumulator<int> hi;
+    bind {{
+        s1 = Normalize(s0, s1);
+        s2 = DropLow(s1, s2);
+        s3 = Score(s2, s3, total, hi);
+        uniform float sum_total = fold sum(total);
+        uniform int kept = fold sum(hi);
+    }}
+}}
+"""
+    rows = [{"a": float(i % 5), "b": i, "c": False} for i in range(capacity)]
+    case = case_from_source(source, {"s0": rows}, capacity=capacity)
+    _assert_agree(case, widths=(4, 8, 16))
+
+
+@needs_native
+def test_every_row_dropped_folds_to_identity() -> None:
+    source = """
+struct S { float a; };
+filter F(in S src, out S dst) { dst.a = src.a; return src.a > 100.0; }
+shader K(in S src, out S dst, accum float acc) { dst.a = src.a; acc = acc + src.a; }
+pipeline P {
+    stream<S, 9> s0; stream<S, 9> s1; stream<S, 9> s2; accumulator<float> acc;
+    bind {
+        s1 = F(s0, s1); s2 = K(s1, s2, acc);
+        uniform float lo = fold min(acc); uniform float mean = fold avg(acc);
+    }
+}
+"""
+    rows = _rows([float(i) for i in range(9)])
+    _assert_agree(case_from_source(source, {"s0": rows}, capacity=9))
+
+
+@needs_native
+def test_short_filtered_input_reads_as_zero_past_its_count() -> None:
+    # Two filters keep different numbers of rows; a stage reading both runs to
+    # the longer count and sees zeros past the shorter one's end, like the
+    # simulator's padding.
+    source = """
+struct S { float a; };
+filter Big(in S src, out S dst) { dst.a = src.a; return src.a > 2.0; }
+filter Odd(in S src, out S dst) { dst.a = src.a; return src.a > 6.0; }
+shader Pair(in S x, in S y, out S dst, accum float acc) { dst.a = x.a + y.a * 10.0; acc = acc + y.a; }
+pipeline P {
+    stream<S, 12> s0; stream<S, 12> big; stream<S, 12> odd; stream<S, 12> pairs;
+    accumulator<float> acc;
+    bind {
+        big = Big(s0, big); odd = Odd(s0, odd); pairs = Pair(big, odd, pairs, acc);
+        uniform float total = fold sum(acc);
+    }
+}
+"""
+    rows = _rows([float(i) for i in range(12)])
+    _assert_agree(case_from_source(source, {"s0": rows}, capacity=12))
+
+
+@needs_native
+def test_fold_covers_the_longest_accumulator_writer() -> None:
+    # An accumulator written before and after a dropping filter holds the
+    # longer writer's rows; the fold must not stop at the later, shorter one.
+    source = """
+struct S { float a; };
+shader A(in S src, out S dst, accum float acc) { dst.a = src.a; acc = acc + src.a; }
+filter F(in S src, out S dst) { dst.a = src.a; return src.a > 5.0; }
+pipeline P {
+    stream<S, 10> s0; stream<S, 10> s1; stream<S, 10> s2; stream<S, 10> s3;
+    accumulator<float> acc;
+    bind {
+        s1 = A(s0, s1, acc); s2 = F(s1, s2); s3 = A(s2, s3, acc);
+        uniform float total = fold sum(acc);
+    }
+}
+"""
+    rows = _rows([float(i) for i in range(10)])
+    _assert_agree(case_from_source(source, {"s0": rows}, capacity=10))
+
+
 # --- Simulator numeric model (no toolchain needed) --------------------------
 
 
@@ -293,30 +419,6 @@ def test_known_divergence_route_into_smaller_stream() -> None:
 struct S { float a; };
 shader K(in S src, out S dst) { dst.a = src.a * 2.0; }
 pipeline P { stream<S, 8> s0; stream<S, 4> s1; bind { s1 = K(s0, s1); } }
-"""
-    rows = _rows([float(i) for i in range(8)])
-    _assert_agree(case_from_source(source, {"s0": rows}, capacity=8), widths=(8,))
-
-
-@needs_native
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Compiled streams have no live row count: after a filter drops rows, "
-        "the next stage still runs over the full capacity (including the stale "
-        "tail of the filter's output), so its accumulator sees extra rows. The "
-        "simulator only processes the kept rows."
-    ),
-)
-def test_known_divergence_stage_after_dropping_filter() -> None:
-    source = """
-struct S { float a; };
-filter F(in S src, out S dst) { dst.a = src.a; return src.a > 3.0; }
-shader K(in S src, out S dst, accum float acc) { dst.a = src.a + 1.0; acc = acc + 1.0; }
-pipeline P {
-    stream<S, 8> s0; stream<S, 8> s1; stream<S, 8> s2; accumulator<float> acc;
-    bind { s1 = F(s0, s1); s2 = K(s1, s2, acc); uniform float kept = fold sum(acc); }
-}
 """
     rows = _rows([float(i) for i in range(8)])
     _assert_agree(case_from_source(source, {"s0": rows}, capacity=8), widths=(8,))

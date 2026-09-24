@@ -20,8 +20,11 @@ into one vector pass — loading and storing each SoA column as a contiguous
 vector and carrying the fold accumulators in registers instead of an O(rows)
 buffer — which brings `multi_stage_pipeline` to **0.93×** of hand-written C and
 `telemetry_filter_aggregation` to **0.82×**. A filter that actually *drops* rows
-still falls back to the per-stage compacting path; fusing through a dropping
-filter is the remaining codegen work in [`../ROADMAP.md`](../ROADMAP.md).
+now fuses too. Its keep flag masks the vector lanes and the kept rows are
+compress-stored, so `telemetry_drop_unhealthy` runs **3.0×** faster than the
+per-stage path it used to take (table 5). It also runs at **1.31×** the speed of
+a hand-written branchy C compaction loop. That margin depends on AVX-512's
+native compress instruction; see table 5 for AVX2.
 
 > **Re-measured after the folded-uniform fix.** Every native number below was
 > re-taken once folded uniforms got an arena slot. Before that, `Lockstep_Tick`
@@ -79,6 +82,12 @@ Median of 7 runs.
 | particle_energy | 32,768 | 1.63 MiB | 28.31 | 1157.3 | 56.05 | 65528.0 |
 | telemetry_filter_aggregation | 65,536 | 2.19 MiB | 18.37 | 3567.8 | 116.30 | 65528.0 |
 | multi_stage_pipeline | 131,072 | 5.50 MiB | 70.11 | 1869.6 | 76.61 | 20969.0 |
+| telemetry_drop_unhealthy | 65,536 | 2.19 MiB | 37.62 | 1742.1 | 56.79 | 49158.0 |
+
+`telemetry_drop_unhealthy` was added (and measured, 7 runs, 36.52–46.22 µs)
+with the dropping-filter fusion change, on the same host but not in the same
+session as the other rows. Its rows/tick counts every input row, about half of
+which the filter drops.
 
 `particle_energy` (single fused kernel) reaches ~56 GiB/s of arena traffic. The
 two accumulator pipelines fuse each pipeline — including its trailing/leading
@@ -188,9 +197,8 @@ measures the win in isolation; codegen now **realizes** it for the shipped
 `multi_stage_pipeline` and `telemetry_filter_aggregation` workloads, whose
 pass-through filters (`KeepActive` / the telemetry keep stage) fuse into the
 group as identity copies (see table 1 and table 4). A filter that *drops* rows —
-a data-dependent `return` — still has a compacting store the vector path does not
-lower, so it keeps the per-stage fallback; fusing through a dropping filter is
-the remaining opportunity.
+a data-dependent `return` — fuses as well now, by compress-storing the kept lanes
+(table 5).
 
 ---
 
@@ -216,6 +224,12 @@ Median of 15 runs.
 | particle_energy | 32,768 | 1209.9 | 1210.7 | **1.00×** |
 | telemetry_filter_aggregation | 65,536 | 3509.1 | 4327.8 | **0.82×** |
 | multi_stage_pipeline | 131,072 | 1796.4 | 1884.9 | **0.93×** |
+| telemetry_drop_unhealthy | 65,536 | 1818.7 | 1409.9 | **1.31×** |
+
+`telemetry_drop_unhealthy` was measured separately: median of 7 runs, 1.24–1.43×
+full range, 1.27–1.36× interquartile. Its C reference is the obvious compaction
+loop (`if (!ok) continue; … out[w++] = …`), which mispredicts on the ~50%
+random keep pattern. The fused Lockstep loop is branch-free.
 
 `ratio >= 1.0` means Lockstep matches or beats hand-written C. The C baseline is
 noisy on this host — its cache-resident copy loops settle into different modes
@@ -259,14 +273,41 @@ previous fixed-order driver was, by up to 24% on
   instead of a per-row buffer — so the tick makes **one** trip through memory,
   like the C reference. `multi_stage_pipeline` lands at near parity;
   `telemetry_filter_aggregation`'s tighter, more cache-resident copy still leaves
-  the hand-written single loop a memory-bandwidth edge. A filter that actually
-  drops rows keeps the per-stage compacting fallback (see the fusion probe).
+  the hand-written single loop a memory-bandwidth edge.
+* **`telemetry_drop_unhealthy` (1.31×)** has a filter that really drops rows. The
+  fused loop turns the keep flag into a lane mask and compress-stores the kept
+  rows (`vpcompress` on this AVX-512 host). The accumulators add the fold's
+  identity for dropped lanes. See table 5.
 
 Absolute Mrows/s are host-dependent; the **ratio** is the portable signal.
 
 ---
 
-## 5. Frontend workloads (`python benchmarks/run_workloads.py`)
+## 5. Fusing through a dropping filter
+
+`telemetry_drop_unhealthy` is `DropUnhealthy` (a filter that keeps ~half the
+rows) followed by `ScaleReadings` (a shader that accumulates). It is timed here
+in its two lowerings with the `run_native.py` driver: the fused vector loop
+codegen now emits, and the per-stage path it used to take (one compacting filter
+loop, then a shader loop over the kept rows). The per-stage IR comes from the
+same compiler with fusion disabled (`emit_llvm_ir(..., bind_optimization=` no
+fused groups `)`). Both produce checksum 49158.0. The table gives median
+µs/tick of 7 interleaved rounds, 4000 ticks each.
+
+| target | fused | per-stage | **speedup** |
+| --- | ---: | ---: | ---: |
+| `-march=native` (AVX-512) | 35.26 | 107.26 | **3.04×** |
+| `-march=x86-64-v3` (AVX2) | 99.59 | 104.99 | **1.05×** |
+| `-march=x86-64-v2` (SSE4.2) | 104.57 | 119.24 | **1.14×** |
+
+`llvm.masked.compressstore` is one instruction per SoA column with AVX-512's
+`vpcompress`. Without it, LLVM expands the store lane by lane, which takes most
+of the win away but is still no slower than the per-stage loops. The Lockstep
+vs. C ratio in table 4 is an AVX-512 number for the same reason.
+
+---
+
+## 6. Frontend workloads (`python benchmarks/run_workloads.py`)
 
 Times the Python frontend: `compile_lockstep` + in-Python `simulate_pipeline_entities`
 over realistic fixtures. This is the toolchain/authoring path, not shipped code.
@@ -283,7 +324,7 @@ Median of 3 runs.
 | telemetry_filter_aggregation | 10.66 | 611.23 | 30,000 | 49,081 | 49,085 |
 | multi_stage_pipeline | 22.27 | 848.00 | 36,000 | 42,453 | 28,307 |
 
-## 6. Frontend microbenchmark (`make bench`)
+## 7. Frontend microbenchmark (`make bench`)
 
 The CI regression KPI: the harness reports the median of 5 iterations over
 `examples/minimal.lock`; the figures below are the median of 5 such runs.
@@ -313,8 +354,8 @@ make bench-native      # native compiled-code throughput   (table 1)
 make bench-soa         # SoA vs AoS layout                  (table 2)
 make bench-fusion      # multi-stage fusion probe           (table 3)
 make bench-vs-c        # Lockstep vs hand-written C         (table 4)
-python benchmarks/run_workloads.py   # frontend workloads   (table 5)
-make bench             # frontend microbenchmark KPI        (table 6)
+python benchmarks/run_workloads.py   # frontend workloads   (table 6)
+make bench             # frontend microbenchmark KPI        (table 7)
 ```
 
 The native harnesses require an LLVM/clang toolchain on `PATH`; each exits with

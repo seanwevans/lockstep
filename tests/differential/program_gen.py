@@ -16,8 +16,9 @@ Shapes covered:
 * 1-4 stage kernel chains over 1-3 struct types with ``float``/``int``/
   ``bool``/``double`` fields and nested struct fields (so stage fusion, SoA
   leaf vectors, and bool byte columns are all hit);
-* shaders, keep-all filters (no ``return``, or ``return true``) anywhere in a
-  chain, and data-dependent filters as the last stage of a chain;
+* shaders, keep-all filters (no ``return``, or ``return true``), and filters
+  that drop rows, anywhere in a chain -- so later stages see a run-time row
+  count, and fused groups compact through the filter;
 * in-place routes (``s = K(s, s)``), a second ``in`` stream read alongside the
   chain input (fan-in), and a side route reading an intermediate stream
   (fan-out -- which blocks fusion);
@@ -35,8 +36,6 @@ need a language-design decision rather than a bug fix; each one is pinned by a
 strict ``xfail`` in ``tests/test_differential_oracle.py`` instead:
 
 * streams of different capacities in one route (saturation semantics differ);
-* a data-dependent filter whose output feeds a later stage (compiled code has no
-  live row count);
 * an accumulator written by two kernels and folded with ``avg``/``min``/``max``
   (per-row vs. per-contribution semantics).
 
@@ -547,7 +546,7 @@ class _ProgramBuilder:
             roll = rng.random()
             if roll < 0.2:
                 kind, keep_all = "filter", True
-            elif roll < 0.35 and is_last:
+            elif roll < 0.4:
                 kind, keep_all = "filter", False
             else:
                 kind, keep_all = "shader", True

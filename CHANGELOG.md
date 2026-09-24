@@ -11,6 +11,19 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Added
 
+- **Fusing through filters that drop rows.** A multi-stage group whose filter has
+  a data-dependent `return` now fuses into one vector loop. The keep flag
+  becomes a lane mask, the group's sink is written with
+  `llvm.masked.compressstore` at a running write index, and fold accumulators
+  add the operator identity for dropped lanes. On the new
+  `telemetry_drop_unhealthy` workload this is 3.0× faster than the per-stage
+  path. It is also 1.31× faster than a hand-written branchy C compaction loop,
+  on AVX-512. Without AVX-512 the store is expanded lane by lane: 1.05× on AVX2.
+- **Live row counts** (`LOCKSTEP_OFFSET_COUNT_<STREAM>`, `uint32_t`). They cover
+  every stream whose row count is only known at run time: a filter's output,
+  and any stage fed only by such streams. The tick writes the count; later
+  stages loop to it, and folds reduce only the rows it covers.
+
 - **Differential oracle** (`tests/test_differential_oracle.py`, `make oracle`).
   It generates random valid programs and checks the simulator against
   clang-compiled `Lockstep_Tick` on every sink-stream row and every folded
@@ -31,6 +44,18 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Fixed
 
+- **Stages after a filter processed the rows the filter dropped.** A stream had
+  no live row count, so the next stage ran over the filter output's full
+  capacity, including the stale rows past the kept ones. Folds downstream
+  counted those rows too. The differential oracle had pinned this as a known
+  divergence; it now matches the simulator. When a stage reads two filtered
+  streams with different counts, it runs to the longer count and reads the
+  shorter stream as zeros past its end, as the simulator does. A fold over zero
+  rows now gives the operator identity in the simulator too (it used to give
+  `null`).
+
+  **This changes the ABI:** `LOCKSTEP_ARENA_BYTES` grows by 4 bytes per counted
+  stream. The count slots come after the uniforms, so no existing offset moves.
 - **`min(...)` and `max(...)` could not be called.** They were lexer keywords,
   reserved for the `fold` operators, so the documented intrinsics failed to
   parse.

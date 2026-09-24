@@ -184,6 +184,32 @@ _REFERENCES: dict[str, Reference] = {
     bench_keep_f = ssum + (float)scount;
 """,
     ),
+    # DropUnhealthy (a filter that really drops ~half the rows) ->
+    # ScaleReadings(+accumulate). Lockstep fuses both stages into one vector
+    # loop that compress-stores the kept rows; the reference is the obvious
+    # branchy compaction loop.
+    "telemetry_drop_unhealthy": Reference(
+        checksum_offset_macro="LOCKSTEP_OFFSET_STREAM_TELEMETRYSCALED_READING",
+        body=r"""
+    const int32_t* in_dev = (const int32_t*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYRAW_DEVICEID);
+    const float*   in_read = (const float*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYRAW_READING);
+    const uint8_t* in_ok   = (const uint8_t*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYRAW_HEALTHY);
+    int32_t* o_dev  = (int32_t*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYSCALED_DEVICEID);
+    float*   o_read = (float*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYSCALED_READING);
+    uint8_t* o_ok   = (uint8_t*)(base + LOCKSTEP_OFFSET_STREAM_TELEMETRYSCALED_HEALTHY);
+    float total = 0.0f; int32_t count = 0; size_t w = 0;
+    for (size_t i = 0; i < CAP; ++i) {
+        if (!in_ok[i]) continue;
+        float s = in_read[i] * 1.5f;
+        o_dev[w]  = in_dev[i];
+        o_read[w] = s;
+        o_ok[w]   = 1;
+        ++w;
+        total += s; count += 1;
+    }
+    bench_keep_f = total + (float)count;
+""",
+    ),
 }
 
 WORKLOADS = tuple(_REFERENCES)
@@ -195,7 +221,10 @@ def _prime_lines(input_fields: list[StreamField]) -> str:
     lines: list[str] = []
     for idx, field in enumerate(input_fields):
         cast = f"({field.c_type}*)(base + {field.offset})"
-        if field.is_integer:
+        if field.c_type == "uint8_t":
+            # ``bool`` columns hold 0/1 (any other byte is not a valid bool).
+            value = f"(uint8_t)((((i * 2654435761u) + {idx}u) >> 7) & 1u)"
+        elif field.is_integer:
             value = f"({field.c_type})((i * 2654435761u) + {idx}u)"
         else:
             value = (

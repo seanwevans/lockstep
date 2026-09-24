@@ -254,12 +254,29 @@ class RouteSimulation:
     notes: str | None = None
 
 
+def _empty_fold(operator: str, uniform_type: str | None) -> Any:
+    # A fold over zero rows (a filter dropped everything) yields the operator's
+    # identity, as the compiled reduction does; ``avg`` of nothing is 0.
+    is_float = uniform_type in {"float", "double"}
+    if operator == "min":
+        return math.inf if is_float else _INT32_MAX
+    if operator == "max":
+        return -math.inf if is_float else _INT32_MIN
+    if operator in {"sum", "avg"}:
+        return 0.0 if is_float else 0
+    return None
+
+
 def _fold_values(
-    operator: str, values: list[Any], *, use_llvm_runtime: bool = False
+    operator: str,
+    values: list[Any],
+    *,
+    use_llvm_runtime: bool = False,
+    uniform_type: str | None = None,
 ) -> Any:
     numeric = [value for value in values if isinstance(value, (int, float))]
     if not numeric:
-        return None
+        return _empty_fold(operator, uniform_type) if uniform_type else None
     if operator == "sum":
         return _jit_numeric_reduce("sum", numeric, use_llvm_runtime=use_llvm_runtime)
     if operator == "avg":
@@ -1141,6 +1158,7 @@ def simulate_pipeline_entities(
                     str(route_ir.get("operator", "")),
                     source_values,
                     use_llvm_runtime=use_llvm_runtime,
+                    uniform_type=_sim_type_text(route_ir.get("uniform_type")),
                 )
             routes.append(
                 RouteSimulation(

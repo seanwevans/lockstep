@@ -27,7 +27,7 @@ from .ast import (
     AstUniformDecl,
     AstVarDeclStmt,
 )
-from .arena_layout import build_ast_arena_layout
+from .arena_layout import ast_counted_streams, build_ast_arena_layout
 from .codegen_legacy import program_from_legacy_mapping as _program_from_legacy_mapping
 from .optimizer import optimize_bind_routes
 from .utils import sanitize_symbol as _sanitize_symbol
@@ -386,6 +386,100 @@ def emit_llvm_ir(
     _accum_writer_ids: dict[str, list[int]] = {}
     _accum_fold_routes: dict[str, list[AstFoldBindRoute]] = {}
 
+    # --- Live row counts ----------------------------------------------------
+    #
+    # A filter keeps a data-dependent number of rows, and a stage reading only
+    # filtered streams processes just those rows.  ``_live_counts`` tracks each
+    # stream's current row count as an i32 SSA value (a constant capacity for
+    # streams nothing has filtered); streams in ``counted_stream_names`` also
+    # publish it to their arena count slot (``LOCKSTEP_OFFSET_COUNT_*``) so the
+    # host knows how many rows are valid.  ``_accum_live_counts`` is how many
+    # per-row accumulator slots the writing route filled, which bounds the fold.
+    # The tick is a straight sequence of loops, so a count computed after one
+    # route's loop dominates every later route.
+    counted_stream_names = set(ast_counted_streams(program))
+    _live_counts: dict[str, ir.Value] = {}
+    _accum_live_counts: dict[str, ir.Value] = {}
+
+    def _i32(value: int) -> ir.Constant:
+        return ir.Constant(ir.IntType(32), int(value))
+
+    def _count_bound(value: ir.Value, bound: int) -> int:
+        return int(value.constant) if isinstance(value, ir.Constant) else bound
+
+    def _stream_live_count(name: str) -> ir.Value:
+        return _live_counts.get(name) or _i32(max(stream_capacities.get(name, 1), 1))
+
+    def _is_dynamic(value: ir.Value) -> bool:
+        return not isinstance(value, ir.Constant)
+
+    def _same_count(lhs: ir.Value, rhs: ir.Value) -> bool:
+        if lhs is rhs:
+            return True
+        return (
+            isinstance(lhs, ir.Constant)
+            and isinstance(rhs, ir.Constant)
+            and int(lhs.constant) == int(rhs.constant)
+        )
+
+    def _max_count(values: list[tuple[ir.Value, int]]) -> ir.Value:
+        # ``values`` pairs each count with its static upper bound (capacity).
+        constants = [int(v.constant) for v, _ in values if isinstance(v, ir.Constant)]
+        dynamic = [(v, bound) for v, bound in values if _is_dynamic(v)]
+        best_const = max(constants, default=0)
+        dynamic = [(v, bound) for v, bound in dynamic if bound > best_const]
+        if not dynamic:
+            return _i32(best_const)
+        result: ir.Value = dynamic[0][0]
+        for value, _bound in dynamic[1:]:
+            if value is result:
+                continue
+            bigger = tick_builder.icmp_unsigned(">", value, result, name="live_max_cmp")
+            result = tick_builder.select(bigger, value, result, name="live_max")
+        if constants:
+            floor = _i32(best_const)
+            bigger = tick_builder.icmp_unsigned(">", floor, result, name="live_max_cmp")
+            result = tick_builder.select(bigger, floor, result, name="live_max")
+        return result
+
+    def _route_in_streams(route: AstKernelBindRoute) -> list[str]:
+        _, params = kernel_signatures.get(route.kernel, (None, ()))
+        return [
+            arg
+            for param, arg in zip(params, route.args)
+            if param.modifier == "in" and arg in stream_capacities
+        ]
+
+    def _dynamic_route_trip(route: AstKernelBindRoute) -> ir.Value | None:
+        # ``None`` when every input stream is at a compile-time row count, so
+        # the route keeps its static trip count (and codegen is unchanged).
+        inputs = _route_in_streams(route)
+        if not any(_is_dynamic(_stream_live_count(name)) for name in inputs):
+            return None
+        return _max_count(
+            [(_stream_live_count(name), stream_capacities[name]) for name in inputs]
+        )
+
+    def _pad_counts_for(
+        route: AstKernelBindRoute, trip: ir.Value
+    ) -> dict[str, ir.Value]:
+        # Inputs that may hold fewer live rows than the route's trip count read
+        # as zero past their end (the simulator pads short inputs the same way).
+        return {
+            name: _stream_live_count(name)
+            for name in _route_in_streams(route)
+            if _is_dynamic(_stream_live_count(name))
+            and not _same_count(_stream_live_count(name), trip)
+        }
+
+    def _publish_count(stream: str, value: ir.Value) -> None:
+        _live_counts[stream] = value
+        if stream not in counted_stream_names:
+            return
+        ptr = _leaf_ptr("count", stream, (), ir.IntType(32))
+        if ptr is not None:
+            tick_builder.store(value, ptr)
+
     def _zero_value(llvm_type: ir.Type) -> ir.Value:
         if isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
@@ -564,9 +658,65 @@ def emit_llvm_ir(
     def _vector_i32_clamp(value: ir.Value, lo: ir.Value, hi: ir.Value) -> ir.Value:
         return _vector_i32_min(_vector_i32_max(value, lo), hi)
 
+    def _average_over_count(
+        total: ir.Value, count: ir.Value, uniform_type: ir.Type, name: str
+    ) -> ir.Value:
+        # ``avg`` over a run-time row count; zero rows averages to 0 (the
+        # simulator's empty fold) instead of 0/0.
+        is_empty = tick_builder.icmp_unsigned("==", count, _i32(0), name=f"{name}_empty")
+        safe_count = tick_builder.select(is_empty, _i32(1), count, name=f"{name}_n")
+        if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
+            divisor = tick_builder.uitofp(safe_count, uniform_type, name=f"{name}_nf")
+            quotient = tick_builder.fdiv(total, divisor, name=name)
+        else:
+            divisor = lowerer._coerce_value_to_type(safe_count, uniform_type, "int")
+            quotient = tick_builder.sdiv(total, divisor, name=name)
+        return tick_builder.select(
+            is_empty, ir.Constant(uniform_type, 0), quotient, name=f"{name}_safe"
+        )
+
+    def _reduce_fold_dynamic(
+        operator: str, source_name: str, uniform_type: ir.Type, count: ir.Value
+    ) -> ir.Value:
+        # Fold the first ``count`` slots of an accumulator buffer, where
+        # ``count`` is only known at run time (the writer ran after a filter).
+        # A scalar loop with a ``fast`` combine: LLVM vectorizes it.
+        symbol = _sanitize_symbol(source_name)
+        acc_slot = tick_builder.alloca(uniform_type, name=f"fold_{symbol}_dyn_acc")
+        tick_builder.store(_reduction_identity(uniform_type, operator), acc_slot)
+        index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fold_{symbol}_dyn_idx")
+        tick_builder.store(_i32(0), index_ptr)
+        loop_cond = tick.append_basic_block(f"fold_{symbol}_dyn_cond")
+        loop_body = tick.append_basic_block(f"fold_{symbol}_dyn_body")
+        loop_exit = tick.append_basic_block(f"fold_{symbol}_dyn_exit")
+        tick_builder.branch(loop_cond)
+        tick_builder.position_at_end(loop_cond)
+        current = tick_builder.load(index_ptr, name="fold_dyn_idx")
+        active = tick_builder.icmp_unsigned("<", current, count, name="fold_dyn_active")
+        tick_builder.cbranch(active, loop_body, loop_exit)
+        tick_builder.position_at_end(loop_body)
+        value = _load_tick_param("accum", source_name, uniform_type, current)
+        running = tick_builder.load(acc_slot, name="fold_dyn_cur")
+        tick_builder.store(
+            _reduction_combine(operator, running, value, uniform_type, "fold_dyn_next"),
+            acc_slot,
+        )
+        tick_builder.store(
+            tick_builder.add(current, _i32(1), name="fold_dyn_idx_next"), index_ptr
+        )
+        tick_builder.branch(loop_cond)
+        tick_builder.position_at_end(loop_exit)
+        reduced: ir.Value = tick_builder.load(acc_slot, name="fold_dyn_result")
+        if operator == "avg":
+            reduced = _average_over_count(reduced, count, uniform_type, "fold_dyn_avg")
+        return reduced
+
     def _reduce_fold(
         operator: str, source_name: str, uniform_type: ir.Type
     ) -> ir.Value:
+        live_count = _accum_live_counts.get(source_name)
+        if live_count is not None and _is_dynamic(live_count):
+            return _reduce_fold_dynamic(operator, source_name, uniform_type, live_count)
         lane_count = max(int(accum_sizes.get(source_name, 1)), 1)
         vector_ty = ir.VectorType(uniform_type, simd_width)
 
@@ -870,6 +1020,8 @@ def emit_llvm_ir(
         local_slots: dict[str, ir.AllocaInstr] | None = None,
         local_out_slots: dict[str, ir.AllocaInstr] | None = None,
         accum_overrides: dict[str, ir.Value] | None = None,
+        out_index: ir.Value | None = None,
+        pad_counts: dict[str, ir.Value] | None = None,
     ) -> ir.Value:
         # ``local_slots`` holds values forwarded *into* this route by earlier
         # stages of a fused group; ``local_out_slots`` receives this route's own
@@ -885,12 +1037,25 @@ def emit_llvm_ir(
         if modifier == "out" and arg_name in local_out_slots:
             return local_out_slots[arg_name]
         if modifier in {"in", "out"} and arg_name in stream_slots:
-            clamped_index = _clamped_stream_index(arg_name, current)
             if modifier == "out":
+                # ``out_index`` is the compacted write position when an earlier
+                # filter in a fused group dropped rows.
+                clamped_index = _clamped_stream_index(
+                    arg_name, current if out_index is None else out_index
+                )
                 return _load_tick_param_ptr(
                     "stream", arg_name, param.type.pointee, clamped_index
                 )
-            return _load_tick_param("stream", arg_name, param.type, clamped_index)
+            clamped_index = _clamped_stream_index(arg_name, current)
+            value = _load_tick_param("stream", arg_name, param.type, clamped_index)
+            if pad_counts and arg_name in pad_counts:
+                live = tick_builder.icmp_unsigned(
+                    "<", current, pad_counts[arg_name], name="in_row_live"
+                )
+                value = tick_builder.select(
+                    live, value, _zero_value(param.type), name="in_row_padded"
+                )
+            return value
         if modifier == "accum" and accum_overrides and arg_name in accum_overrides:
             # Fold-into-kernel fusion: point the accumulator at a per-row scratch
             # slot instead of the O(rows) arena buffer.  The caller reads the
@@ -910,6 +1075,7 @@ def emit_llvm_ir(
         local_out_slots: dict[str, ir.AllocaInstr] | None = None,
         output_index: ir.Value | None = None,
         accum_overrides: dict[str, ir.Value] | None = None,
+        pad_counts: dict[str, ir.Value] | None = None,
     ) -> ir.Value | None:
         callee, params = _kernel_function_and_params(route.kernel)
         out_slots = local_slots if local_out_slots is None else local_out_slots
@@ -943,6 +1109,8 @@ def emit_llvm_ir(
                     local_slots=local_slots,
                     local_out_slots=local_out_slots,
                     accum_overrides=accum_overrides,
+                    out_index=output_index,
+                    pad_counts=pad_counts,
                 )
             )
             if call_arg is None and modifier == "out" and arg_name in stream_slots:
@@ -1027,7 +1195,13 @@ def emit_llvm_ir(
         if allow_reduction_fusion and _route_reduction_fusible(route):
             _lower_reduction_route(route)
             return
-        trip_count = _kernel_route_trip_count(route)
+        dynamic_trip = _dynamic_route_trip(route)
+        trip_value: ir.Value = (
+            dynamic_trip
+            if dynamic_trip is not None
+            else _i32(_kernel_route_trip_count(route))
+        )
+        pad_counts = _pad_counts_for(route, trip_value) if dynamic_trip else None
         kernel_name = route.kernel
 
         index_ptr = tick_builder.alloca(
@@ -1055,7 +1229,7 @@ def emit_llvm_ir(
         tick_builder.position_at_end(loop_cond)
         current = tick_builder.load(index_ptr, name="idx")
         cond = tick_builder.icmp_signed(
-            "<", current, ir.Constant(ir.IntType(32), trip_count), name="route_active"
+            "<", current, trip_value, name="route_active"
         )
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
@@ -1063,7 +1237,9 @@ def emit_llvm_ir(
         output_index = current
         if write_index_ptr is not None:
             output_index = tick_builder.load(write_index_ptr, name="filter_write_idx")
-        keep_value = _emit_kernel_call(route, current, output_index=output_index)
+        keep_value = _emit_kernel_call(
+            route, current, output_index=output_index, pad_counts=pad_counts
+        )
         if write_index_ptr is not None:
             keep_bool = keep_value
             if keep_bool is None:
@@ -1088,6 +1264,39 @@ def emit_llvm_ir(
         tick_builder.branch(loop_cond)
 
         tick_builder.position_at_end(loop_exit)
+        _finish_route_counts(
+            route,
+            trip_value,
+            (
+                tick_builder.load(write_index_ptr, name="filter_kept")
+                if write_index_ptr is not None
+                and not _filter_always_keeps(kernel_name)
+                else trip_value
+            ),
+        )
+
+    def _finish_route_counts(
+        route: AstKernelBindRoute, trip_value: ir.Value, output_count: ir.Value
+    ) -> None:
+        # Record how many rows the route produced and how many accumulator
+        # slots it filled (every processed row writes its accumulators, even a
+        # row a filter then drops).
+        _publish_count(route.target, output_count)
+        _note_accum_rows(route, trip_value)
+
+    def _note_accum_rows(route: AstKernelBindRoute, trip_value: ir.Value) -> None:
+        # With several writers, the buffer holds the longest writer's rows.
+        _, params = kernel_signatures.get(route.kernel, (None, ()))
+        for param, arg in zip(params, route.args):
+            if param.modifier != "accum" or arg not in accum_slots:
+                continue
+            bound = max(int(accum_sizes.get(arg, 1)), 1)
+            previous = _accum_live_counts.get(arg)
+            _accum_live_counts[arg] = (
+                trip_value
+                if previous is None
+                else _max_count([(previous, bound), (trip_value, bound)])
+            )
 
     def _vector_type_for_scalar(scalar_type: ir.Type) -> ir.VectorType | None:
         if isinstance(
@@ -1323,6 +1532,11 @@ def emit_llvm_ir(
                 # accumulating stage is value-identical to the per-stage loops.
                 type_env[_sanitize_symbol(param.name)] = param_type_name
             for statement in kernel_decl.body:
+                if isinstance(statement, AstReturnStmt) and route.kernel in filter_names:
+                    # A filter's keep flag becomes the fused loop's lane mask.
+                    if not expr_supported(statement.value):
+                        return False
+                    continue
                 if not isinstance(statement, supported_statements):
                     return False
                 if isinstance(statement, AstAssignStmt):
@@ -2065,16 +2279,30 @@ def emit_llvm_ir(
         eliminated_targets: set[str],
         chunk_trip_count: int,
         carried_accums: set[str] | None = None,
-    ) -> dict[str, ir.Value]:
+        first_drop: int | None = None,
+        write_index: ir.Value | None = None,
+    ) -> tuple[dict[str, tuple[ir.Value, ir.Value | None]], ir.Value | None]:
         # ``carried_accums`` names accumulators the caller reduces in a
         # loop-carried register instead of the arena buffer: their slot is seeded
         # to the zero identity (never loaded from the buffer), the buffer is never
         # written, and each row's partial vector is returned for the caller to
-        # combine.  Returns ``{accum_name: partial_vector}`` for those accums.
+        # combine, with the lane mask in force when it was written (``None``: all
+        # lanes live).
+        #
+        # From ``first_drop`` (the position of the first filter that can drop
+        # rows) on, a filter's ``return`` narrows the chunk's lane mask and the
+        # group's sink is compress-stored at ``write_index``.  Returns
+        # ``(partials, final_mask)``.
         carried_accums = carried_accums or set()
-        carried_partials: dict[str, ir.Value] = {}
+        carried_partials: dict[str, tuple[ir.Value, ir.Value | None]] = {}
         route_values: dict[str, dict[tuple[str, ...], ir.Value]] = {}
-        for route in routes:
+        lane_mask: ir.Value | None = None
+        for position, route in enumerate(routes):
+            compacting = first_drop is not None and position >= first_drop
+            drops_rows = route.kernel in filter_names and not _filter_always_keeps(
+                route.kernel
+            )
+            mask_before_route = lane_mask
             signature = kernel_signatures[route.kernel]
             kernel_decl, params = signature
             vector_lowerer = _FusedVectorLowerer()
@@ -2117,10 +2345,19 @@ def emit_llvm_ir(
                         )
                 elif param.modifier == "out":
                     if arg_name in stream_slots:
+                        # A compacted sink row starts from the row it will
+                        # overwrite, like the per-stage filter path.
+                        out_row = (
+                            write_index
+                            if compacting
+                            and write_index is not None
+                            and arg_name not in eliminated_targets
+                            else current
+                        )
                         for rel_path, value in _load_stream_binding_vectors(
                             arg_name,
                             param_type_name,
-                            current,
+                            out_row,
                             chunk_trip_count,
                         ).items():
                             vector_lowerer.set_slot_leaf(param.name, rel_path, value)
@@ -2148,6 +2385,21 @@ def emit_llvm_ir(
                         vector_lowerer.set_slot_leaf(param.name, rel_path, value)
                     accum_params.append((arg_name, param.name, param_type_name))
             for statement in kernel_decl.body:
+                if isinstance(statement, AstReturnStmt):
+                    # Validated as the last statement; a keep-all filter's
+                    # ``return true`` needs no mask.
+                    if drops_rows:
+                        keep = _coerce_vector_value(
+                            vector_lowerer.lower_expr(statement.value),
+                            ir.VectorType(ir.IntType(1), simd_width),
+                            "bool",
+                        )
+                        lane_mask = (
+                            keep
+                            if lane_mask is None
+                            else tick_builder.and_(lane_mask, keep, name="fused_keep")
+                        )
+                    break
                 vector_lowerer.lower_statement(statement)
             for arg_name, param_name, param_type_name in out_params:
                 values = vector_lowerer.slot_leaf_values(param_name)
@@ -2160,6 +2412,10 @@ def emit_llvm_ir(
                     }
                 if arg_name in eliminated_targets:
                     route_values[arg_name] = values
+                elif compacting and lane_mask is not None and write_index is not None:
+                    _compress_store_binding_vectors(
+                        arg_name, param_type_name, values, write_index, lane_mask
+                    )
                 elif arg_name in stream_slots:
                     _store_stream_binding_vectors(
                         arg_name, param_type_name, values, current, chunk_trip_count
@@ -2188,8 +2444,45 @@ def emit_llvm_ir(
                     root_key = vector_lowerer._key((param_name,))
                     partial = vector_lowerer.values.get(root_key)
                 if partial is not None:
-                    carried_partials[arg_name] = partial
-        return carried_partials
+                    # Every row a stage processes contributes, including one its
+                    # own filter then drops -- so the mask *before* this route.
+                    carried_partials[arg_name] = (partial, mask_before_route)
+        return carried_partials, lane_mask
+
+    def _compress_store_binding_vectors(
+        name: str,
+        type_name: str,
+        values: dict[tuple[str, ...], ir.Value],
+        write_index: ir.Value,
+        mask: ir.Value,
+    ) -> None:
+        # Pack the kept lanes of each SoA leaf column contiguously at
+        # ``write_index`` (``vpcompress`` on AVX-512; LLVM expands it elsewhere).
+        leaves = _vectorizable_leaf_fields(type_name)
+        if leaves is None:
+            raise CodegenError(f"type '{type_name}' cannot be SIMD-vectorized")
+        for rel_path in leaves:
+            value = values.get(rel_path)
+            if value is None:
+                continue
+            scalar_ty = value.type.element
+            mem_ty = _leaf_memory_scalar(scalar_ty)
+            if mem_ty is not scalar_ty:
+                value = tick_builder.zext(
+                    value,
+                    ir.VectorType(mem_ty, simd_width),
+                    name=f"fused_compress_{_sanitize_symbol(name)}_zext",
+                )
+            ptr = _leaf_ptr("stream", name, rel_path, mem_ty, write_index)
+            if ptr is None:
+                continue
+            vector_ty = ir.VectorType(mem_ty, simd_width)
+            compress = _get_vector_reduce_intrinsic(
+                f"llvm.masked.compressstore.v{simd_width}{mem_ty.intrinsic_name}",
+                ir.VoidType(),
+                [vector_ty, mem_ty.as_pointer(), ir.VectorType(ir.IntType(1), simd_width)],
+            )
+            tick_builder.call(compress, [value, ptr, mask])
 
     def _filter_always_keeps(kernel_name: str) -> bool:
         # A filter keeps every row unconditionally when its body never returns a
@@ -2284,20 +2577,42 @@ def emit_llvm_ir(
             for route in routes:
                 _lower_kernel_route(route)
             return
-        # A group may fuse through a filter only when that filter passes every
-        # row unconditionally: with no data-dependent drop, its keep flag is a
-        # constant and its compacting store degenerates to a straight store at
-        # the read index, making it an identity copy that fuses like a shader in
-        # any position. A filter that actually drops rows shifts every downstream
-        # write index and still needs its scalar compacting loop, so fall back to
-        # per-stage lowering.
-        filter_routes = [route for route in routes if route.kernel in filter_names]
-        if filter_routes and not all(
-            _filter_always_keeps(route.kernel) for route in filter_routes
+        # The group's rows: its entry streams (read from the arena rather than
+        # forwarded between stages) must all hold the same live row count,
+        # since one fused loop walks them in lockstep.  Short inputs that would
+        # need zero padding take the per-stage path instead.
+        produced_in_group: set[str] = set()
+        entry_streams: list[str] = []
+        for route in routes:
+            for name in _route_in_streams(route):
+                if name not in produced_in_group and name not in entry_streams:
+                    entry_streams.append(name)
+            produced_in_group.add(route.target)
+        entry_counts = [_stream_live_count(name) for name in entry_streams]
+        dynamic_trip = any(_is_dynamic(count) for count in entry_counts)
+        if dynamic_trip and not all(
+            _same_count(count, entry_counts[0]) for count in entry_counts
         ):
             for route in routes:
                 _lower_kernel_route(route)
             return
+        trip_value: ir.Value = entry_counts[0] if dynamic_trip else _i32(trip_count)
+
+        # Filters.  A keep-all filter (no data-dependent ``return``) is an
+        # identity copy and fuses like a shader.  A filter that drops rows
+        # fuses too: its ``return`` becomes a lane mask, every later stage
+        # computes on all lanes but only kept lanes reach the sink (a
+        # ``llvm.masked.compressstore`` at a running write index) or a fold (a
+        # masked lane contributes the reduction identity).  That needs every
+        # accumulator carried in registers, and every stage after the first
+        # dropping filter to read only values forwarded from earlier stages:
+        # an arena stream there would pair compacted rows with raw row indices.
+        drop_positions = [
+            position
+            for position, route in enumerate(routes)
+            if route.kernel in filter_names and not _filter_always_keeps(route.kernel)
+        ]
+        first_drop = drop_positions[0] if drop_positions else None
         if not _can_vectorize_fused_group(routes):
             for route in routes:
                 _lower_kernel_route(route)
@@ -2307,9 +2622,48 @@ def emit_llvm_ir(
         carried_accums: set[str] = set() if carry is None else carry[0]
         reductions: list[dict] = [] if carry is None else carry[1]
 
-        full_trip_count = (trip_count // simd_width) * simd_width
+        if first_drop is not None:
+            # Rows stay aligned lane for lane only if, after a dropping filter,
+            # a stage reads values produced at or after the most recent dropping
+            # filter (which compacted them identically).
+            misaligned = False
+            for position, route in enumerate(routes):
+                last_drop = max(
+                    (d for d in drop_positions if d < position), default=None
+                )
+                if last_drop is None:
+                    continue
+                for name in _route_in_streams(route):
+                    producers = [
+                        p for p in range(position) if routes[p].target == name
+                    ]
+                    if (
+                        name not in eliminated_targets
+                        or not producers
+                        or producers[-1] < last_drop
+                    ):
+                        misaligned = True
+            if carry is None or misaligned:
+                for route in routes:
+                    _lower_kernel_route(route)
+                return
+
         index_ptr = tick_builder.alloca(ir.IntType(32), name=f"fused_{group_index}_idx")
         tick_builder.store(ir.Constant(ir.IntType(32), 0), index_ptr)
+        write_index_ptr = None
+        if first_drop is not None:
+            write_index_ptr = tick_builder.alloca(
+                ir.IntType(32), name=f"fused_{group_index}_write_idx"
+            )
+            tick_builder.store(_i32(0), write_index_ptr)
+        if dynamic_trip:
+            full_trip_value: ir.Value = tick_builder.mul(
+                tick_builder.udiv(trip_value, _i32(simd_width), name="fused_chunks"),
+                _i32(simd_width),
+                name="fused_full_trip",
+            )
+        else:
+            full_trip_value = _i32((trip_count // simd_width) * simd_width)
 
         # Loop-carried register accumulators for the group's folds: one vector
         # partial per fold (carried across the vector loop) plus a scalar partial
@@ -2341,23 +2695,60 @@ def emit_llvm_ir(
         cond = tick_builder.icmp_signed(
             "<",
             current,
-            ir.Constant(ir.IntType(32), full_trip_count),
+            full_trip_value,
             name="fused_vector_active",
         )
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
-        partials = _emit_vector_fused_chunk(
+        chunk_write_index = (
+            tick_builder.load(write_index_ptr, name="fused_write_idx")
+            if write_index_ptr is not None
+            else None
+        )
+        partials, kept_mask = _emit_vector_fused_chunk(
             routes,
             current,
             eliminated_targets,
             trip_count,
             carried_accums=carried_accums,
+            first_drop=first_drop,
+            write_index=chunk_write_index,
         )
+        if write_index_ptr is not None and kept_mask is not None:
+            kept = tick_builder.call(
+                _get_vector_reduce_intrinsic(
+                    f"llvm.vector.reduce.add.v{simd_width}i32",
+                    ir.IntType(32),
+                    [ir.VectorType(ir.IntType(32), simd_width)],
+                ),
+                [
+                    tick_builder.zext(
+                        kept_mask,
+                        ir.VectorType(ir.IntType(32), simd_width),
+                        name="fused_kept_lanes",
+                    )
+                ],
+                name="fused_kept",
+            )
+            tick_builder.store(
+                tick_builder.add(chunk_write_index, kept, name="fused_write_next"),
+                write_index_ptr,
+            )
         for reduction in reductions:
-            partial = partials.get(reduction["accum"])
-            if partial is None:
+            partial_and_mask = partials.get(reduction["accum"])
+            if partial_and_mask is None:
                 continue
+            partial, lane_mask = partial_and_mask
+            if lane_mask is not None:
+                # A dropped lane contributes the operator identity.
+                identity = _reduction_identity(reduction["uty"], reduction["op"])
+                partial = tick_builder.select(
+                    lane_mask,
+                    partial,
+                    ir.Constant(partial.type, [identity] * simd_width),
+                    name="fused_carry_masked",
+                )
             running = tick_builder.load(reduction["vec"], name="fused_carry_cur")
             combined = _reduction_combine(
                 reduction["op"],
@@ -2375,13 +2766,11 @@ def emit_llvm_ir(
 
         tick_builder.position_at_end(loop_exit)
 
-        if full_trip_count < trip_count:
+        if dynamic_trip or (trip_count // simd_width) * simd_width < trip_count:
             tail_index_ptr = tick_builder.alloca(
                 ir.IntType(32), name=f"fused_{group_index}_tail_idx"
             )
-            tick_builder.store(
-                ir.Constant(ir.IntType(32), full_trip_count), tail_index_ptr
-            )
+            tick_builder.store(full_trip_value, tail_index_ptr)
             tail_cond = tick.append_basic_block(f"fused_{group_index}_tail_cond")
             tail_body = tick.append_basic_block(f"fused_{group_index}_tail_body")
             tail_exit = tick.append_basic_block(f"fused_{group_index}_tail_exit")
@@ -2391,16 +2780,22 @@ def emit_llvm_ir(
             tail_active = tick_builder.icmp_signed(
                 "<",
                 tail_current,
-                ir.Constant(ir.IntType(32), trip_count),
+                trip_value,
                 name="fused_tail_active",
             )
             tick_builder.cbranch(tail_active, tail_body, tail_exit)
             tick_builder.position_at_end(tail_body)
+            # After a dropping filter rejects the row, skip the rest of it.
+            tail_row_done = (
+                tick.append_basic_block(f"fused_{group_index}_tail_row_done")
+                if first_drop is not None
+                else None
+            )
             # Eliminated intermediates produced so far in this row, forwarded to
             # later stages; each producing stage gets a fresh slot (see
             # ``_route_arg_value``).
             local_slots: dict[str, ir.AllocaInstr] = {}
-            for route in routes:
+            for position, route in enumerate(routes):
                 callee, params = _kernel_function_and_params(route.kernel)
                 if callee is None:
                     continue
@@ -2437,17 +2832,34 @@ def emit_llvm_ir(
                     )
                     tick_builder.store(ir.Constant(accum_ty, None), scratch_slot)
                     tail_scratch[accum] = (scratch_slot, accum_ty)
-                _emit_kernel_call(
+                is_sink = position == len(routes) - 1
+                row_write_index = None
+                if write_index_ptr is not None and is_sink:
+                    row_write_index = tick_builder.load(
+                        write_index_ptr, name="fused_tail_write_idx"
+                    )
+                keep_value = _emit_kernel_call(
                     route,
                     tail_current,
                     local_slots=local_slots,
                     local_out_slots=route_out_slots,
+                    output_index=row_write_index,
                     accum_overrides={
                         accum: slot for accum, (slot, _ty) in tail_scratch.items()
                     }
                     or None,
                 )
                 local_slots = {**local_slots, **route_out_slots}
+                row_kept: ir.Value | None = None
+                if position in drop_positions and keep_value is not None:
+                    row_kept = keep_value
+                    if not (
+                        isinstance(row_kept.type, ir.IntType)
+                        and row_kept.type.width == 1
+                    ):
+                        row_kept = lowerer._coerce_value_to_type(
+                            row_kept, ir.IntType(1), "bool"
+                        )
                 for accum, (scratch_slot, _ty) in tail_scratch.items():
                     delta = tick_builder.load(scratch_slot, name="fused_tail_acc_val")
                     for reduction in reductions:
@@ -2466,6 +2878,29 @@ def emit_llvm_ir(
                             ),
                             reduction["tail"],
                         )
+                if is_sink and row_write_index is not None:
+                    # The sink stored this row (a sink filter compacts on its
+                    # own keep flag): advance the shared write index.
+                    advance = (
+                        tick_builder.zext(row_kept, ir.IntType(32))
+                        if row_kept is not None
+                        else _i32(1)
+                    )
+                    tick_builder.store(
+                        tick_builder.add(
+                            row_write_index, advance, name="fused_tail_write_next"
+                        ),
+                        write_index_ptr,
+                    )
+                elif row_kept is not None and tail_row_done is not None:
+                    continue_block = tick.append_basic_block(
+                        f"fused_{group_index}_tail_kept_{position}"
+                    )
+                    tick_builder.cbranch(row_kept, continue_block, tail_row_done)
+                    tick_builder.position_at_end(continue_block)
+            if tail_row_done is not None:
+                tick_builder.branch(tail_row_done)
+                tick_builder.position_at_end(tail_row_done)
             tail_next = tick_builder.add(
                 tail_current, ir.Constant(ir.IntType(32), 1), name="fused_tail_next"
             )
@@ -2496,6 +2931,15 @@ def emit_llvm_ir(
                 "fused_carry_final",
             )
             _fused_group_reductions[reduction["uniform"]] = (reduced, reduction["utn"])
+
+        sink_count: ir.Value = (
+            tick_builder.load(write_index_ptr, name=f"fused_{group_index}_kept")
+            if write_index_ptr is not None
+            else trip_value
+        )
+        _publish_count(routes[-1].target, sink_count)
+        for route in routes:
+            _note_accum_rows(route, trip_value)
 
     def _lower_fold_route(route: AstFoldBindRoute) -> None:
         source_name = route.source
@@ -2616,7 +3060,13 @@ def emit_llvm_ir(
         # LLVM promotes both allocas out of memory, so the buffer traffic
         # disappears and the fold reduces in-register -- matching hand-written C.
         _, params = kernel_signatures[route.kernel]
-        trip_count = _kernel_route_trip_count(route)
+        dynamic_trip = _dynamic_route_trip(route)
+        trip_value: ir.Value = (
+            dynamic_trip
+            if dynamic_trip is not None
+            else _i32(_kernel_route_trip_count(route))
+        )
+        pad_counts = _pad_counts_for(route, trip_value) if dynamic_trip else None
         kernel_symbol = _sanitize_symbol(route.kernel)
 
         # accum_name -> (acc_slot, operator, uniform_type, uniform_type_name)
@@ -2645,9 +3095,7 @@ def emit_llvm_ir(
 
         tick_builder.position_at_end(loop_cond)
         current = tick_builder.load(index_ptr, name="reduce_idx")
-        cond = tick_builder.icmp_signed(
-            "<", current, ir.Constant(ir.IntType(32), trip_count), name="reduce_active"
-        )
+        cond = tick_builder.icmp_signed("<", current, trip_value, name="reduce_active")
         tick_builder.cbranch(cond, loop_body, loop_exit)
 
         tick_builder.position_at_end(loop_body)
@@ -2660,7 +3108,9 @@ def emit_llvm_ir(
             )
             tick_builder.store(ir.Constant(uniform_type, None), row_slot)
             scratch[accum_name] = row_slot
-        _emit_kernel_call(route, current, accum_overrides=scratch)
+        _emit_kernel_call(
+            route, current, accum_overrides=scratch, pad_counts=pad_counts
+        )
         for accum_name, (acc_slot, operator, uniform_type, _utn) in reductions.items():
             delta = tick_builder.load(
                 scratch[accum_name], name=f"reduce_{_sanitize_symbol(accum_name)}_row_val"
@@ -2688,26 +3138,35 @@ def emit_llvm_ir(
                 acc_slot, name=f"reduce_{_sanitize_symbol(accum_name)}_final"
             )
             if operator == "avg":
-                lane_count = max(int(accum_sizes.get(accum_name, 1)), 1)
-                if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
-                    reduced = tick_builder.fdiv(
-                        reduced,
-                        ir.Constant(uniform_type, float(lane_count)),
-                        name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
+                if dynamic_trip is not None:
+                    reduced = _average_over_count(
+                        reduced, trip_value, uniform_type,
+                        f"reduce_{_sanitize_symbol(accum_name)}_avg",
                     )
                 else:
-                    reduced = tick_builder.sdiv(
-                        reduced,
-                        ir.Constant(uniform_type, lane_count),
-                        name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
-                    )
+                    lane_count = max(int(accum_sizes.get(accum_name, 1)), 1)
+                    if isinstance(uniform_type, (ir.FloatType, ir.DoubleType)):
+                        reduced = tick_builder.fdiv(
+                            reduced,
+                            ir.Constant(uniform_type, float(lane_count)),
+                            name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
+                        )
+                    else:
+                        reduced = tick_builder.sdiv(
+                            reduced,
+                            ir.Constant(uniform_type, lane_count),
+                            name=f"reduce_{_sanitize_symbol(accum_name)}_avg",
+                        )
             _fused_reductions[accum_name] = (reduced, uniform_type_name)
+        _finish_route_counts(route, trip_value, trip_value)
 
     for pipeline_index, pipeline in enumerate(program.pipelines):
         # Determine which accumulators can be folded in-register for this
         # pipeline: consumed by exactly one fold (with a reducible operator/type)
         # and written by exactly one kernel route that precedes that fold.
         _reducible_accums.clear()
+        _live_counts.clear()
+        _accum_live_counts.clear()
         _reducible_writer.clear()
         _fused_reductions.clear()
         _fused_group_reductions.clear()

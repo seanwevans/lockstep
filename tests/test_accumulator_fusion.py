@@ -11,21 +11,22 @@ lifted:
 * A group fuses *through* a filter when that filter keeps every row
   unconditionally (its compacting store degenerates to a straight store), so the
   whole Normalize -> Score -> KeepAll chain collapses to one pass. A filter that
-  actually drops rows (a data-dependent ``return``) still forces the per-stage
-  fallback, because its compacted output shifts every downstream write index.
+  actually drops rows fuses too (its ``return`` becomes a lane mask and the sink
+  is compress-stored), as long as its body is vectorizable; one that is not --
+  here, its keep flag calls a user ``pure`` function -- keeps the per-stage path.
 
 These tests pin those guarantees:
 
 * **Structural** (always runs): the accumulator group emits exactly one fused
   loop with a horizontal ``llvm.vector.reduce`` and no per-row accumulator
-  buffer store; a trailing keep-all filter does not break that; and a
-  data-dependent filter falls back to per-stage scalar loops.
+  buffer store; a trailing keep-all filter does not break that; and a filter
+  whose keep flag is not vectorizable falls back to per-stage scalar loops.
 * **Differential** (requires ``clang``): the fused register-carry path, the
   fuse-through-filter path, and the per-stage scalar fallback all compute the
   same output stream and the same folded reduction, and all match the source
-  semantics. The scalar reference is the same computation behind a
-  data-dependent (but at run time always-true) filter, so the only variable is
-  whether the stages were fused.
+  semantics. The scalar reference is the same computation behind a filter
+  whose keep flag calls a ``pure`` function (true for every row at run time),
+  so the only variable is whether the stages were fused.
 """
 
 from __future__ import annotations
@@ -117,13 +118,15 @@ pipeline P {
 }
 """
 
-# Same computation, but the trailing filter has a data-dependent ``return`` (true
-# for all rows at run time on this input). Codegen cannot prove it keeps every
-# row, so the group falls back to per-stage scalar loops with the accumulator
-# buffer -- the un-fused reference.
+# Same computation, but the trailing filter's keep flag (true for all rows at
+# run time on this input) calls a user ``pure`` function, which the vector path
+# does not lower, so the group falls back to per-stage scalar loops with the
+# accumulator buffer -- the un-fused reference.
 SCALAR_SOURCE = """
 struct Event { int deviceId; float value; };
 struct Alert { int deviceId; float score; };
+
+pure bool bounded(float score) { return score > -1000000.0; }
 
 shader Normalize(in Event src, out Event dst) {
     dst.deviceId = src.deviceId;
@@ -140,7 +143,7 @@ shader Score(in Event src, out Alert dst, accum float scoreSum) {
 filter KeepBounded(in Alert src, out Alert dst) {
     dst.deviceId = src.deviceId;
     dst.score = src.score;
-    return src.score > -1000000.0;
+    return bounded(src.score);
 }
 
 pipeline P {
@@ -208,11 +211,24 @@ def test_group_fuses_through_keep_all_filter() -> None:
     assert "llvm.vector.reduce" in ir
 
 
-def test_data_dependent_filter_falls_back_to_scalar_loops() -> None:
-    """A filter that can drop rows keeps the per-stage compacting scalar path."""
+def test_unvectorizable_filter_falls_back_to_scalar_loops() -> None:
+    """A filter whose keep flag the vector path can't lower keeps the per-stage
+    compacting scalar path."""
     ir = _compile(SCALAR_SOURCE).llvm_ir or ""
     assert "fused_0_cond" not in ir
     assert "route_Score_cond" in ir
+
+
+def test_group_fuses_through_dropping_filter() -> None:
+    """A vectorizable filter that drops rows fuses: its keep flag masks the
+    lanes, the sink is compress-stored, and the fold stays in registers."""
+    source = SCALAR_SOURCE.replace("return bounded(src.score);", "return src.score > 1.0;")
+    ir = _compile(source).llvm_ir or ""
+    assert "fused_0_cond" in ir
+    assert "route_Normalize_cond" not in ir
+    assert "route_KeepBounded_cond" not in ir
+    assert "llvm.masked.compressstore" in ir
+    assert "llvm.vector.reduce" in ir
 
 
 def _build_and_run(
