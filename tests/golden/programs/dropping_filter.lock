@@ -1,0 +1,35 @@
+struct Sample {
+    int id;
+    float value;
+    bool flagged;
+};
+
+// A filter that really drops rows, fused with the stage after it: the keep
+// flag masks the lanes, the sink is compress-stored, and the folds only see
+// kept rows.  Capacity 20 leaves a scalar tail at width 8.
+filter DropFlagged(in Sample src, out Sample dst) {
+    dst.id = src.id;
+    dst.value = src.value;
+    dst.flagged = src.flagged;
+    return !src.flagged;
+}
+
+shader Scale(in Sample src, out Sample dst, accum float total) {
+    dst.id = src.id;
+    dst.value = src.value * 2.0;
+    dst.flagged = src.flagged;
+    total = total + src.value;
+}
+
+pipeline Samples {
+    stream<Sample, 20> samplesRaw;
+    stream<Sample, 20> samplesKept;
+    stream<Sample, 20> samplesScaled;
+    accumulator<float> total;
+
+    bind {
+        samplesKept = DropFlagged(samplesRaw, samplesKept);
+        samplesScaled = Scale(samplesKept, samplesScaled, total);
+        uniform float keptTotal = fold sum(total);
+    }
+}

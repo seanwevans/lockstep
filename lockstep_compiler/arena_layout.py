@@ -432,6 +432,81 @@ def infer_accumulator_sizes(entities: dict[str, Any]) -> dict[str, int]:
     return inferred
 
 
+def counted_streams(
+    routes: list[tuple[str, list[str], str]],
+    kernel_modifiers: dict[str, list[str]],
+    filter_names: set[str],
+    capacities: dict[str, int],
+) -> list[str]:
+    """Streams whose live row count is only known when the tick runs.
+
+    A filter's output holds however many rows it kept, and a stage reading only
+    such streams processes (and produces) that many rows.  Each of these streams
+    gets a ``uint`` count slot in the arena (``LOCKSTEP_OFFSET_COUNT_<STREAM>``)
+    that ``Lockstep_Tick`` writes, so the host knows how many rows are valid and
+    later stages iterate only over them.  ``routes`` is ``(kernel, args,
+    target)`` in bind order; the result is in first-write order.
+    """
+    counted: dict[str, None] = {}
+    for kernel, args, target in routes:
+        modifiers = kernel_modifiers.get(kernel)
+        if modifiers is None or target not in capacities:
+            continue
+        inputs = [
+            arg
+            for modifier, arg in zip(modifiers, args)
+            if modifier == "in" and arg in capacities
+        ]
+        counted_caps = [capacities[arg] for arg in inputs if arg in counted]
+        static_caps = [capacities[arg] for arg in inputs if arg not in counted]
+        dynamic = kernel in filter_names or (
+            bool(counted_caps) and max(counted_caps) > max(static_caps, default=0)
+        )
+        if dynamic:
+            counted.setdefault(target, None)
+    return list(counted)
+
+
+def _entity_counted_streams(entities: dict[str, Any]) -> list[str]:
+    kernel_modifiers = {
+        kernel["name"]: [param.get("modifier") for param in kernel.get("params", [])]
+        for kernel in list(entities.get("shaders", [])) + list(entities.get("filters", []))
+    }
+    filter_names = {kernel["name"] for kernel in entities.get("filters", [])}
+    capacities = {
+        stream["name"]: max(int(stream.get("capacity", 1) or 1), 1)
+        for stream in entities.get("streams", [])
+    }
+    routes = [
+        (str(route.get("kernel")), list(route.get("args", [])), str(route.get("target")))
+        for route in entities.get("bind_routes_ir", [])
+        if route.get("kind") == "kernel"
+    ]
+    return counted_streams(routes, kernel_modifiers, filter_names, capacities)
+
+
+def ast_counted_streams(program: AstProgram) -> list[str]:
+    from .ast import AstKernelBindRoute
+
+    kernels = list(program.shaders) + list(program.filters)
+    kernel_modifiers = {
+        kernel.name: [param.modifier for param in kernel.params] for kernel in kernels
+    }
+    filter_names = {kernel.name for kernel in program.filters}
+    capacities = {
+        stream.name: max(int(stream.capacity), 1)
+        for pipeline in program.pipelines
+        for stream in pipeline.streams
+    }
+    routes = [
+        (route.kernel, list(route.args), route.target)
+        for pipeline in program.pipelines
+        for route in pipeline.bind_routes
+        if isinstance(route, AstKernelBindRoute)
+    ]
+    return counted_streams(routes, kernel_modifiers, filter_names, capacities)
+
+
 def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
     normalized_structs = normalize_structs(entities.get("structs", []))
     inferred_accumulator_sizes = infer_accumulator_sizes(entities)
@@ -452,6 +527,9 @@ def build_arena_layout(entities: dict[str, Any]) -> ArenaLayout:
         )
     for uniform in entities.get("uniforms", []):
         bindings.append(("uniform", uniform["name"], uniform["type"], 1))
+    # Live row counts go last so adding them never moves an existing offset.
+    for stream_name in _entity_counted_streams(entities):
+        bindings.append(("count", stream_name, "uint", 1))
     return _build_layout_from_bindings(normalized_structs, bindings)
 
 
@@ -486,4 +564,7 @@ def build_ast_arena_layout(
             bindings.append(
                 ("uniform", uniform.name, _ast_type_name(uniform.declared_type), 1)
             )
+    # Live row counts go last so adding them never moves an existing offset.
+    for stream_name in ast_counted_streams(program):
+        bindings.append(("count", stream_name, "uint", 1))
     return _build_layout_from_bindings(normalized_structs, bindings)

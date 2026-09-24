@@ -128,6 +128,9 @@ class ArenaCodec:
     def leaf_types(self, stream: str) -> dict[tuple[str, ...], str]:
         return {leaf.path: leaf.type_name for leaf in self._leaves("stream", stream)}
 
+    def has_leaf(self, kind: str, name: str) -> bool:
+        return bool(self._leaves(kind, name))
+
     def scalar_type(self, kind: str, name: str) -> str:
         (leaf,) = self._leaves(kind, name)
         return leaf.type_name

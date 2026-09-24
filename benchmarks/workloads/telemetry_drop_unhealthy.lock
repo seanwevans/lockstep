@@ -1,0 +1,46 @@
+struct Telemetry {
+    int deviceId;
+    float reading;
+    bool healthy;
+};
+
+// Unlike KeepHealthy in telemetry_filter_aggregation, this filter really drops
+// rows: about half of the primed rows are unhealthy.  The whole pipeline fuses
+// into one vector loop that compacts the kept rows (llvm.masked.compressstore)
+// and folds only them.
+filter DropUnhealthy(in Telemetry src, out Telemetry dst) {
+    dst.deviceId = src.deviceId;
+    dst.reading = src.reading;
+    dst.healthy = src.healthy;
+    return src.healthy;
+}
+
+shader ScaleReadings(
+    in Telemetry src,
+    out Telemetry dst,
+    accum float readingTotal,
+    accum int readingCount
+) {
+    float scaled = src.reading * 1.5;
+    readingTotal = readingTotal + scaled;
+    readingCount = readingCount + 1;
+
+    dst.deviceId = src.deviceId;
+    dst.reading = scaled;
+    dst.healthy = src.healthy;
+}
+
+pipeline TelemetryDropUnhealthy {
+    stream<Telemetry, 65536> telemetryRaw;
+    stream<Telemetry, 65536> telemetryHealthy;
+    stream<Telemetry, 65536> telemetryScaled;
+    accumulator<float> readingTotal;
+    accumulator<int> readingCount;
+
+    bind {
+        telemetryHealthy = DropUnhealthy(telemetryRaw, telemetryHealthy);
+        telemetryScaled = ScaleReadings(telemetryHealthy, telemetryScaled, readingTotal, readingCount);
+        uniform float totalReading = fold sum(readingTotal);
+        uniform int keptEvents = fold sum(readingCount);
+    }
+}

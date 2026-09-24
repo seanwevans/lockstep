@@ -179,9 +179,15 @@ identity copy and fuses the whole group, carrying the fold accumulators in
 loop-carried vector registers instead of the per-row buffer. That is what lifts
 the shipped `multi_stage_pipeline` (`KeepActive`) and
 `telemetry_filter_aggregation` (`KeepHealthy`) workloads to a single vector pass.
-A filter with a **data-dependent** `return` still has a compacting store the
-vector path does not lower, so it keeps the per-stage fallback; the probe below
-bounds the win still available for that case.
+A filter with a **data-dependent** `return` fuses too. Its `return` becomes the
+chunk's lane mask. The group's sink is written with `llvm.masked.compressstore`
+at a running write index, so kept rows land contiguously, as the per-stage
+compacting loop would put them. Fold accumulators add the operator's identity
+for dropped lanes. The group falls back to per-stage loops in two cases: when an
+accumulator can't be carried in registers, and when a stage after the filter
+reads a stream that wasn't compacted by the same filters (for example, a raw
+input read alongside the filtered rows). See `telemetry_drop_unhealthy` in
+`benchmarks/RESULTS.md` (table 5).
 
 The probe runs the multi_stage computation two ways over identical SoA data —
 `unfused` (three loops writing/re-reading intermediates) and `fused` (one loop,
