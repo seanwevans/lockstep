@@ -9,6 +9,14 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+A correctness release. Folded uniforms computed by `fold` never reached the
+host in 0.2.0 — and because nothing consumed the reduction, LLVM deleted it as
+dead code. That is fixed here, at the cost of a small ABI change (see below);
+rebuild hosts against the regenerated header. Multi-stage pipelines with a
+pass-through filter also fuse into a single vector loop now.
+
 ### Fixed
 
 - **Folded uniforms now reach the host.** `uniform T x = fold op(y);` declares
@@ -117,5 +125,7 @@ described in `ROADMAP.md`.
 
 Initial pre-release.
 
+[Unreleased]: https://github.com/seanwevans/lockstep/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/seanwevans/lockstep/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/seanwevans/lockstep/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/seanwevans/lockstep/releases/tag/v0.1.0
