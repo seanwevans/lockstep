@@ -299,3 +299,14 @@ That is why `telemetry_filter_aggregation` and `multi_stage_pipeline` above do
 **not** pick it up: their accumulator stages sit inside a filter group. Their
 dominant cost is the materialized intermediate streams anyway — fusing through
 the trailing filter (see the fusion probe) is the lever for those.
+
+## Alias-analysis probe
+
+`alias_probe.py` (`make bench-alias`) measures whether LLVM's alias analysis
+blocks any optimization in `Lockstep_Tick`, and what sound per-leaf
+`!alias.scope` metadata would recover as an upper bound. It needs `clang`, and
+`opt` for the upper-bound experiment, which force-inlines the kernels and tags
+every arena access by leaf. `--generated N` sets how many oracle programs join
+the corpus, `--iterations 0` skips timing, and `--keep DIR` keeps the IR and
+optimization records. The results and their interpretation are in
+`benchmarks/RESULTS.md` ("Alias-analysis probe").

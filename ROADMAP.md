@@ -22,6 +22,7 @@ Each links to the code that provides it.
 | Fused-vector lowering, incl. accumulator-stage fusion | `codegen.py`, `benchmarks/native/fusion_probe.py` |
 | Fold-into-kernel fusion (single-fold accumulator reduced in-register, no per-row buffer; reaches hand-written-C parity on `particle_energy`) | `codegen.py` (`_lower_reduction_route`), `benchmarks/native/lockstep_vs_c.py`, `tests/test_fold_reduction_fusion.py` |
 | Pass-through filter-group fusion (fuse through an unconditional-keep filter into one vector loop: contiguous SoA leaf vectors + register-carried fold accumulators, multiple folds per accumulator; lifts the two multi-stage filter pipelines to ~0.9× / ~0.7× of hand-written C) | `codegen.py` (`_lower_fused_kernel_group`, `_filter_always_keeps`, `_group_carry_reductions`, `_leaf_contiguous_vector_load`/`_store`), `tests/test_accumulator_fusion.py` |
+| Alias-analysis probe: census of alias-blocked optimizations plus a perfect-scope upper bound; uniforms hoisted out of row loops and a SCEV-friendly index clamp (1.5–1.7× on affected per-stage loops) | `benchmarks/native/alias_probe.py`, `codegen.py` (`_hoist_uniform_loads`, `_clamp_i32`) |
 | Arena size-overflow checking + C `static_assert` (`LCK502`) | `arena_layout.py`, `c_header.py` |
 | Parser input-complexity limits (size / nesting / parse timeout) | `compiler.py` (`FrontendLimits`), `cli.py` |
 | Out-of-process, resource-limited simulator reduction | `simulator.py`, `SECURITY.md` |
@@ -35,13 +36,6 @@ Each links to the code that provides it.
 
 **Backend**
 
-- **Scoped alias metadata on arena-derived pointers.** `Lockstep_Tick`'s arena
-  parameter is already `noalias nocapture` (provably sound — the sole pointer
-  parameter). What remains is disambiguating the individual stream/accumulator
-  pointers *inside* the tick: emitting `noalias` on kernel pointer parameters
-  (guarded by a whole-program check that no bind route feeds one resource to two
-  pointer params) and/or `!alias.scope` metadata per disjoint arena region,
-  backed by a short soundness argument in a `PROOFS.md`.
 - **Fusing through a *dropping* filter.** Groups containing a pass-through
   (unconditional-keep) filter now fuse into one vector loop; a filter with a
   data-dependent `return` still falls back to the per-stage compacting path,
@@ -97,12 +91,30 @@ Each links to the code that provides it.
 
 1. **Correct** — every valid program's generated IR, compiled against the
    generated header, matches the simulator's observable behavior, backed by the
-   `noalias` argument, fuzzing, and the benchmark suite.
+   differential oracle, fuzzing, and the benchmark suite.
 2. **Stable** — the public API, diagnostic catalog, grammar, and C header ABI are
    frozen under semantic versioning.
 3. **Complete** — CLI, simulator, LSP, formatter, header generator, and IR
    backend together cover authoring → validation → compilation → host
    integration.
+
+## Deferred past v1.0.0
+
+- **Scoped alias metadata on arena-derived pointers** (`!alias.scope` per arena
+  leaf, or `noalias` on kernel pointer parameters). `make bench-alias` measured
+  the upper bound: sound per-leaf scopes on every arena access, across the
+  benchmark workloads, the golden programs and 300 random programs.
+  - LLVM never needed a runtime alias check (`vector.memcheck`).
+  - The misses aliasing did cause came almost entirely from uniforms reloaded
+    inside row loops, and from a row-index clamp scalar evolution couldn't
+    analyze. Two small codegen changes fixed both, with no metadata.
+  - After those fixes, perfect scopes vectorize 10 more loops across ~300 fused
+    programs.
+  - Benchmark-workload timings stay within ±5%, which is inside this host's
+    run-to-run noise.
+
+  This is worth revisiting only if a workload shows a measured gap. See
+  `benchmarks/RESULTS.md` ("Alias-analysis probe").
 
 ## Non-goals for v1.0.0
 
