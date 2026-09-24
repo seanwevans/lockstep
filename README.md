@@ -157,7 +157,7 @@ The compiler emits a C-compatible header for the host (C/C++, Rust, Zig):
    `LOCKSTEP_OFFSET_COUNT_<STREAM>` first. Rows past the count, and every row of
    an intermediate stream that fusion eliminated, are unspecified.
 
-See [`examples/minimal_host.c`](examples/) for a complete end-to-end host app.
+See [`examples/`](examples/) for complete host apps: `particles_host.c` exercises the whole contract (priming, uniforms, folds, a filtered stream's live row count), and `tests/test_examples.py` builds and runs it against the simulator.
 
 ---
 

@@ -1,0 +1,66 @@
+// A small particle simulation: gravity with a bouncing floor, a filter that
+// keeps the particles still inside the box, and two folds the host reads back.
+//
+//   particles --Integrate--> particles (in place)   + kinetic energy per row
+//   particles --InsideBox--> inside    (keeps a data-dependent number of rows)
+//   inside    --Tally------> tallied                + count of kept rows
+//
+// InsideBox and Tally fuse into one vector loop that compacts the kept rows.
+// See particles_host.c for the host side.
+
+struct Particle {
+    float x;
+    float y;
+    float vx;
+    float vy;
+    float mass;
+};
+
+shader Integrate(in Particle p, out Particle q, uniform float dt, accum float energy) {
+    float vy = p.vy - 9.81 * dt;
+    float y = p.y + vy * dt;
+    // Bounce off the floor without branching: below it, reflect and damp.
+    float below = step(y, 0.0);
+    q.x = p.x + p.vx * dt;
+    q.y = max(y, 0.0);
+    q.vx = p.vx;
+    q.vy = mix(vy, -vy * 0.8, below);
+    q.mass = p.mass;
+    energy = energy + 0.5 * p.mass * (p.vx * p.vx + vy * vy);
+}
+
+filter InsideBox(in Particle p, out Particle q, uniform float width) {
+    q.x = p.x;
+    q.y = p.y;
+    q.vx = p.vx;
+    q.vy = p.vy;
+    q.mass = p.mass;
+    return p.x >= 0.0 && p.x <= width;
+}
+
+shader Tally(in Particle p, out Particle q, accum int kept) {
+    q.x = p.x;
+    q.y = p.y;
+    q.vx = p.vx;
+    q.vy = p.vy;
+    q.mass = p.mass;
+    kept = kept + 1;
+}
+
+pipeline Particles {
+    stream<Particle, 1000> particles;
+    stream<Particle, 1000> inside;
+    stream<Particle, 1000> tallied;
+    accumulator<float> energy;
+    accumulator<int> kept;
+    uniform float dt = 0.02;
+    uniform float width = 100.0;
+
+    bind {
+        particles = Integrate(particles, particles, dt, energy);
+        uniform float kineticEnergy = fold sum(energy);
+        inside = InsideBox(particles, inside, width);
+        tallied = Tally(inside, tallied, kept);
+        uniform int keptCount = fold sum(kept);
+    }
+}

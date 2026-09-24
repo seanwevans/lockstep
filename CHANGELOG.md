@@ -11,6 +11,12 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
 
 ### Added
 
+- **`examples/particles.lock` + `particles_host.c`**, a particle simulation
+  whose C host uses the whole ABI: in-place update, a filter that drops rows
+  (fused, compacted), folded uniforms, and the live row count.
+  `tests/test_examples.py` builds both examples through `lockstepc` and clang
+  and checks the particle output against the simulator frame by frame.
+
 - **Fusing through filters that drop rows.** A multi-stage group whose filter has
   a data-dependent `return` now fuses into one vector loop. The keep flag
   becomes a lane mask, the group's sink is written with
@@ -61,6 +67,10 @@ releases; see `ROADMAP.md` for the path to a frozen 1.0.0.
   and variable names.
 
 ### Fixed
+
+- `examples/minimal_host.c` no longer compiled: it assigned to stream columns
+  as scalars, but they have been arrays since SoA layout. It now indexes row 0,
+  and `tests/test_examples.py` keeps it building.
 
 - **Stages after a filter processed the rows the filter dropped.** A stream had
   no live row count, so the next stage ran over the filter output's full
