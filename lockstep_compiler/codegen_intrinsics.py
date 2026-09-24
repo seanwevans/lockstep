@@ -8,8 +8,8 @@ function takes the LLVM `builder`/`module` and an ``error`` callback explicitly 
 so the intrinsic contract lives in one small, directly testable place rather than
 threaded through the 3k-line code generator.
 
-The lowering is byte-for-byte identical to the previous in-class implementation;
-`tests/test_golden_ir.py` pins the emitted IR.
+`tests/test_golden_ir.py` pins the emitted IR, and the differential oracle
+(`tests/test_differential_oracle.py`) checks it against the simulator.
 """
 
 from __future__ import annotations
@@ -137,6 +137,14 @@ def lower_intrinsic_call(
         diff = builder.fsub(x, edge0, name="ss_diff")
         range_val = builder.fsub(edge1, edge0, name="ss_range")
         t_raw = builder.fdiv(diff, range_val, name="ss_t_raw")
+        # Degenerate edges (edge0 == edge1) give t = 0 rather than clamping the
+        # +-inf/NaN quotient, matching the simulator and the vectorized path.
+        degenerate = builder.fcmp_ordered(
+            "==", range_val, ir.Constant(arg_type, 0.0), name="ss_degenerate"
+        )
+        t_raw = builder.select(
+            degenerate, ir.Constant(arg_type, 0.0), t_raw, name="ss_t_raw_safe"
+        )
         maxnum = declare_binary_llvm_intrinsic(module, "maxnum", arg_type, error)
         minnum = declare_binary_llvm_intrinsic(module, "minnum", arg_type, error)
         t_clamped = builder.call(

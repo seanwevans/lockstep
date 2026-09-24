@@ -1,4 +1,4 @@
-.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion bench-vs-c
+.PHONY: verify verify-parser-toolchain generate-parser check-generated-parser build test test-cov oracle lint mypy lock-deps check-lock-deps bench bench-check bench-native bench-native-check bench-soa bench-fusion bench-vs-c
 
 verify: lint test mypy
 
@@ -52,6 +52,14 @@ test-cov:
 
 mypy:
 	python -m mypy
+
+# Differential oracle sweep: random programs through the simulator and through
+# clang-compiled Lockstep_Tick, compared row by row (needs clang, x86-64 Linux).
+# The default pytest run covers a small seed range; this runs a wide one.
+ORACLE_SEEDS ?= 0:2000
+ORACLE_WIDTHS ?= 4,8,16
+oracle:
+	PYTHONPATH=.:tests python -m differential.oracle --sweep $(ORACLE_SEEDS) --widths $(ORACLE_WIDTHS)
 
 bench:
 	PYTHONPATH=. python scripts/run_benchmarks.py --output benchmark-results.json

@@ -50,12 +50,10 @@ bindStmt
     | 'uniform' typeName ID '=' 'fold' foldOperator '(' ID ')' ';'
     ;
 
-foldOperator
-    : 'sum'
-    | 'avg'
-    | 'min'
-    | 'max'
-    ;
+// Fold operators (sum/avg/min/max) are ordinary identifiers, checked by the
+// semantic validator (LCK401). Making them keywords would
+// steal `min`/`max` from the intrinsic calls and `sum`/`avg` from user names.
+foldOperator: ID;
 
 argList: ID (',' ID)*;
 
